@@ -1,0 +1,56 @@
+{
+  "name": "dsh-model-assistant",
+  "version": "0.1.0-alpha.1",
+  "description": "ModelPilot — a standalone DSH model-configuration assistant plugin: capability facts, user profiles, and field-level projection onto DSH settings with revision-fenced writes.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit",
+    "lint:structure": "node test/structure.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.2.2-0"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "modelpilot",
+    "model-assistant",
+    "model-configuration",
+    "reasoning-efforts",
+    "llm-pi-ai",
+    "llm-deepseek"
+  ]
+}
