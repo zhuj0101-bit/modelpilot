@@ -78,8 +78,16 @@ test("Host half exports the settings-facing contract", async () => {
   }
 });
 
-test("Client half is a valid placeholder export", async () => {
-  const mod = await importLocal(join(root, "lib", "client.js"));
-  assert.equal(typeof mod.apply, "function");
-  assert.equal(mod.name, "model-assistant-client");
+test("Client half is the bundled ModuleLoader registration (not raw ESM)", () => {
+  // lib/client.js is a build artifact: the browser half is registered through
+  // window.__ModuleLoader__.load, so it must NOT be imported as an ES module
+  // here. Its contract is covered by test/client/bundle.test.mjs (loads it
+  // through a real ModuleLoader shim and asserts the slot wiring).
+  const source = readFileSync(join(root, "lib", "client.js"), "utf8");
+  assert.match(source, /window\.__ModuleLoader__\.load\(\{/);
+  assert.match(source, /id: "dsh-model-assistant"/);
+  assert.match(source, /factory: \(require\) =>/);
+  assert.ok(source.length > 5_000, "bundle carries the real client, not a stub");
+  // The Host half stays plain ESM and is imported directly.
+  assert.ok(!source.includes("export const name = \"model-assistant-client\""));
 });

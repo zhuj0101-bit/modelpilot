@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-assistant",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "ModelPilot — a standalone DSH model-configuration assistant plugin: capability facts, user profiles, and field-level projection onto DSH settings with revision-fenced writes.",
   "license": "MIT",
   "type": "module",
@@ -8,18 +8,20 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "src",
     "cordis.patch.yml",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/",
-    "typecheck": "tsc --noEmit",
-    "lint:structure": "node test/structure.test.mjs"
+    "build": "node scripts/build-client.mjs",
+    "prepublishOnly": "node scripts/build-client.mjs",
+    "test": "node --test test/**/*.test.mjs"
   },
   "dsh": {
     "bundle": {
@@ -38,6 +40,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.2.2-0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
