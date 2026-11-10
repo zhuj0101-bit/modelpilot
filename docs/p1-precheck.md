@@ -1,5 +1,16 @@
 # P1 前置核证（B2-Q1/Q3/Q8 关闭）
 
+## P1 执行纪要（2026-11-10）
+
+- P1-01 IdentityResolver 7/7（L3 语义修正：canonicalModelId===rawModelId 也算 canonical 命中；L4 规则排序 exact>glob>route-only）。
+- P1-02 CandidateEngine 8/8（**cleared 语义升级**：a.md §3.B 的"不再自动填"是全链条屏蔽，不只跳过 stored link——noAutofill 标志贯穿 decide()）。
+- P1-03 pi-ai 投影器 13/13（R1–R7 预检、替换闸门 withheld-ops、互斥拒绝、casefold 警告不拒写）。
+- P1-04/05 ApplyService 8/8（prepare 幂等 planId、unacked 闸门、profile-first、conflict 重试一次、指纹撤销外部修改拒覆盖）。
+- P1-06 ProfileRepository 6/6（stale-write 单调版本守卫、cleared round-trip、路由隔离、%2F 转义）。
+- 事故与修复：P0 提交时 src/sources/models-dev-v1.js 因目录整理被误删（测试进了 git、实现没进）——P1 全量回归暴露后重建。教训：整理目录后必须立即全量回归再提交。
+- 全量回归 **90/90**。
+
+
 ## B2-Q1：mutate op 的 dict key 编码 — ✅ 关闭 [已核对-源码]
 
 `applyPathOp`/`isVolatilePath` 以 **string[] 段**寻址（`schema.dict?.[key]` 直接查表，不做任何点号拆分）；`validatePaths` 的 `path.join(".")` 只用于**报错文案**，不影响寻址语义。因此：
