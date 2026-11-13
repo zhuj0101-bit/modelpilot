@@ -215,7 +215,9 @@ return {
 
 > **读的是 Host catalog 里的 `model.reasoning`（`reasoning.efforts` / `defaultEffort`），不是路由级字段。**
 > 对 `pi-ai`，该对象由 `providers.<id>.models[].reasoningEfforts`（或 `modelOverrides.<id>.reasoningEfforts`）
-> 经 `resolveModelReasoning()` → `reasoningInfo()` 生成；`providers.<id>.models[].reasoningEfforts` 是唯一的数据源。
+> 经 `resolveModelReasoning()` → `reasoningInfo()` 生成。对手写模型（已安装 catalog 未描述该 id），
+> `providers.<id>.models[].reasoningEfforts` 是唯一数据源；内置 catalog 模型未声明 `reasoningEfforts` 时，
+> 继承已安装 catalog 的 `reasoning`（`resolveModelReasoning` 的 `base?.reasoning` 分支，`lib/index.js:588`）。
 
 ---
 
