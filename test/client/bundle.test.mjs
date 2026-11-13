@@ -60,7 +60,7 @@ test("打包产物以包 id 注册并导出插件契约", () => {
   const { id, exports } = loadBundle();
   assert.equal(id, "dsh-model-assistant");
   assert.equal(typeof exports.apply, "function");
-  assert.equal(exports.inject.join(","), "slots,configForms"); // 跨模块域安全
+  assert.equal(exports.inject.join(","), "slots,configForms,remote,remote.llm"); // 跨模块域安全
   assert.equal(exports.name, "model-assistant-client");
   assert.equal(exports.default.apply, exports.apply);
 });
@@ -75,6 +75,7 @@ test("apply() 通过 configForms.whileServed 接线 settings.section", () => {
       const dispose = fn();
       return typeof dispose === "function" ? dispose : () => {};
     },
+    remote: { llm: { discoverModels: async () => ({ ok: true, value: [] }) } },
     configForms: {
       get: () => ({ getSnapshot: () => ({ value: {}, writable: true }), subscribe: () => () => {} }),
       whileServed: (namespaces, register) => {
@@ -111,6 +112,7 @@ test("apply() 通过 configForms.whileServed 接线 settings.section", () => {
   // inject() 把组件恰好需要的服务交给它
   const injected = spec.inject();
   assert.ok(injected.configForms, "component receives configForms");
+  assert.equal(typeof injected.discoverModels, "function", "component receives a bound discoverModels callback");
   assert.equal(typeof component, "function");
 });
 
@@ -129,9 +131,11 @@ test("打包产物包含自定义候选下拉与 K/M 提示逻辑", () => {
   for (const marker of ["TokenCountField", "comboPanel", "hintLine"]) {
     assert.ok(source.includes(marker), `bundle contains ${marker}`);
   }
-  // datalist 会按当前值过滤候选（工单 #12 问题 1），产物里不应再出现。
-  assert.ok(!source.includes("datalist"), "bundle no longer renders datalist");
-  assert.ok(!source.includes("modelpilot-context-window-candidates"), "old list id removed");
+  // 工单 #12 的 token 字段不再使用 datalist；工单 #18 只给模型 ID 保留
+  // 候选下拉，所以这里检查旧 id 消失、新 id 存在，而不是禁止所有 datalist。
+  assert.ok(!source.includes("modelpilot-context-window-candidates"), "old token list id removed");
+  assert.ok(!source.includes("modelpilot-max-tokens-candidates"), "old max-tokens list id removed");
+  assert.ok(source.includes("modelpilot-remote-models"), "model ID datalist present");
   // esbuild 会把 1_000_000 规范化为 1e6；两者都证明 M 分支进入了产物。
   assert.ok(source.includes("1e6") || source.includes("1_000_000"), "bundle contains the million threshold");
 });
