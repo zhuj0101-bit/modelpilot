@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { hostRequire } from "../scripts/host-anchor.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const importLocal = (p) => import(pathToFileURL(p).href);
@@ -45,9 +46,7 @@ test("peerDependencies range satisfies the host matrix", async () => {
   // settings form projection disagree (0.2.2 ships 3.19.0).
   assert.equal(pkg.dependencies["@deepseek-ai/schemastery"], "~3.19.0");
 
-  const semver = (await import("node:module")).createRequire(
-    "F:/AiTools/DSH/resources/app/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js",
-  )("semver");
+  const semver = hostRequire()("semver");
   const matrix = {
     "0.2.0-rc.2": true,
     "0.2.1-rc.2": true,

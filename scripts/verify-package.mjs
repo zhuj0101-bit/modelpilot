@@ -53,7 +53,8 @@ console.log(registered?.exports?.inject?.join(",") === "slots,configForms" ? "PA
 // collectInstallationScopePackages), so link those packages in before loading —
 // exactly what the profile resolver does.
 import { mkdirSync, symlinkSync, existsSync as exists } from "node:fs";
-const anchorModules = "F:/AiTools/DSH/resources/app/dsh/node_modules";
+import { hostModulesRoot } from "./host-anchor.mjs";
+const anchorModules = hostModulesRoot();
 const needed = ["@deepseek-ai/schemastery", "@deepseek-ai/dsh-typert-protocol", "@deepseek-ai/cordis"];
 const nm = `${dir}/node_modules`;
 if (!exists(nm)) mkdirSync(nm, { recursive: true });

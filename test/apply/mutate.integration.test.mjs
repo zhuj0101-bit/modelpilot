@@ -14,15 +14,19 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { hostPackagesRoot } from "../../scripts/host-anchor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
+// The supplement tree is a scratch download of older host releases; it is not
+// part of the repository, so the 0.2.0/0.2.1 columns skip when it is absent.
 const supplement = join(root, "..", "modelpilot-tmp-npm", "extracted", "dsh-settings");
-const HOST = "F:/AiTools/DSH/resources/app/dsh/node_modules/@deepseek-ai";
+// The "live" column reads the RUNNING installation, wherever it is installed.
+const HOST = hostPackagesRoot();
 
 /** Locate one host version's dsh-settings bundle. */
 function settingsPath(version) {
-  if (version === "live") return `${HOST}/dsh-settings/lib/index.js`;
+  if (version === "live") return HOST === undefined ? undefined : join(HOST, "dsh-settings", "lib", "index.js");
   return join(supplement, version, "package", "lib", "index.js");
 }
 
@@ -71,7 +75,8 @@ function makeSection() {
 }
 
 for (const version of VERSIONS) {
-  const skip = !existsSync(settingsPath(version));
+  const path = settingsPath(version);
+  const skip = path === undefined || !existsSync(path);
 
   test(`[${version}] walker case matrix (verbatim host code)`, { skip }, async () => {
     const { applyPathOp, isVolatilePath } = await loadWalker(version);
