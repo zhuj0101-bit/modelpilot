@@ -9,6 +9,14 @@
 
 import * as React from "react";
 import { projectPiAi } from "../core/pi-ai-projection.js";
+import {
+  describeTemplate,
+  formToTemplate,
+  readDefaultTemplate,
+  removeDefaultTemplate,
+  templateToForm,
+  writeDefaultTemplate,
+} from "../core/default-template.js";
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
 import {
   allReasoningLevels,
@@ -124,6 +132,11 @@ const s = {
     padding: "3px 9px", fontSize: 11, borderRadius: 6, cursor: "pointer",
     border: "1px solid rgba(128,128,128,0.32)", background: "rgba(128,128,128,0.1)",
     color: "inherit", fontFamily: "inherit",
+  },
+  btnLink: {
+    padding: 0, marginLeft: 8, fontSize: 11, cursor: "pointer",
+    border: "none", background: "transparent", color: "inherit",
+    textDecoration: "underline", fontFamily: "inherit", opacity: 0.75,
   },
   levels: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 340px", minWidth: 280 },
   btnPrimary: {
@@ -262,6 +275,32 @@ function Workbench({ configForms }) {
   const [busy, setBusy] = React.useState(false);
   const [toast, setToast] = React.useState(null);
 
+  // localStorage 在隐私模式 / 被禁用时会抛异常；用一个惰性 getter 包住，
+  // 拿不到就当作没有存储，全部走「无模板」分支。
+  const storage = React.useMemo(() => {
+    try {
+      return typeof window !== "undefined" ? window.localStorage : undefined;
+    } catch {
+      return undefined;
+    }
+  }, []);
+
+  const [template, setTemplate] = React.useState(() => readDefaultTemplate(storage));
+
+  // 首次挂载：有模板就填进表单。只跑一次，用户之后的手动编辑不被覆盖。
+  const templateApplied = React.useRef(false);
+  React.useEffect(() => {
+    if (templateApplied.current) return;
+    templateApplied.current = true;
+    if (template === null) return;
+    const form = templateToForm(template);
+    setContextWindow(form.contextWindow);
+    setMaxTokens(form.maxTokens);
+    setInputText(form.inputText);
+    setInputImage(form.inputImage);
+    setReasoningLevels(form.reasoningLevels);
+  }, [template]);
+
   const reasoningGuard = reasoningLevelsGuard(reasoningLevels);
 
   React.useEffect(() => {
@@ -333,14 +372,17 @@ function Workbench({ configForms }) {
           :           { tone: "bad", text: "写入被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" },
       );
       if (ok) {
+        const form = templateToForm(template);
         displayNameTouched.current = false;
         setModelId("");
         setDisplayName("");
-        setContextWindow("");
-        setMaxTokens("");
+        setContextWindow(form.contextWindow);
+        setMaxTokens(form.maxTokens);
         setContextWindowError(false);
         setMaxTokensError(false);
-        setReasoningLevels(noReasoningLevels());
+        setInputText(form.inputText);
+        setInputImage(form.inputImage);
+        setReasoningLevels(form.reasoningLevels);
         setAckReplace(false);
       }
     } catch (error) {
@@ -507,20 +549,63 @@ function Workbench({ configForms }) {
         <button
           style={s.btn}
           onClick={() => {
+            const form = templateToForm(template);
             displayNameTouched.current = false;
             setModelId("");
             setDisplayName("");
-            setContextWindow("");
-            setMaxTokens("");
+            setContextWindow(form.contextWindow);
+            setMaxTokens(form.maxTokens);
             setContextWindowError(false);
             setMaxTokensError(false);
-            setReasoningLevels(noReasoningLevels());
+            setInputText(form.inputText);
+            setInputImage(form.inputImage);
+            setReasoningLevels(form.reasoningLevels);
             setAckReplace(false);
             setToast(null);
           }}
         >
           清空
         </button>
+        <button
+          type="button"
+          style={s.btn}
+          onClick={() => {
+            const next = formToTemplate({ contextWindow, maxTokens, inputText, inputImage, reasoningLevels });
+            if (next === null) {
+              setToast({ tone: "bad", text: "保存失败：模板至少需要一个输入模态（text 或 image）" });
+              return;
+            }
+            if (!writeDefaultTemplate(storage, next)) {
+              setToast({ tone: "bad", text: "保存失败：浏览器未开放本地存储" });
+              return;
+            }
+            setTemplate(readDefaultTemplate(storage));
+            setToast({ tone: "good", text: "已保存为默认模板" });
+          }}
+        >
+          存为默认模板
+        </button>
+      </div>
+
+      <div style={s.hintLine}>
+        {template === null ? (
+          <span style={s.fieldHint}>尚未设置默认模板</span>
+        ) : (
+          <>
+            <span style={s.fieldHint}>默认模板：{describeTemplate(template, humanizeTokenCount)}</span>
+            <button
+              type="button"
+              style={s.btnLink}
+              onClick={() => {
+                removeDefaultTemplate(storage);
+                setTemplate(null);
+                setToast({ tone: "good", text: "已清除默认模板" });
+              }}
+            >
+              清除
+            </button>
+          </>
+        )}
       </div>
 
       {toast ? <div style={toast.tone === "good" ? s.ok : s.err}>{toast.text}</div> : null}
