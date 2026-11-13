@@ -9,7 +9,15 @@
 
 import * as React from "react";
 import { projectPiAi } from "../core/pi-ai-projection.js";
-import { validatePiAiReasoningEfforts, PI_AI_LEVELS, MODALITIES } from "../core/domain.js";
+import { PI_AI_LEVELS, MODALITIES } from "../core/domain.js";
+import {
+  allReasoningLevels,
+  defaultReasoningLevels,
+  noReasoningLevels,
+  reasoningLevelsGuard,
+  reasoningPolicyFor,
+  toggleReasoningLevel,
+} from "./reasoning-levels.js";
 
 export const name = "model-assistant-client";
 export const inject = ["slots", "configForms"];
@@ -76,6 +84,12 @@ const s = {
     border: "1px solid rgba(128,128,128,0.36)", background: "rgba(128,128,128,0.12)",
     color: "inherit", fontFamily: "inherit",
   },
+  btnSmall: {
+    padding: "3px 9px", fontSize: 11, borderRadius: 6, cursor: "pointer",
+    border: "1px solid rgba(128,128,128,0.32)", background: "rgba(128,128,128,0.1)",
+    color: "inherit", fontFamily: "inherit",
+  },
+  levels: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 340px", minWidth: 280 },
   btnPrimary: {
     padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
     border: "1px solid rgba(90,140,230,0.55)", background: "rgba(90,140,230,0.22)",
@@ -115,10 +129,12 @@ function Workbench({ configForms }) {
   const [maxTokens, setMaxTokens] = React.useState("");
   const [inputText, setInputText] = React.useState(true);
   const [inputImage, setInputImage] = React.useState(false);
-  const [efforts, setEfforts] = React.useState(""); // "off,low,high"
+  const [reasoningLevels, setReasoningLevels] = React.useState(() => defaultReasoningLevels());
   const [ackReplace, setAckReplace] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [toast, setToast] = React.useState(null);
+
+  const reasoningGuard = reasoningLevelsGuard(reasoningLevels);
 
   React.useEffect(() => {
     if (routeId === "" && routes.length > 0) setRouteId(routes[0]);
@@ -132,10 +148,6 @@ function Workbench({ configForms }) {
 
   // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
   const draft = React.useMemo(() => {
-    const levels = efforts
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
     const d = { id: modelId.trim() };
     if (displayName.trim() !== "") d.name = displayName.trim();
     const cw = Number(contextWindow);
@@ -146,9 +158,10 @@ function Workbench({ configForms }) {
     if (inputText) input.push("text");
     if (inputImage) input.push("image");
     if (input.length > 0) d.input = input;
-    if (levels.length > 0) d.reasoning = { mode: "effort", levels };
+    const reasoning = reasoningPolicyFor(reasoningLevels);
+    if (reasoning !== undefined) d.reasoning = reasoning;
     return d;
-  }, [modelId, displayName, contextWindow, maxTokens, inputText, inputImage, efforts]);
+  }, [modelId, displayName, contextWindow, maxTokens, inputText, inputImage, reasoningLevels]);
 
   const projection = React.useMemo(() => {
     if (modelId.trim() === "") return undefined;
@@ -162,7 +175,11 @@ function Workbench({ configForms }) {
   const gate = projection?.warnings?.find((w) => w.code === "catalog-replacement");
   const blocked = Boolean(gate && !ackReplace);
   const hardStop = (projection?.unsupportedControls ?? []).length > 0;
-  const canApply = writable && !busy && modelId.trim() !== "" && projection && !blocked && !hardStop && projection.settingsOps.length > 0;
+  // 只勾 off 时组件上方已给出专门说明，避免同一原因再显示一遍引擎诊断。
+  const unsupported = (projection?.unsupportedControls ?? []).filter(
+    (u) => !(reasoningGuard !== null && u.reason === "efforts-only-off"),
+  );
+  const canApply = writable && !busy && reasoningGuard === null && modelId.trim() !== "" && projection && !blocked && !hardStop && projection.settingsOps.length > 0;
 
   async function apply() {
     if (!projection || projection.settingsOps.length === 0) return;
@@ -180,7 +197,7 @@ function Workbench({ configForms }) {
         setDisplayName("");
         setContextWindow("");
         setMaxTokens("");
-        setEfforts("");
+        setReasoningLevels(noReasoningLevels());
         setAckReplace(false);
       }
     } catch (error) {
@@ -234,9 +251,30 @@ function Workbench({ configForms }) {
         <Field label="输出上限 (maxTokens)">
           <input style={s.input} value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} placeholder="如 8192" inputMode="numeric" />
         </Field>
-        <Field label="推理档位（逗号分隔，留空则不写）">
-          <input style={s.input} value={efforts} onChange={(e) => setEfforts(e.target.value)} placeholder="off,low,high" />
-        </Field>
+        <div style={s.levels}>
+          <span style={s.label}>推理档位（多选；全不选则不写 reasoningEfforts）</span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {PI_AI_LEVELS.map((level) => (
+              <label key={level} style={{ ...s.chip, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={reasoningLevels.includes(level)}
+                  onChange={() => setReasoningLevels((current) => toggleReasoningLevel(current, level))}
+                />
+                {level}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <button type="button" style={s.btnSmall} onClick={() => setReasoningLevels(allReasoningLevels())}>全选</button>
+            <button type="button" style={s.btnSmall} onClick={() => setReasoningLevels(noReasoningLevels())}>全不选</button>
+            <button type="button" style={s.btnSmall} onClick={() => setReasoningLevels(defaultReasoningLevels())}>恢复默认</button>
+          </div>
+          {reasoningGuard ? <div style={s.err}>{reasoningGuard}</div> : null}
+          {reasoningLevels.length === 0 ? (
+            <span style={s.sub}>全不选：本次投影不写 reasoningEfforts，沿用目录能力事实。</span>
+          ) : null}
+        </div>
       </div>
 
       <div style={s.row}>
@@ -265,7 +303,7 @@ function Workbench({ configForms }) {
             </div>
           ))}
 
-          {(projection?.unsupportedControls ?? []).map((u, i) => (
+          {unsupported.map((u, i) => (
             <div key={`u${i}`} style={s.err}>
               不可写：<strong>{u.control}</strong> — {u.reason}
               {u.message ? `（${u.message}）` : ""}
@@ -303,7 +341,7 @@ function Workbench({ configForms }) {
             setDisplayName("");
             setContextWindow("");
             setMaxTokens("");
-            setEfforts("");
+            setReasoningLevels(noReasoningLevels());
             setAckReplace(false);
             setToast(null);
           }}
