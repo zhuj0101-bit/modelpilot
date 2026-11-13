@@ -1,12 +1,11 @@
-# ModelPilot (dsh-model-assistant) bundle patch.
+# ModelPilot（dsh-model-assistant）的打包补丁。
 #
-# Exactly one insert. The composition entry id doubles as the plugin's own
-# settings namespace (the settings service keys documents by entry.options.id),
-# so the id MUST stay "modelpilot" forever — renaming it is a namespace
-# migration, not a rename.
+# 有且仅有一条 insert。组合条目的 id 同时充当插件自己的设置命名空间
+# （设置服务按 entry.options.id 给文档建键），所以这个 id 必须永远保持
+# "modelpilot" —— 改名等于做一次命名空间迁移，而不是重命名。
 #
-# The Host half (lib/index.js) is mounted by this row; the Web client half
-# (lib/client.js) is injected through package.json's `dsh.client` declaration.
+# 宿主半边（lib/index.js）由这一行挂载；Web 客户端半边（lib/client.js）
+# 通过 package.json 的 `dsh.client` 声明注入。
 - insert:
     - id: modelpilot
       name: dsh-model-assistant

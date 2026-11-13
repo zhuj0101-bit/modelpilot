@@ -1,14 +1,14 @@
 # B1 — SDK 接入层设计（ModelPilot）
 
-日期：2026-11-10。文档性质：**设计章节**（纯设计，不含实现代码；文中 TS 片段均为类型/形状草案）。
-宿主兼容范围：**DSH 0.2.0-rc.2 与 0.2.1-rc.2**（锚点 = `@deepseek-ai/dsh` package.json version）。
+日期：2026-11-10。文档性质：**设计章节**（纯设计，不含实现代码；文中 TS 片段均为类型／形状草案）。
+宿主兼容范围：**DSH 0.2.0-rc.2 与 0.2.1-rc.2**（锚点 = `@deepseek-ai/dsh` 的 package.json 中的 `version`）。
 
 证据标签沿用 dsh-compat-audit 规则：`[已核对-源码]` / `[已执行-探针]` / `[推断]` / `[待验证]`。
-事实基线来源：`dsh-compat-audit/02-surface-diff.md`（下称 02-S1…S7）、`modelpilot/docs/01-gap-fill.md`（下称 U1…U6）。本设计撰写时对 `modelpilot-tmp-npm/extracted/<pkg>/<ver>/package/` 的关键文件做了二次复核，补充行号见文末附录 A；凡与审计结论一致处只引审计编号。
+事实基线来源：`dsh-compat-audit/02-surface-diff.md`（下称 02-S1…S7）、`modelpilot/docs/01-gap-fill.md`（下称 U1…U6）。撰写本设计时对 `modelpilot-tmp-npm/extracted/<pkg>/<ver>/package/` 下的关键文件做了二次复核，补充行号见文末附录 A；凡与审计结论一致处只引审计编号。
 
 ---
 
-## 1. host/client 双半结构与包形状
+## 1. 宿主／客户端双半结构与包形状
 
 ### 1.1 目录布局
 
@@ -33,15 +33,16 @@
 │   └── shared/               # 双半共用：wire 类型、错误码表、ModelKey/Profile/PathOp 形状
 └── test/
     └── probes/               # 审计四探针随 CI（walker / prepareCall 签名 / slots 载荷 / discovery 形状）[已核对-源码 99-§四.3]
+
 ```
 
 双半边界规则：
 
-- Host 半独占一切写副作用（settings mutate、缓存落盘、verify 请求）；Client 半只经 typed Remote（§2）与宿主既有的 `remote.settings / remote.llm` 透传读面交互。Client 消费端先例：settings-models 页面通过 `createModelsOperations(ctx)` 把 `ctx.remote.settings.mutate / ctx.remote.llm.discoverModels / ctx.remote.credentials.*` 绑成回调，错误按 `{code, message}` 分支消费 [已核对-源码 02-S4]。
-- core/shared 不得 import 任何 `@deepseek-ai/*` 运行时符号（类型除外）。
-- 版本探测与版本号字符串只出现在 `src/host/version-capabilities.ts`（v2-plan §13 修订 1）。
+- 宿主半独占全部写副作用（`settings` 的 `mutate`、缓存落盘、验证请求）；客户端半只经带类型的 `Remote`（§2）与宿主既有的 `remote.settings / remote.llm` 透传读面交互。客户端消费端先例：`settings-models` 页面通过 `createModelsOperations(ctx)` 把 `ctx.remote.settings.mutate / ctx.remote.llm.discoverModels / ctx.remote.credentials.*` 绑成回调，错误按 `{code, message}` 分支消费 [已核对-源码 02-S4]。
+- `core`／`shared` 不得 `import` 任何 `@deepseek-ai/*` 的运行时符号（类型除外）。
+- 版本探测与版本号字符串只允许出现在 `src/host/version-capabilities.ts`（v2-plan §13 修订 1）。
 
-### 1.2 package.json 完整形状
+### 1.2 package.json 的完整形状
 
 ```jsonc
 {
@@ -86,16 +87,17 @@
   },
   "engines": { "node": ">=18" }
 }
+
 ```
 
 形状依据与决策：
 
-- `dsh.bundle.patch` + `dsh.client.inject` 字段形态照抄官方包与本机双例：settings-models 的 `dsh.client.inject` 列三个前置包、api-gateway 带 `immediately: true`；dsh-purge-community 用 `dsh.bundle.patch` + 六项 client inject [已核对-源码 02-S4 / 本机包 package.json]。`inject` 具体清单是 B4 的输入，此处为 **[推断]**（前置最小集：slots 协议、settings 页、locale、api-remotes 的 remote 代理、connection）。
-- `exports` 四条为任务书定版：`.`（Host 入口）/ `./client`（Client 入口）/ `./typert`（host-face typert 工件，见 §2.6）/ `./package.json`。可选第五条 `./remote`（client-face `TYPERT_REMOTE` manifest，dsh-llm 先例：`exports["./remote"] → lib/typert.remote-client.js`）列为 **[待验证-P1]**（见 Open Questions OQ-1）。
-- `./typert` export 一旦存在，dsh-typert-loader 会自动扫描并以 `ctx.typert.register(manifest)` 注册 [已核对-源码 02-S7 + U3；loader 源码 `TYPERT_HOST_EXPORT = "./typert"`，`apply` 逐 Loader 条目解析→import→`validateTypertManifest`→注册，重复注册整批拒绝]。**P0 阶段可以不带该 export**（echo 走 SRC-mode，见 §2.1），strict manifest 路线 P1 再启用，两者共存不冲突（gateway 先查 strict descriptor，miss 才落 SRC fallback）[已核对-源码 api-gateway `resolveDescriptor`：先 `ctx.typert.local.get(endpoint)`，再 `resolveSrcDescriptor`]。
-- `peerDependencies` 版本域统一 `^0.2.0-rc.2 || ^0.2.1-rc.2`，React 跟宿主 18；`dependencies` 只放官方 schemastery（loader/settings-models 同款 `~3.18.4`）。不写无上限星号（v2-plan §13）。禁止依赖 0.2.1 独有导出（`dsh-typert-protocol/remote-info`、`ctx.typert.resources`、home-paths 的 agentsHome 系列）[已核对-源码 U3 / 02-S7]。
+- `dsh.bundle.patch` 与 `dsh.client.inject` 的字段形态照抄官方包与本机两个现例：`settings-models` 的 `dsh.client.inject` 列了三个前置包、`api-gateway` 带 `immediately: true`；`dsh-purge-community` 用 `dsh.bundle.patch` + 六项客户端注入 [已核对-源码 02-S4 / 本机包的 package.json]。`inject` 的具体清单是 B4 的输入，此处为 **[推断]**（前置最小集：插槽协议、设置页、语言包、`api-remotes` 的 `remote` 代理、连接）。
+- `exports` 的四条为任务书定版：`.`（宿主入口）/ `./client`（客户端入口）/ `./typert`（宿主面 `typert` 工件，见 §2.6）/ `./package.json`。可选的第五条 `./remote`（客户端面 `TYPERT_REMOTE` 清单，`dsh-llm` 有先例：`exports["./remote"] → lib/typert.remote-client.js`）列为 **[待验证-P1]**（见开放问题 OQ-1）。
+- `./typert` 导出一旦存在，`dsh-typert-loader` 会自动扫描并以 `ctx.typert.register(manifest)` 注册 [已核对-源码 02-S7 + U3；加载器源码里 `TYPERT_HOST_EXPORT = "./typert"`，`apply` 逐条解析加载器条目→`import`→`validateTypertManifest`→注册，重复注册整批拒绝]。**P0 阶段可以不带该导出**（`echo` 走源码模式，见 §2.1），严格清单路线到 P1 再启用，两者共存不冲突（网关先查严格描述符，未命中才落源码回退）[已核对-源码 `api-gateway` 的 `resolveDescriptor`：先 `ctx.typert.local.get(endpoint)`，再 `resolveSrcDescriptor`]。
+- `peerDependencies` 的版本域统一为 `^0.2.0-rc.2 || ^0.2.1-rc.2`，React 跟随宿主的 18；`dependencies` 只放官方 `schemastery`（与加载器／`settings-models` 同款 `~3.18.4`）。不写无上限星号（v2-plan §13）。禁止依赖 0.2.1 独有的导出（`dsh-typert-protocol/remote-info`、`ctx.typert.resources`、`home-paths` 的 agentsHome 系列）[已核对-源码 U3 / 02-S7]。
 
-### 1.3 cordis.patch.yml 完整内容
+### 1.3 cordis.patch.yml 的完整内容
 
 ```yaml
 # ModelPilot — bundle patch
@@ -106,15 +108,16 @@
     - id: modelpilot
       name: "@YOUR_SCOPE/dsh-model-assistant"
       config: {}
+
 ```
 
-- insert 行 `id/name` 形态对照 dsh-purge 与 purge-panel 的 bundle patch（`- id: <entryId>` / `name: <package 或 package/subpath>` / `config:`）[已核对-源码：本机 dsh-purge cordis.patch.yml、purge-panel cordis.patch.yml]。
-- **composition 条目 id 决定 settings ns** [已核对-源码：settings `describe()` 输出 `ns: entry.options.id`；任务书基线]。`name` 指向包名；若未来拆子入口（如 workbench 服务），命名走 `<pkg>/<subpath>` 形态。
-- `config: {}`：自有 ns 的运行开关全部放 §1.4 的 Config schema，经自有 UI 写入；bundle 层不预置业务默认值。
+- `insert` 行的 `id`／`name` 形态对照 `dsh-purge` 与 `purge-panel` 的打包补丁（`- id: <entryId>` / `name: <package 或 package/subpath>` / `config:`）[已核对-源码：本机 `dsh-purge` 的 cordis.patch.yml、`purge-panel` 的 cordis.patch.yml]。
+- **组合条目的 id 决定 `settings` 命名空间** [已核对-源码：`settings` 的 `describe()` 输出 `ns: entry.options.id`；任务书基线]。`name` 指向包名；若未来拆子入口（例如工作台服务），命名走 `<pkg>/<subpath>` 形态。
+- `config: {}`：自有命名空间的运行开关全部放在 §1.4 的 `Config` `schema` 里，经自有界面写入；打包层不预置业务默认值。
 
-### 1.4 Config 导出（自有 namespace = modelpilot）
+### 1.4 `Config` 导出（自有命名空间 = modelpilot）
 
-出口形状（照范例插件 dsh-plugin-model-capability：`export const name / inject / apply` + `export const Config`）[已核对-范例插件：任务书基线]：
+出口形状（照范例插件 `dsh-plugin-model-capability`：`export const name / inject / apply` + `export const Config`）[已核对-范例插件：任务书基线]：
 
 ```ts
 export const name = "modelpilot";
@@ -158,19 +161,20 @@ export const Config = z.object({
     id: z.string(), ts: z.string(), kind: z.string(), summary: z.string(),
   })).default([]).volatile(),
 });
+
 ```
 
 决策与依据：
 
-- 四条数据线全部标 `.volatile()`：settings 写路径要求路径 volatile（`write()` 内 `isVolatilePath` 校验，非 volatile 直接抛 `Config field ... is not volatile`）[已核对-源码 02-S1 + settings 源码 write L507]；`Config = z.object({ providers: z.dict(profile).default({}).volatile() })` 是 pi-ai 先例，volatile 自节点向下级联 [已核对-源码 02-S3，pi-ai Config 两版逐字同构]。
-- **自动表单关闭**：`apply` 内执行 `ctx.settings.configure({ auto: false }, ctx.fiber)`，本 ns 不进原生设置表单，UI 全部走自有 slot/工作台（B4）[已核对-范例插件：任务书基线 dsh-plugin-model-capability 用法]。
-- schema 变更语义：`describe()` 的 revision 摘要含 `entry.fiber.uid + schema.toJSON() + config`，schema 升级自身会推高 revision 并触发 `settings/document-updated` [已核对-源码 settings describe L421-435]——即 schema 迁移天然使并发写失败，配合 §3.3 重试即可，无需额外迁移锁。
+- 四条数据线全部标 `.volatile()`：`settings` 的写路径要求路径易变（`write()` 内 `isVolatilePath` 校验，非易变直接抛 `Config field ... is not volatile`）[已核对-源码 02-S1 + `settings` 源码 `write` L507]；`Config = z.object({ providers: z.dict(profile).default({}).volatile() })` 是 `pi-ai` 的先例，易变标记自该节点向下级联 [已核对-源码 02-S3，`pi-ai` 的 `Config` 两版逐字同构]。
+- **关闭自动表单**：在 `apply` 内执行 `ctx.settings.configure({ auto: false }, ctx.fiber)`，本命名空间不进原生设置表单，界面全部走自有插槽／工作台（B4）[已核对-范例插件：任务书基线 `dsh-plugin-model-capability` 用法]。
+- `schema` 变更语义：`describe()` 的修订号摘要含 `entry.fiber.uid + schema.toJSON() + config`，`schema` 升级本身就会推高修订号并触发 `settings/document-updated` [已核对-源码 `settings` describe L421-435]——也就是说，`schema` 迁移天然会让并发写失败，配合 §3.3 的重试即可，无需额外的迁移锁。
 
 ---
 
-## 2. TypertRemoteService 注册设计（namespace = modelAssistant）
+## 2. TypertRemoteService 注册设计（命名空间 = modelAssistant）
 
-### 2.1 Host 侧 Service 形态
+### 2.1 宿主侧的服务形态
 
 ```ts
 import { TypertRemoteService, Remote, RemoteError } from "@deepseek-ai/dsh-typert-protocol";
@@ -179,82 +183,84 @@ export class ModelAssistantService extends TypertRemoteService {
   constructor(ctx) { super(ctx, "modelAssistant"); }   // serviceKey 即默认 wire namespace；可 { namespace } 覆盖
   // 方法表见 §2.2
 }
+
 ```
 
 注册链与跨版本证据：
 
-- `TypertRemoteService` 构造 `super(ctx, serviceKey, options)`，`this.typertRemote = bindTypertRemote(this, this.name, options)`，`namespace = options.namespace ?? serviceKey` [已核对-源码 02-S7 / U3；typert-protocol 0.2.0 L146-172 与 0.2.1 对应区块同构]。
-- api-gateway 按 `<namespace>/<method>` 路由：`endpointOf(namespace, method)`，且对每个 service 原型扫描 `typertRemote` 绑定 + `remoteMethods(original)` 收集 claims（`exportName ?? method`）[已核对-源码 api-gateway 0.2.0 `collectSrcClaims` L706-718、`resolveSrcDescriptor` L1004 起；U3 判定两版校验路径不变]。
-- 因此 **SRC-mode（装饰器标记 + Service 绑定，无生成 manifest）即可端到端路由**，这是 P0-02 echo 连通探针的承载方式；strict generated-manifest 路线（§2.6）为 P1 增强，两版公共面一致，无需版本特判 [已核对-源码 U3]。
-- `ctx.invocation` 在 Service 子树内可读（调用期派生 ctx 遮蔽根访问器），用于逐调用审计 [已核对-源码 typert-protocol `provideInvocationAccessor`]。
-- 注册时机：`apply()` 内 `ctx.provide("modelAssistant", new ModelAssistantService(ctx))`（Cordis Service 常规注册）；随 fiber 撤销自动回收。
+- `TypertRemoteService` 的构造是 `super(ctx, serviceKey, options)`，`this.typertRemote = bindTypertRemote(this, this.name, options)`，`namespace = options.namespace ?? serviceKey` [已核对-源码 02-S7 / U3；`typert-protocol` 0.2.0 L146-172 与 0.2.1 对应区块同构]。
+- `api-gateway` 按 `<namespace>/<method>` 路由：`endpointOf(namespace, method)`，并对每个服务原型扫描 `typertRemote` 绑定 + 用 `remoteMethods(original)` 收集 claims（`exportName ?? method`）[已核对-源码 `api-gateway` 0.2.0 的 `collectSrcClaims` L706-718、`resolveSrcDescriptor` 自 L1004 起；U3 判定两版校验路径不变]。
+- 因此**源码模式（装饰器标记 + 服务绑定，无需生成清单）即可端到端路由**，这正是 P0-02 `echo` 连通探针的承载方式；严格的生成清单路线（§2.6）作为 P1 增强，两版公共面一致，无需版本特判 [已核对-源码 U3]。
+- 在服务子树内可读 `ctx.invocation`（调用期派生的 ctx 会遮蔽根访问器），用于逐调用审计 [已核对-源码 `typert-protocol` 的 `provideInvocationAccessor`]。
+- 注册时机：在 `apply()` 内 `ctx.provide("modelAssistant", new ModelAssistantService(ctx))`（Cordis 服务的常规注册）；随 `fiber` 撤销自动回收。
 
 ### 2.2 方法表（P0 → V0.3）
 
-| 方法 | 输入 wire 形状 | 输出 | 里程碑 | 备注 |
+| 方法 | 输入线上形状 | 输出 | 里程碑 | 备注 |
 | --- | --- | --- | --- | --- |
-| `echo` | `{nonce: string, ts?: number}` | `{nonce, hostVersion, caps: {supportsConfigure, nativeReasoningEditing}}` | **P0-02** | 连通 + 能力握手一体；Client 拿 caps 初始化 VersionCapabilities 缓存 |
-| `listTargets` | `{}` | 可配置路由/driver/协议/允许字段 + caps | V0.1 | 数据源 = `ctx.remote` 同侧的 `llm.listConfigurableProviders()`（Host 内直接调 llm 服务） |
-| `resolve` | `ModelKey + draftGeneration` | facts/字段候选/匹配轨迹/catalog 版本 | V0.1 | 查询零写入（B2/B3 承接） |
-| `saveProfile` / `listProfiles` | 版本化档案 | 自有 ns 档案 + revision | V0.1 | 写自有 ns，走 §3 SettingsWriter |
-| `prepareApply` | `Profile + selectedFields + revisions` | `planId`、patch diff、unsupported、分项计划 | V0.1 | plan 绑定 profile 版本（幂等键） |
-| `commitApply` | `planId + 确认` | 分项结果 + 新 revision | V0.1 | 写目标 ns（`llm-pi-ai` 等），走 §3 |
-| `previewWire` | `Profile + 请求上下文摘要` | logical / driver-confirmed 预览 | V0.2 | 只投影不请求 |
-| `verifySelected` | `route + 已选配置 + 显式预算` | accepted/unsupported/unknown 证据 | V0.3 | 走 §4 双轨 |
+| `echo` | `{nonce: string, ts?: number}` | `{nonce, hostVersion, caps: {supportsConfigure, nativeReasoningEditing}}` | **P0-02** | 连通与能力握手一体；客户端据此初始化版本能力缓存 |
+| `listTargets` | `{}` | 可配置的路由／驱动／协议／允许字段 + 能力集 | V0.1 | 数据源 = `ctx.remote` 同侧的 `llm.listConfigurableProviders()`（宿主内直接调 `llm` 服务） |
+| `resolve` | `ModelKey + draftGeneration` | 事实／字段候选／匹配轨迹／目录版本 | V0.1 | 查询零写入（B2／B3 承接） |
+| `saveProfile` / `listProfiles` | 版本化档案 | 自有命名空间档案 + 修订号 | V0.1 | 写自有命名空间，走 §3 的设置写入器 |
+| `prepareApply` | 档案 + 已选字段 + 修订号 | `planId`、补丁差异、未支持项、分项计划 | V0.1 | 计划绑定档案版本（幂等键） |
+| `commitApply` | `planId` + 确认 | 分项结果 + 新修订号 | V0.1 | 写目标命名空间（`llm-pi-ai` 等），走 §3 |
+| `previewWire` | 档案 + 请求上下文摘要 | 逻辑级／驱动确认级预览 | V0.2 | 只投影不请求 |
+| `verifySelected` | 路由 + 已选配置 + 显式预算 | 接受／未支持／未知三类证据 | V0.3 | 走 §4 双轨 |
 
-- 方法表沿用 v2-plan §9 的七接口 + echo；里程碑对齐 v2-plan §14。
-- 所有方法参数必须是 lossless JSON（wire 载荷过 `isRemoteJsonValue` 门）[已核对-源码 typert-protocol json-value 区]；`AbortSignal` 只能以尾参 signal 形式出现（见 §2.3 约束）。
+- 方法表沿用 v2-plan §9 的七个接口 + `echo`；里程碑对齐 v2-plan §14。
+- 所有方法参数必须是无损 JSON（线上载荷要过 `isRemoteJsonValue` 闸）[已核对-源码 `typert-protocol` 的 json-value 区]；`AbortSignal` 只能以尾参 `signal` 的形式出现（见 §2.3 的约束）。
 
-### 2.3 @Remote 装饰器形态与约束
+### 2.3 `@Remote` 装饰器的形态与约束
 
 ```ts
 @Remote("echo")
 async echo(payload: { nonce: string; ts?: number }, signal?: AbortSignal) { ... }
+
 ```
 
-约束（全部有源码锚）：
+约束（每条都有源码锚）：
 
-- `@Remote(name)` 要求 **public instance method + 字符串名**；static/private/无名字面量直接 TypeError [已核对-源码 typert-protocol `addMarkerInitializer`：`context.private || context.static || typeof context.name !== "string"` 抛错]。装饰器走标准 decorator `context.addInitializer` 通道，把标记写进类原型（descriptor version 1），重复标记同 method 幂等、冲突标记抛错 [已核对-源码 `mark()` L248-268]。
-- `@Remote({mode:"stream"})` 是流式变体（options 必须恰好一项）；B1 首版方法表**全部 unary**，stream 载荷不进首版（verify 请求在内部消费 chunk，不外露流）。
-- signal 注入：strict descriptor 由 manifest `cancellation: {parameter:"signal"}` 声明；SRC-mode 下 gateway 对尾参 signal 的注入行为**未逐行核验** [待验证-OQ2]。设计对策：每个方法容忍 signal 缺席（`signal?: AbortSignal`），并把取消语义定义为"尽力而为 + 结果幂等"。
-- 禁止 import 任何生成 typert 文件的内部结构（0.2.0 数组式契约 vs 0.2.1 `createTypertRemoteInfo` registry，形态不同）[已核对-源码 02-S7；U3]。只用 `Remote / RemoteError / RemoteScope / TypertRemoteService / remoteMethods` 公共面。
+- `@Remote(name)` 要求**公共实例方法 + 字符串名**；`static`／`private`／无名字面量直接 `TypeError` [已核对-源码 `typert-protocol` 的 `addMarkerInitializer`：`context.private || context.static || typeof context.name !== "string"` 即抛错]。装饰器走标准装饰器的 `context.addInitializer` 通道，把标记写进类原型（描述符版本 1），同一方法重复标记幂等、标记冲突则抛错 [已核对-源码 `mark()` L248-268]。
+- `@Remote({mode:"stream"})` 是流式变体（选项必须恰好一项）；B1 首版方法表**全部为一元调用**，流式载荷不进首版（验证请求在内部消费分片，不外露流）。
+- `signal` 注入：严格描述符由清单的 `cancellation: {parameter:"signal"}` 声明；源码模式下网关对尾参 `signal` 的注入行为**未逐行核验** [待验证-OQ2]。设计对策：每个方法都容忍 `signal` 缺席（`signal?: AbortSignal`），并把取消语义定义为"尽力而为 + 结果幂等"。
+- 禁止 `import` 任何生成式 `typert` 文件的内部结构（0.2.0 是数组式契约，0.2.1 是 `createTypertRemoteInfo` 注册表，形态不同）[已核对-源码 02-S7；U3]。只用 `Remote / RemoteError / RemoteScope / TypertRemoteService / remoteMethods` 这一公共面。
 
-### 2.4 Client 侧调用
+### 2.4 客户端侧调用
 
-- 首选路径：`ctx.remote.modelAssistant.echo({ nonce })`——Client 半与 settings-models 消费 `ctx.remote.settings / ctx.remote.llm / ctx.remote.session` 同构（api-remotes 注入的 remote 代理按 namespace 取 stub）[已核对-源码 02-S4；settings-models client.js `createModelsOperations` L2781 起]。
-- 返回值分支遵循既有 `RemoteResult` 习惯：`response.ok ? response.value : response.error`，error 为 `{code, message}`（Client face 重建 RemoteError 实例，`throw result.error` 保持 throw 语义）[已核对-源码 typert-protocol remote-error 注释；settings-models `code === "settings/conflict"` 分支]。
-- **第三方 namespace 的 client-face stub 是否需要 client-side `TYPERT_REMOTE` manifest 注册**：P0-02 echo 探针实机判定 [待验证-OQ1]。降级路径（若需 manifest）：补 `./remote` 导出（dsh-llm 形态的手写 `TYPERT_REMOTE`）或经 api-remotes 的 forwarded remote-events 通道 [推断-U3/02-S7：api-remotes 0.2.1 已透传 entry.resources，但其依赖面不进 B1]。
+- 首选路径：`ctx.remote.modelAssistant.echo({ nonce })`——客户端半与 `settings-models` 消费 `ctx.remote.settings / ctx.remote.llm / ctx.remote.session` 的方式同构（`api-remotes` 注入的 `remote` 代理按命名空间取桩）[已核对-源码 02-S4；`settings-models` 的 client.js `createModelsOperations` 自 L2781 起]。
+- 返回值分支遵循既有 `RemoteResult` 习惯：`response.ok ? response.value : response.error`，`error` 为 `{code, message}`（客户端面重建 `RemoteError` 实例，`throw result.error` 保持抛出语义）[已核对-源码 `typert-protocol` 的 `remote-error` 注释；`settings-models` 的 `code === "settings/conflict"` 分支]。
+- **第三方命名空间的客户端面桩是否必须注册客户端侧 `TYPERT_REMOTE` 清单**：由 P0-02 的 `echo` 探针实机判定 [待验证-OQ1]。降级路径（若确实需要清单）：补 `./remote` 导出（`dsh-llm` 形态的手写 `TYPERT_REMOTE`）或经 `api-remotes` 的转发式 `remote` 事件通道 [推断-U3/02-S7：`api-remotes` 0.2.1 已透传 entry.resources，但它的依赖面不进 B1]。
 
-### 2.5 错误映射（RemoteError code 约定）
+### 2.5 错误映射（RemoteError 错误码约定）
 
-`RemoteError(code, message, details)`：判别**只按 code、永远不用 instanceof**（跨 realm/bundle 结构标记 `isDSHRemoteError` + `remoteErrorOf()` 仅机制内部使用）[已核对-源码 typert-protocol remote-error 区]。
+`RemoteError(code, message, details)`：判别**只按 code、永远不用 instanceof**（跨 realm／打包产物的结构标记 `isDSHRemoteError` + `remoteErrorOf()` 仅供机制内部使用）[已核对-源码 `typert-protocol` 的 `remote-error` 区]。
 
-| 层 | code | 来源/映射 |
+| 层 | 错误码 | 来源／映射 |
 | --- | --- | --- |
-| 网关 | `gateway/service-unavailable`、`gateway/method-unavailable`、`gateway/definition-unavailable`、`gateway/signature-invalid`、`gateway/cancelled`、`gateway/protocol`、`gateway/uplink-overflow` | gateway 原样透传，插件不改写 [已核对-源码 api-gateway L435-439/L730/L968/L988/L1001/L1292] |
-| 目标 settings | `settings/conflict` | 宿主 `SettingsConflictError(code="SETTINGS_CONFLICT")` 经 wire 的既有映射先例 [已核对-源码 02-S1 + settings-models L2802] |
-| 插件业务 | `modelAssistant/apply-conflict` | 包裹 SETTINGS_CONFLICT：`details = {ns, expected, actual, attempts}`（§3.3 两次冲突后） |
-| 插件业务 | `modelAssistant/route-unavailable` | llm `LlmError("NO_ADAPTER")` 映射 |
-| 插件业务 | `modelAssistant/unsupported-effort` | llm `LlmError("UNSUPPORTED_REASONING_EFFORT")` 映射，details 带 provider/model/effort |
-| 插件业务 | `modelAssistant/invalid-plan` | planId 不存在 / 与 profile 版本不匹配 / desiredProfileVersion 过期 |
-| 插件业务 | `modelAssistant/field-not-writable` | 白名单外字段（§3.2）或 schema 非 volatile 拒绝 |
-| 插件业务 | `modelAssistant/verify-failed` | §4 transport 失败且不可归类时 |
+| 网关 | `gateway/service-unavailable`、`gateway/method-unavailable`、`gateway/definition-unavailable`、`gateway/signature-invalid`、`gateway/cancelled`、`gateway/protocol`、`gateway/uplink-overflow` | 网关原样透传，插件不改写 [已核对-源码 `api-gateway` L435-439/L730/L968/L988/L1001/L1292] |
+| 目标 `settings` | `settings/conflict` | 宿主 `SettingsConflictError(code="SETTINGS_CONFLICT")` 经线上层的既有映射先例 [已核对-源码 02-S1 + `settings-models` L2802] |
+| 插件业务 | `modelAssistant/apply-conflict` | 包裹 `SETTINGS_CONFLICT`：`details = {ns, expected, actual, attempts}`（§3.3 的两次冲突之后） |
+| 插件业务 | `modelAssistant/route-unavailable` | `llm` `LlmError("NO_ADAPTER")` 的映射 |
+| 插件业务 | `modelAssistant/unsupported-effort` | `llm` `LlmError("UNSUPPORTED_REASONING_EFFORT")` 的映射，`details` 带提供方／model／effort |
+| 插件业务 | `modelAssistant/invalid-plan` | `planId` 不存在／与档案版本不匹配／`desiredProfileVersion` 过期 |
+| 插件业务 | `modelAssistant/field-not-writable` | 白名单外字段（§3.2）或 `schema` 非易变而拒绝 |
+| 插件业务 | `modelAssistant/verify-failed` | §4 的传输失败且无法归类时 |
 
-- `details` 必须是 lossless JSON（不带 Error/Signal/函数）。
-- 宿主内部异常一律包成上表业务码再抛；裸 `TypeError`（如 `Config array index ... out of range`）在 §3.1 内部分类消化，不出插件边界。
+- `details` 必须是无损 JSON（不带 Error／Signal／函数）。
+- 宿主内部异常一律包成上表的业务码再抛；裸 `TypeError`（如 `Config array index ... out of range`）在 §3.1 内部分类消化，不出插件边界。
 
-### 2.6 ./typert manifest（strict 路线，P1）
+### 2.6 ./typert 清单（严格路线，P1）
 
-- manifest 形状按 `validateTypertManifest` 校验面手写或编译器产出：`{package: 本包名, face: "host", schemas: [{name, create()}], model, invocations: [...]}`；`manifest.package` 必须等于导出它的包名、face 必须 `"host"`，否则 loader 拒绝 [已核对-源码 loader `validateTypertManifest` L77-117]。
-- loader 以 `ctx.typert.register(manifest)` 原子注册（package-face/schema key/invocation id/endpoint 任一重复 → 整批拒绝），按 fiber 撤销 [已核对-源码 registry `register()` L398-418：ctx.effect 原子 commit/withdraw；U3]。
-- 手工兜底路径：`apply()` 内 `ctx.typert.register(contribution)`（先 `validateTypertManifest` 自检再交注册）——loader 与手工互斥使用，同一包不允许双注册（第二次触发 package-face 重复拒绝）[已核对-源码 U3 + registry L482]。
-- invocations 条目需含 `service: "modelAssistant"`、`namespace: "modelAssistant"`、每参数 `{name, wire, source:"json", codec:{mode:"strict", create}}`、`result` 同构、`cancellation: {parameter:"signal"}`（形状照 dsh-llm `./typert` 工件逐字段）[已核对-源码 dsh-llm typert.host.js L41-108]。
+- 清单形状按 `validateTypertManifest` 的校验面手写，或由编译器产出：`{package: 本包名, face: "host", schemas: [{name, create()}], model, invocations: [...]}`；`manifest.package` 必须等于导出它的包名、`face` 必须为 `"host"`，否则加载器拒绝 [已核对-源码加载器的 `validateTypertManifest` L77-117]。
+- 加载器以 `ctx.typert.register(manifest)` 原子注册（包-面／`schema` 键／调用 id／endpoint 任一重复 → 整批拒绝），并按 `fiber` 撤销 [已核对-源码注册表的 `register()` L398-418：`ctx.effect` 原子提交／撤回；U3]。
+- 手工兜底路径：在 `apply()` 内 `ctx.typert.register(contribution)`（先 `validateTypertManifest` 自检再交注册）——加载器与手工方式互斥，同一包不允许双注册（第二次会因包-面重复被拒）[已核对-源码 U3 + 注册表 L482]。
+- 调用项条目需含 `service: "modelAssistant"`、`namespace: "modelAssistant"`、每个参数 `{name, wire, source:"json", codec:{mode:"strict", create}}`、同构的 `result`、`cancellation: {parameter:"signal"}`（形状照 `dsh-llm` 的 `./typert` 工件逐字段）[已核对-源码 `dsh-llm` 的 `typert`.host.js L41-108]。
 
 ---
 
-## 3. settings mutate 封装（SettingsWriter）
+## 3. `settings` `mutate` 封装（SettingsWriter）
 
-事实基线（本节全部承重）：`mutate(ns, ops, expectedRevision)`；数组下标必须是字符串数字 `String(i)`（`/^(0|[1-9][0-9]*)$/`）；set 深字段 / unset 删行（splice）或删键（回落 schema default/继承）/ 下标==length 且 set 且 rest 空 → 追加整行；越界 TypeError；volatile 自 `providers` 节点级联（pi-ai Config volatile）→ 白名单路径全部合法；冲突抛 `SettingsConflictError`（code=`SETTINGS_CONFLICT`，携带 expected/actual）[已核对-源码 02-S1 + 探针 probe-walker 10/10 + settings L163-216/L488-499/L501-537]。
+事实基线（本节全部承重）：`mutate(ns, ops, expectedRevision)`；数组下标必须是字符串数字 `String(i)`（`/^(0|[1-9][0-9]*)$/`）；`set` 写深字段／`unset` 删行（`splice`）或删键（回落 `schema` 默认／继承）/ 下标 `== length` 且为 `set` 且其余为空 → 追加整行；越界抛 `TypeError`；易变标记自 `providers` 节点级联（`pi-ai` 的 `Config` 易变）→ 白名单路径全部合法；冲突抛 `SettingsConflictError`（`code=SETTINGS_CONFLICT`，携带 expected／actual）[已核对-源码 02-S1 + 探针 probe-walker 10/10 + `settings` L163-216/L488-499/L501-537]。
 
 ### 3.1 类型与读面
 
@@ -268,24 +274,25 @@ class SettingsWriter {
 }
 type PathOp = { op: "set"; path: string[]; value: unknown } | { op: "unset"; path: string[] };
 // path 一律字符串段：["providers", providerId, "models", String(i), field] —— String(i) 是硬约束
+
 ```
 
-- `read` 复用宿主 `describe()`（同一次进程内 revision 单调）；**不做 redact**（Host 侧调用，凭据引用 `apiKeyEnv` 本就在白名单外，永不读写）[已核对-源码 02-S4 原生 pathOps 同口径]。
+- `read` 复用宿主的 `describe()`（同一进程内修订号单调）；**不做脱敏**（宿主侧调用，凭据引用 `apiKeyEnv` 本就在白名单外，永不读写）[已核对-源码 02-S4 原生 pathOps 同口径]。
 
-### 3.2 op 组装模板（三类）
+### 3.2 操作组装模板（三类）
 
-写路径正典：`providers.<id>.models.<String(i)>.<field>`。白名单字段 = pi-ai `modelFields` 两版同集：`name / contextWindow / maxTokens / input / reasoningEfforts / compat`（+ `id` 仅追加整行时）[已核对-源码 02-S3]。
+写路径正典：`providers.<id>.models.<String(i)>.<field>`。白名单字段 = `pi-ai` 的 `modelFields`（两版同集）：`name / contextWindow / maxTokens / input / reasoningEfforts / compat`（+ `id`，仅追加整行时需要）[已核对-源码 02-S3]。
 
-| 模板 | op 形状 | 语义 |
+| 模板 | 操作形状 | 语义 |
 | --- | --- | --- |
-| `appendModelRow(providerId, row)` | `{op:"set", path:["providers",providerId,"models",String(len)], value:row}`，`len` 取自**写入时刻**快照的 `models.length` | 下标==length 追加整行 [已核对-源码 02-S1 用例 3] |
-| `setModelField(providerId, i, field, value)` | `{op:"set", path:["providers",providerId,"models",String(i),field], value}` | set 深字段 [用例 1] |
-| `unsetModelField(providerId, i, field)` | `{op:"unset", path:["providers",providerId,"models",String(i),field]}` | 删键 → 回落 schema default / 继承（pi-ai `input=[]`=`继续继承`、`reasoningEfforts=false`=`非推理`语义因此不适用 unset 之外的清空手段）[用例 2 + v2-plan §4.2] |
-| `unsetModelRow(providerId, i)` | `{op:"unset", path:["providers",providerId,"models",String(i)]}` | 整行 splice [用例 4] |
+| `appendModelRow(providerId, row)` | `{op:"set", path:["providers",providerId,"models",String(len)], value:row}`，`len` 取自**写入时刻**快照的 `models.length` | 下标 == length 追加整行 [已核对-源码 02-S1 用例 3] |
+| `setModelField(providerId, i, field, value)` | `{op:"set", path:["providers",providerId,"models",String(i),field], value}` | 写深字段 [用例 1] |
+| `unsetModelField(providerId, i, field)` | `{op:"unset", path:["providers",providerId,"models",String(i),field]}` | 删键 → 回落 `schema` 默认／继承（`pi-ai` 的 `input=[]` 表示"继续继承"、`reasoningEfforts=false` 表示"非推理"，这类语义因此只能靠删键清空）[用例 2 + v2-plan §4.2] |
+| `unsetModelRow(providerId, i)` | `{op:"unset", path:["providers",providerId,"models",String(i)]}` | 整行 `splice` [用例 4] |
 
-- `i` 的定位规则：**按模型 id 在快照 `models` 数组内定位下标，绝不缓存旧下标跨写入复用**；一次 plan 内多个 op 共享同一定位结果并在 plan 描述中记录 `(modelId → i)` 映射，冲突重试时全量重定位。
-- 路由级字段（如 deepseek 的 `reasoningEffort` 路由枚举）投影规则属 B3/B6；SettingsWriter 只提供同构的 `setRouteField` 扩展点，不内置字段知识。
-- 禁止：redacted 整份 namespace 替换（不用 update/replace）、`modelOverrides` 与显式 `models` 混写（两版 `resolveRouteModels` 互斥）[已核对-源码 02-S3；v2-plan §6.1.4/6.1.5]。
+- `i` 的定位规则：**按模型 id 在快照的 `models` 数组内定位下标，绝不缓存旧下标跨写入复用**；一次计划内多个操作共享同一定位结果，并在计划描述中记录 `(modelId → i)` 映射，冲突重试时全量重定位。
+- 路由级字段（例如 deepseek 的 `reasoningEffort` 路由枚举）的投影规则属 B3／B6；设置写入器只提供同构的 `setRouteField` 扩展点，不内置字段知识。
+- 禁止：整份命名空间脱敏替换（不用 update／replace）、`modelOverrides` 与显式 `models` 混写（两版 `resolveRouteModels` 互斥）[已核对-源码 02-S3；v2-plan §6.1.4/6.1.5]。
 
 ### 3.3 expectedRevision 围栏与 SETTINGS_CONFLICT 重试
 
@@ -304,30 +311,31 @@ apply(ns, plan):
   5. catch TypeError("Config array index ... out of range") → {kind:"row-missing"}：目标行已被并发删除；
      追加类 plan 允许自动转"重读后追加"一次（走第 4 步同路径）；编辑类不自动转，交用户
   6. catch "No configurable plugin entry <ns>" → {kind:"ns-missing"}；"not volatile" → 逐条记为缺陷（白名单/非 volatile 违规），绝不静默丢 op
+
 ```
 
-- 重试语义对齐 v2-plan §6.1.3（重读、按 ID 重定位、touched 重 diff、**有限**重试）与 v2-plan §10（首版不做更多自动重试，后续失败重读由用户触发）：本设计的"重试一次"即 §6.1 的"有限重试"上限；再往上的重试是 UI 动作，不是 writer 行为。
-- revision 围栏由宿主保证：`write()` 在 edit 闭包内重新 `describe()` 并比对 `descriptor.revision !== expected` 才放行 [已核对-源码 settings write L508-511]——writer 侧不需要自己实现 CAS，只需要保证 expectedRevision 取自同一次 read。
+- 重试语义对齐 v2-plan §6.1.3（重读、按 ID 重定位、touched 重算差异、**有限**重试）与 v2-plan §10（首版不做更多自动重试，后续失败重读由用户触发）：本设计的"重试一次"即 §6.1 的"有限重试"上限；再往上的重试是界面动作，不是写入器行为。
+- 修订号围栏由宿主保证：`write()` 在编辑闭包内重新 `describe()` 并比对 `descriptor.revision !== expected` 才放行 [已核对-源码 `settings` `write` L508-511]——写入器侧不需要自己实现 CAS，只需保证 `expectedRevision` 取自同一次 `read`。
 
 ### 3.4 写链串行（单队列）
 
-- 每 ns 一条 FIFO promise 链：`apply()` 的第 2–4 步整体入队，前驱 settle 才开始后继的 read——防止两次 apply 的 read-modify-write 交叠（交叠的典型后果：同一下标双追加）。
-- 队列键 = ns（自有 ns `modelpilot` 与目标 ns `llm-pi-ai` 各自独立串行；跨 ns 无顺序约束，两 namespace 本就非原子事务，分项状态如实显示 [v2-plan §10]）。
-- 队列不吞异常：任务失败把 outcome 交还调用方后立即放行下一个任务；不设超时（mutate 自身有宿主级联控制）。
+- 每个命名空间一条先进先出 promise 链：`apply()` 的第 2–4 步整体入队，前一个任务落定后才开始下一个的 `read`——防止两次 apply 的读-改-写交叠（交叠的典型后果：同一下标被双追加）。
+- 队列键 = 命名空间（自有命名空间 `modelpilot` 与目标命名空间 `llm-pi-ai` 各自独立串行；跨命名空间无顺序约束，两个命名空间本就不是原子事务，分项状态如实显示 [v2-plan §10]）。
+- 队列不吞异常：任务失败把结果交还调用方后立即放行下一个任务；不设超时（`mutate` 自身有宿主级联控制）。
 
-### 3.5 审计日志（每 op 落 ledger）
+### 3.5 审计日志（每个操作落台账）
 
-- 两条落点：
-  1. **自有 ns `ledger` 字段**（§1.4）：环形保留最近 200 条 attempt/op 记录，随 §3 的 commit 一并写入（走 SettingsWriter 自身，天然过 revision 围栏）；
-  2. **持久审计文件** `dshCachePath("modelpilot", "ledger.jsonl")`：append-only JSONL，每行 `{ts, attemptId, ns, seq, op, expectedRevision, result, error?}`；5MB 轮转保留一份 `.1`。
-- 记录粒度：attempt 级（含 attempts 计数）+ op 级（每条 PathOp 一行）。`kind ∈ {settings-write, profile-save, verify, cache-refresh}` 预留，B1 只落 settings-write。
-- 日志红线：不含凭据、不含 key 值、path 段原样（id 不是机密）[v2-plan §12]。
+- 两个落点：
+ 1. **自有命名空间的 `ledger` 字段**（§1.4）：环形保留最近 200 条尝试／操作记录，随 §3 的提交一并写入（走设置写入器自身，天然过修订号围栏）；
+ 2. **持久审计文件** `dshCachePath("modelpilot", "ledger.jsonl")`：只追加的 JSONL，每行 `{ts, attemptId, ns, seq, op, expectedRevision, result, error?}`；5MB 轮转保留一份 `.1`。
+- 记录粒度：尝试级（含 attempts 计数）+ 操作级（每条 PathOp 一行）。`kind ∈ {settings-write, profile-save, verify, cache-refresh}` 预留，B1 只落 `settings-write`。
+- 日志红线：不含凭据、不含密钥值、路径段原样（id 不是机密）[v2-plan §12]。
 
 ---
 
 ## 4. prepareCall 双轨适配器（VerifyTransport）
 
-事实基线：0.2.1 `prepareCall(config, signal?, configure?)` 三参，`ConfigureCall = (controls: Readonly<LlmCallControls>, model: Readonly<LlmResolvedModelInfo>) => LlmCallControls`，configure 分支先 `deepFreeze(structuredClone(controls))` 再交插件，结果仍走缺省物化与 effort 校验；0.2.0 两参。`PreparedLlmCall` 一次性 dispatch（重复 dispatch 或 config 变更 → `INVALID_PREPARED_CALL`）；`resolveCallConfig(config, signal)` 两版都在；`llm/stream` waterfall 冻结只读（loop 请求 deep-frozen、fallback 闭包捕获原 options）[已核对-源码 02-S2 + 探针 probe-preparecall]。
+事实基线：0.2.1 的 `prepareCall(config, signal?, configure?)` 为三参，`ConfigureCall = (controls: Readonly<LlmCallControls>, model: Readonly<LlmResolvedModelInfo>) => LlmCallControls`，配置分支先 `deepFreeze(structuredClone(controls))` 再交插件，结果仍走缺省物化与档位校验；0.2.0 为两参。`PreparedLlmCall` 一次性派发（重复派发或配置变更 → `INVALID_PREPARED_CALL`）；`resolveCallConfig(config, signal)` 两版都在；`llm/stream` 瀑布流冻结只读（循环请求深冻结、回退闭包捕获原 `options`）[已核对-源码 02-S2 + 探针 probe-preparecall]。
 
 ### 4.1 接口
 
@@ -339,9 +347,10 @@ interface VerifyTransport {
 type VerifyOutcome =
   | { verdict: "accepted";  resolvedConfig: LlmCallConfig; adapterDefaults?: { reasoningEffort?: true; maxTokens?: true }; note?: string }
   | { verdict: "rejected";  code: string; message: string; stage: "resolve" | "dispatch" | "stream" };
+
 ```
 
-- 用途唯一：**插件自己发起的验证请求**（v2-plan §6.4），绝不改写他人调用；`llm/stream` 只读性使"借 waterfall 改写"在两版都不成立，B1 不做任何该方向的挂钩。
+- 用途唯一：**插件自己发起的验证请求**（v2-plan §6.4），绝不改写他人调用；`llm/stream` 的只读性使"借瀑布流改写"在两版都不成立，B1 不做任何该方向的挂钩。
 - 失败码映射进 §2.5：`UNSUPPORTED_REASONING_EFFORT → modelAssistant/unsupported-effort`、`NO_ADAPTER → modelAssistant/route-unavailable`、其余 → `modelAssistant/verify-failed`。
 
 ### 4.2 ConfigureCallTransport（0.2.1 三参轨）
@@ -356,9 +365,10 @@ verify(cfg):
   for await (chunk of prepared.stream(prepared.config)) { 消费/短路 }
   // 双护栏：stream 必须恰调一次；stream 参数必须 === prepared.config（callConfigEquals 检查）→ INVALID_PREPARED_CALL
   // → 这两条是 transport 内部不变量，违反即 transport bug，映射 modelAssistant/verify-failed 并附 note
+
 ```
 
-- `prepared.config / adapterDefaults` 原样回填 outcome，供诊断屏展示"driver-confirmed"预览（v2-plan §4.3 previewFidelity）。
+- `prepared.config / adapterDefaults` 原样回填结果，供诊断屏展示"驱动确认级"预览（v2-plan §4.3 previewFidelity）。
 
 ### 4.3 PrecheckTransport（0.2.0 预检轨）
 
@@ -366,10 +376,11 @@ verify(cfg):
 verify(cfg):
   resolved = await llm.resolveCallConfig(cfg, signal)   // 预检：抛 UNSUPPORTED_REASONING_EFFORT / NO_ADAPTER 等，结构化捕获
   for await (chunk of llm.stream({ provider, model, ...resolved 控制字段, ...(budgetTokens ? {maxTokens: budgetTokens} : {}), signal })) { ... }
+
 ```
 
-- 显式 `stream()` 直发；预检与 dispatch **不共享 adapter 注册绑定**（宿主文档明示 prepareCall 的注册绑定正是为防 HMR 拼接）[已核对-源码 dsh-llm prepareCall jsDoc]。残余风险：0.2.0 轨上 HMR 恰在预检与 dispatch 之间替换 adapter 时，验证结果可能来自旧 adapter——接受为该轨已知残余，记 note 并在 UI 不宣称 driver-confirmed [推断，边界源自宿主 jsDoc]。
-- 预检失败同样产出结构化 `rejected{code, stage:"resolve"}`，与三参轨可辨识度对齐。
+- 显式 `stream()` 直发；预检与派发**不共享适配器注册绑定**（宿主文档明确说明：`prepareCall` 的注册绑定正是为了防 HMR 拼接）[已核对-源码 `dsh-llm` 的 prepareCall jsDoc]。残余风险：0.2.0 轨上若 HMR 恰在预检与派发之间替换了适配器，验证结果可能来自旧适配器——接受为该轨的已知残余，记录 note 并在界面上不宣称"驱动确认级" [推断，边界源自宿主 jsDoc]。
+- 预检失败同样产出结构化的 `rejected{code, stage:"resolve"}`，与三参轨的可辨识度对齐。
 
 ### 4.4 探测与 VersionCapabilities
 
@@ -380,18 +391,19 @@ interface VersionCapabilities {
   supportsConfigure: boolean;        // runtime.prepareCall.length >= 3      [已核对-源码+探针 02-S2]
   nativeReasoningEditing: boolean;   // hostVersion >= 0.2.1-rc.1（semver 比较；解析失败 → false 保守）[已核对-源码 02-S4]
 }
+
 ```
 
-- 探测只认符号与版本串，不认行号（R2/R6）；`prepareCall.length` 在进程生命周期内不变，**探测一次、按 fiber 缓存**，不随 `llm/adapters-updated` 重探。
-- `runtime` 句柄缺失 / `prepareCall` 非 function → supportsConfigure=false 且 verify 通道整体降级为"仅 resolveCallConfig 预检、不发请求"并显式告知（不静默）。
-- echo（§2.2）把 caps 随握手返回，Client 半据此初始化 B4 的版本开关层；Client 不得自行二次探测。
-- 机器非净版风险（purge/invariant 注入）由 CI 探针四件套守门，不进运行时逻辑 [已核对-源码 99-§三.3]。
+- 探测只认符号与版本串，不认行号（R2／R6）；`prepareCall.length` 在进程生命周期内不变，**探测一次、按 `fiber` 缓存**，不随 `llm/adapters-updated` 重探。
+- `runtime` 句柄缺失／`prepareCall` 不是函数 → `supportsConfigure=false`，且验证通道整体降级为"仅 `resolveCallConfig` 预检、不发请求"并显式告知（不静默）。
+- `echo`（§2.2）把能力集随握手返回，客户端半据此初始化 B4 的版本开关层；客户端不得自行二次探测。
+- 机器非净版风险（purge／不变量注入）由 CI 的四件套探针守门，不进运行时逻辑 [已核对-源码 99-§三.3]。
 
 ---
 
 ## 5. 缓存布局（dshCachePath）
 
-事实基线：`dsh-home-paths` 具名导出 `dshCachePath(optionsOrSegment?, ...segments)`，尊重 `DSH_HOME`，两版都在、0.2.1 为超集；**禁用 agentsHome 系列**（0.2.1 新增，非依赖面）[已核对-源码 02-S7]。
+事实基线：`dsh-home-paths` 具名导出 `dshCachePath(optionsOrSegment?, ...segments)`，尊重 `DSH_HOME`，两版都有、0.2.1 为超集；**禁用 agentsHome 系列**（0.2.1 新增，非依赖面）[已核对-源码 02-S7]。
 
 ```text
 <cache>/modelpilot/
@@ -401,42 +413,43 @@ interface VersionCapabilities {
 ├── inflight/
 │   └── models-dev-v1.json.<attemptId>     # singleflight 临时文件，写完原子 rename 落位
 └── ledger.jsonl                           # §3.5 审计（轮转 .1）
+
 ```
 
-- 端点定死 `https://models.dev/api.json`（子域不存在，实测）[已执行-探针 U6]；字段映射按 U6 定案表（`limit.context → context{tokens, semantics}`、`reasoning_options → reasoning.controls` 等），parser 归 core/，本层只管存储。
-- 写协议：fetch → 校验（JSON 完整 + schema 版本匹配）→ 写 inflight → 原子 rename → 刷新 LKG。校验失败/截断**不覆盖**当前快照，读取端自动回退 LKG [U6 + v2-plan §12]。
-- TTL 24h 软失效；ETag/304 响应头若提供则用，否则内容 digest 去重 [已执行-探针 U6]。
-- singleflight：同 key 并发刷新只放一个 fetch 进 inflight，其余等待复用。
-- 档案（profiles/rules/locks）**不存缓存目录**——它们在自有 settings ns（§1.4），缓存目录只放可再生数据；卸载不自动删宿主配置，缓存目录同口径 [v2-plan §10]。
+- 端点定死 `https://models.dev/api.json`（子域不存在，已实测）[已执行-探针 U6]；字段映射按 U6 定案表（`limit.context → context{tokens, semantics}`、`reasoning_options → reasoning.controls` 等），解析器归 `core/`，本层只管存储。
+- 写入协议：取回 → 校验（JSON 完整 + `schema` 版本匹配）→ 写 `inflight` → 原子 rename → 刷新最后可用快照。校验失败／截断**不覆盖**当前快照，读取端自动回退到最后可用快照 [U6 + v2-plan §12]。
+- TTL 24h 软失效；响应头若提供 ETag／304 则用之，否则按内容摘要去重 [已执行-探针 U6]。
+- singleflight：同一键的并发刷新只放一个取回进 `inflight`，其余等待复用。
+- 档案（profiles／rules／locks）**不存缓存目录**——它们在自有 `settings` 命名空间（§1.4），缓存目录只放可再生数据；卸载不自动删宿主配置，缓存目录同口径 [v2-plan §10]。
 
 ---
 
-## 6. Open Questions 与保守默认
+## 6. 开放问题与保守默认
 
 | # | 问题 | 状态 | 保守默认（闭环前生效） |
 | --- | --- | --- | --- |
-| OQ-1 | 第三方 namespace（modelAssistant）的 client-face 调用是否必须补 client-side `TYPERT_REMOTE` manifest（`./remote` 导出）才能出现在 `ctx.remote.*` 代理上 | [待验证-P0-02]：echo 实机往返判定 | 假设**需要**；P0-02 探针同时验证两条路径（直连 ctx.remote / api-remotes 事件通道），哪条通走哪条，UI 对不可用路径显式降级 |
-| OQ-2 | SRC-mode 下 gateway 对尾参 `signal?: AbortSignal` 的自动注入行为 | [待验证-P0-02]（echo 带长任务变体验证取消） | 方法全部容忍 signal 缺席；取消语义 = 尽力而为 + 结果幂等 |
-| OQ-3 | `dshCachePath` 首参 options 对象形态的官方取值（`optionsOrSegment` 联合） | [推断-02-S7]（两版均按纯 segment 段使用） | 只用纯 segment 调用 `dshCachePath("modelpilot", ...)`，不用 options 形态 |
-| OQ-4 | ModelKey 复合键编码中原始 ID 含 `/` 的转义规则 | [推断]（settings 的 providers dict key 本身允许任意字符串，但复合键需自定转义） | 百分号编码（`%`→`%25`、`/`→`%2F`），编码函数进 core/ 单测 |
-| OQ-5 | settings `configure({auto:false})` 在 0.2.0/0.2.1 的签名是否逐字一致（范例插件为单版本核证） | [待验证-P0] | 双版都以 try/catch 包裹；失败仅降级为"原生表单可见"，不阻塞启动 |
-| OQ-6 | 0.2.1 deepseek 路由级字段投影的运行时行为（静态同构已核，未跑真机） | [待验证-P1][U4 残余] | 投影白名单先只开 pi-ai；deepseek 白名单在 B6 独立启用 |
+| OQ-1 | 第三方命名空间（modelAssistant）的客户端面调用，是否必须补客户端侧 `TYPERT_REMOTE` 清单（`./remote` 导出）才能出现在 `ctx.remote.*` 代理上 | [待验证-P0-02]：由 `echo` 实机往返判定 | 假设**需要**；P0-02 探针同时验证两条路径（直连 `ctx.remote` ／ `api-remotes` 事件通道），哪条通走哪条，界面对不可用路径显式降级 |
+| OQ-2 | 源码模式下网关对尾参 `signal?: AbortSignal` 的自动注入行为 | [待验证-P0-02]（用 `echo` 的长任务变体验证取消） | 方法全部容忍 `signal` 缺席；取消语义 = 尽力而为 + 结果幂等 |
+| OQ-3 | `dshCachePath` 首参 `options` 对象形态的官方取值（`optionsOrSegment` 联合） | [推断-02-S7]（两版均按纯分段方式使用） | 只用纯分段调用 `dshCachePath("modelpilot", ...)`，不用 `options` 形态 |
+| OQ-4 | ModelKey 复合键编码中，原始 ID 含 `/` 的转义规则 | [推断]（`settings` 的 providers 字典键本身允许任意字符串，但复合键需自定转义） | 百分号编码（`%`→`%25`、`/`→`%2F`），编码函数进 `core/` 单测 |
+| OQ-5 | `settings` 的 `configure({auto:false})` 在 0.2.0／0.2.1 的签名是否逐字一致（范例插件只做过单版本核证） | [待验证-P0] | 双版都用 try/catch 包裹；失败仅降级为"原生表单可见"，不阻塞启动 |
+| OQ-6 | 0.2.1 中 `deepseek` 路由级字段投影的运行时行为（静态同构已核，未跑真机） | [待验证-P1][U4 残余] | 投影白名单先只开 `pi-ai`；`deepseek` 白名单在 B6 独立启用 |
 
-**全局保守默认**：任何探测失败都指向"能力不可用 + 显式降级"，绝不静默假设高版本能力；一切写路径先过 §3 围栏；一切版本判断集中在 version-capabilities.ts；P0 未过（v2-plan §14 四件套）不写业务代码。
+**全局保守默认**：任何探测失败都指向"能力不可用 + 显式降级"，绝不静默假设高版本能力；一切写路径先过 §3 围栏；一切版本判断集中在 `version-capabilities.ts`；P0 未过（v2-plan §14 的四件套）不写业务代码。
 
 ---
 
-## 附录 A — 本设计二次复核补锚（0.2.0-rc.2 tgz 实读，与审计结论一致）
+## 附录 A — 本设计二次复核补锚（实读 0.2.0-rc.2 的 tgz，与审计结论一致）
 
 | 断言 | 位置 |
 | --- | --- |
-| bindTypertRemote/TypertRemoteService/Remote/remoteMethods 公共面 | `dsh-typert-protocol/lib/index.js` L126-278 |
-| gateway SRC 发现 + `<ns>/<method>` 路由 + gateway/* 错误码 | `dsh-api-gateway/lib/index.js` L435-439, L698-718, L962-1002, L1447-1448 |
-| typert.register 原子性/重复拒绝 | `dsh-typert-registry/lib/index.js` L141-156, L398-418, L482 |
-| loader `./typert` 扫描 + validateTypertManifest | `dsh-typert-loader/lib/index.js` L39-46, L77-117, L219-263 |
-| SettingsConflictError / applyPathOp / mutate / write 围栏 | `dsh-settings/lib/index.js` L163-181, L189-216, L488-499, L501-537 |
-| prepareCall 三护栏（once / config-equals / freeze）与 resolveCallWithInfo | `dsh-llm/lib/index.js` L2161-2235 |
-| prepareCall 两参签名 / LlmCallConfig 形状 / discoverModels 契约 | `dsh-llm/lib/typert.host.js` L207-224, L340-344, L41-108 |
-| pi-ai modelFields / Config volatile | `dsh-llm-pi-ai/lib/index.js` L1001-1051 |
-| settings-models client 写与 settings/conflict 分支、dsh.client.inject 形态 | `dsh-client-ui-settings-models/lib/client.js` L2781-2814；package.json |
-| bundle patch insert 形态（id/name/config） | 本机 dsh-purge `cordis.patch.yml`、`packages/purge-panel/cordis.patch.yml` |
+| `bindTypertRemote`／`TypertRemoteService`／`Remote`／`remoteMethods` 的公共面 | `dsh-typert-protocol/lib/index.js` L126-278 |
+| 网关的源码发现 + `<ns>/<method>` 路由 + `gateway/*` 错误码 | `dsh-api-gateway/lib/index.js` L435-439, L698-718, L962-1002, L1447-1448 |
+| `typert.register` 的原子性／重复拒绝 | `dsh-typert-registry/lib/index.js` L141-156, L398-418, L482 |
+| 加载器的 `./typert` 扫描 + `validateTypertManifest` | `dsh-typert-loader/lib/index.js` L39-46, L77-117, L219-263 |
+| `SettingsConflictError` / `applyPathOp` / `mutate` / `write` 围栏 | `dsh-settings/lib/index.js` L163-181, L189-216, L488-499, L501-537 |
+| `prepareCall` 的三道护栏（一次性／配置相等／冻结）与 `resolveCallWithInfo` | `dsh-llm/lib/index.js` L2161-2235 |
+| `prepareCall` 的两参签名／`LlmCallConfig` 形状／`discoverModels` 契约 | `dsh-llm/lib/typert.host.js` L207-224, L340-344, L41-108 |
+| `pi-ai` 的 `modelFields` / `Config` 易变 | `dsh-llm-pi-ai/lib/index.js` L1001-1051 |
+| `settings-models` 的客户端写入与 `settings/conflict` 分支、`dsh.client.inject` 形态 | `dsh-client-ui-settings-models/lib/client.js` L2781-2814；package.json |
+| 打包补丁 `insert` 形态（`id`/`name`/`config`） | 本机 `dsh-purge` 的 `cordis.patch.yml`、`packages/purge-panel/cordis.patch.yml` |

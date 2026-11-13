@@ -1,11 +1,10 @@
-// P1-07 bundle contract test (no browser): load lib/client.js exactly the way
-// dsh-client-modules does — a global __ModuleLoader__.load({id, factory}) whose
-// factory receives a `require` — then assert the registration actually happens:
-// inject list, apply(ctx) → slots.inject("settings.section") → slots.register.
+// P1-07 打包产物契约测试（不使用浏览器）：完全按 dsh-client-modules 的方式加载
+// lib/client.js —— 一个全局的 __ModuleLoader__.load({id, factory})，其 factory
+// 收到 `require` —— 然后断言注册确实发生：inject 列表、
+// apply(ctx) → slots.inject("settings.section") → slots.register。
 //
-// React stays external, so `require("react")` is stubbed: the Workbench
-// component is never rendered here (registration only), which is the point —
-// this test proves the module graph and slot wiring, not the pixels.
+// React 保持外部化，因此 `require("react")` 被打桩：工作台组件在这里从不
+// 渲染（只验证注册），这正是重点 —— 本测试证明模块图与 slot 接线，而不是像素。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +17,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const source = readFileSync(join(root, "lib", "client.js"), "utf8");
 
-/** Minimal React stub: enough for module evaluation (no render). */
+/** 最小 React 打桩：足够完成模块求值（不渲染）。 */
 const reactStub = {
   createElement: () => null,
   useState: (init) => [typeof init === "function" ? init() : init, () => {}],
@@ -29,7 +28,7 @@ const reactStub = {
   Fragment: "Fragment",
 };
 
-/** Load the bundle through the host's ModuleLoader contract. */
+/** 按宿主的 ModuleLoader 契约加载打包产物。 */
 function loadBundle() {
   const registered = [];
   const sandbox = {
@@ -57,16 +56,16 @@ function loadBundle() {
   return registered[0];
 }
 
-test("bundle registers under the package id and exports the plugin contract", () => {
+test("打包产物以包 id 注册并导出插件契约", () => {
   const { id, exports } = loadBundle();
   assert.equal(id, "dsh-model-assistant");
   assert.equal(typeof exports.apply, "function");
-  assert.equal(exports.inject.join(","), "slots,configForms"); // cross-realm safe
+  assert.equal(exports.inject.join(","), "slots,configForms"); // 跨模块域安全
   assert.equal(exports.name, "model-assistant-client");
   assert.equal(exports.default.apply, exports.apply);
 });
 
-test("apply() wires settings.section through configForms.whileServed", () => {
+test("apply() 通过 configForms.whileServed 接线 settings.section", () => {
   const { exports } = loadBundle();
   const calls = { effects: [], inject: [], register: [], whileServed: [] };
 
@@ -109,24 +108,24 @@ test("apply() wires settings.section through configForms.whileServed", () => {
   assert.equal(typeof spec.label, "function");
   assert.equal(spec.label(), "ModelPilot");
   assert.equal(typeof spec.order, "number");
-  // inject() hands the component exactly the service it needs
+  // inject() 把组件恰好需要的服务交给它
   const injected = spec.inject();
   assert.ok(injected.configForms, "component receives configForms");
   assert.equal(typeof component, "function");
 });
 
-test("bundle inlines the projection engine (no logic drift from Host tests)", () => {
-  // The R1–R7 refusal codes and the replacement gate must exist INSIDE the
-  // bundle: the browser runs the same code the Host unit tests cover.
+test("打包产物内联投影引擎（与宿主测试无逻辑漂移）", () => {
+  // R1–R7 拒绝码与替换闸门必须存在于打包产物内部：
+  // 浏览器运行的就是宿主单元测试覆盖的同一份代码。
   for (const marker of ["catalog-replacement", "efforts-only-off", "duplicate-model-id", "max-tokens-dual-identity"]) {
     assert.ok(source.includes(marker), `bundle contains ${marker}`);
   }
-  // ...and it must not re-bundle React (host provides it).
+  // ……并且绝不能把 React 重新打包进去（宿主负责提供）。
   assert.ok(/require\("react"\)/.test(source));
   assert.ok(!/react-dom\/client/.test(source.replace(/^\s*\/\/.*$/gm, "")), "react-dom not bundled");
 });
 
-test("no host-hostile globals: bundle never touches node builtins", () => {
+test("无双宿主敌意的全局量：打包产物从不触碰 node 内置模块", () => {
   for (const banned of ["require(\"node:", "process.env", "import(\"node:"]) {
     assert.ok(!source.includes(banned), `bundle must not reference ${banned}`);
   }

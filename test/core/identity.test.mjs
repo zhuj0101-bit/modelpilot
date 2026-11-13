@@ -1,4 +1,4 @@
-// P1-01 tests: IdentityResolver five-level chain.
+// P1-01 测试：身份解析器五级链。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -28,7 +28,7 @@ function baseSources() {
   };
 }
 
-test("L1 local-profile: exact storage key wins with high confidence", () => {
+test("L1 本地档案：精确存储键以高置信度胜出", () => {
   const sources = baseSources();
   const key = modelKeyStorageKey({ connectionId: "llm-pi-ai", driverId: "pi-ai", routeId: "gw", protocol: "openai-completions", rawModelId: "m1" });
   sources.profiles.set(key, { key, contextState: "value", contextValue: 123 });
@@ -38,13 +38,13 @@ test("L1 local-profile: exact storage key wins with high confidence", () => {
   assert.equal(result.matched.contextValue, 123);
 });
 
-test("L2 route-exact: route catalog hit", () => {
+test("L2 路由精确：命中路由目录", () => {
   const result = resolveIdentity(baseSources(), { routeId: "gw", rawModelId: "route-m1" });
   assert.equal(result.level, "route-exact");
   assert.equal(result.matched.id, "route-m1");
 });
 
-test("L3 catalog canonical hop: request names canonical id, entry has different modelId", () => {
+test("L3 目录规范 id 跳转：请求给出规范 id，条目持有不同的 modelId", () => {
   const result = resolveIdentity(baseSources(), { routeId: "gw", rawModelId: "Vendor/Model-Y-Canonical" });
   assert.equal(result.level, "catalog");
   assert.equal(result.evidence.via, "canonical");
@@ -52,14 +52,14 @@ test("L3 catalog canonical hop: request names canonical id, entry has different 
   assert.ok(result.alternatives.some((a) => a.via === "canonical" && a.id === "vendor/model-y"));
 });
 
-test("L3 catalog casefold: case-insensitive fallback, medium confidence", () => {
+test("L3 目录大小写折叠：大小写不敏感回退，中等置信度", () => {
   const result = resolveIdentity(baseSources(), { routeId: "gw", rawModelId: "vendor/model-x" });
   assert.equal(result.level, "catalog");
   assert.equal(result.evidence.confidence, "medium");
   assert.equal(result.matched.id, "Vendor/Model-X");
 });
 
-test("L4 user rule: glob and exact, first wins, rest are alternatives", () => {
+test("L4 用户规则：通配与精确，先命中者胜出，其余作为备选", () => {
   const sources = baseSources();
   sources.rules = [
     { id: "r1", matchRawModelId: "m-*", usePresetId: "coding" },
@@ -70,13 +70,13 @@ test("L4 user rule: glob and exact, first wins, rest are alternatives", () => {
   assert.equal(exact.matched.id, "r2");
   const glob = resolveIdentity(sources, { routeId: "gw", rawModelId: "m-2026-01" });
   assert.equal(glob.matched.id, "r1");
-  // route mismatch excludes the rule
+  // 路由不匹配则排除该规则
   const other = resolveIdentity(sources, { routeId: "other", rawModelId: "m-free" });
   assert.equal(other.level, "user-rule");
   assert.equal(other.matched.id, "r1");
 });
 
-test("L5 fuzzy: substring candidates, auto/free never guessed", () => {
+test("L5 模糊：子串候选，auto/free 绝不猜测", () => {
   const fuzzy = resolveIdentity(baseSources(), { routeId: "gw", rawModelId: "long-model" });
   assert.equal(fuzzy.level, "fuzzy");
   assert.equal(fuzzy.matched, undefined);
@@ -86,7 +86,7 @@ test("L5 fuzzy: substring candidates, auto/free never guessed", () => {
   assert.equal(auto.alternatives.length, 0);
 });
 
-test("unknown route+id: fuzzy level with empty alternatives (unknown but not empty proposal)", () => {
+test("未知路由+id：模糊层级且备选为空（未知但不为空的建议）", () => {
   const result = resolveIdentity(baseSources(), { routeId: "nope", rawModelId: "zzz" });
   assert.equal(result.level, "fuzzy");
   assert.equal(result.evidence.status, "unknown");

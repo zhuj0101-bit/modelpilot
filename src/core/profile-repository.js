@@ -1,6 +1,6 @@
-// P1-06: ProfileRepository — StoredField tri-state profiles in OUR namespace
-// (DESIGN-v2 §10; a.md §3.B). Backs onto a plain object face that the Host
-// wires to the plugin's own settings ns; fixtures drive it in tests.
+// P1-06：ProfileRepository —— 我们命名空间里的 StoredField 三态用户档案
+// （DESIGN-v2 §10；a.md §3.B）。底层是一个普通对象门面，由宿主接到插件
+// 自己的设置命名空间；测试里用夹具驱动。
 
 import { modelKeyStorageKey, canonicalJson, digest } from "./domain.js";
 
@@ -10,18 +10,18 @@ export function createProfileRepository({ profiles = [], version = 1 } = {}) {
   let profileVersion = version;
 
   return {
-    /** Current desiredProfileVersion — bumps on every mutation (B5 §2.3). */
+    /** 当前 desiredProfileVersion —— 每次变更都会自增（B5 §2.3）。 */
     get version() {
       return profileVersion;
     },
 
-    /** Normalize a ModelKey + tri-state fields into a record (percent-escaped key). */
+    /** 把 ModelKey + 三态字段归一成一条记录（键做百分号转义）。 */
     buildRecord(key, fields, { lockedFields = [] } = {}) {
       const storageKey = modelKeyStorageKey(key);
       return {
         storageKey,
         key: { ...key },
-        // tri-state per field: {state:"value"|"inherit"|"cleared", value?, origin?}
+        // 每字段三态：{state:"value"|"inherit"|"cleared", value?, origin?}
         fields: {
           contextWindow: normalizeField(fields.contextWindow),
           outputBudget: normalizeField(fields.outputBudget),
@@ -37,13 +37,12 @@ export function createProfileRepository({ profiles = [], version = 1 } = {}) {
       return store.get(storageKey);
     },
 
-    /** Save (insert or update). Bumps version; same content = same fingerprint. */
+    /** 保存（插入或更新）。版本自增；内容相同则指纹相同。 */
     save(record) {
       const existing = store.get(record.storageKey);
       const next = { ...record, updatedAt: new Date().toISOString() };
-      // Desired-version guard (B5 §2.3): a write must carry the version it
-      // was based on; anything older than the stored record is stale and
-      // refused — newer desired states are never clobbered by replayed writes.
+      // 期望版本守卫（B5 §2.3）：写入必须携带它所依据的版本；比已存记录更旧的
+      // 一律视为过期并拒绝 —— 更新的期望状态绝不会被重放的写入覆盖掉。
       if (existing && existing._version !== undefined) {
         const incoming = record._version ?? existing._version;
         if (incoming < existing._version) {
@@ -55,7 +54,7 @@ export function createProfileRepository({ profiles = [], version = 1 } = {}) {
       return { ok: true, revision: profileVersion, fingerprint: digest(canonicalJson(next.fields)) };
     },
 
-    /** Clear one field → state:"cleared", locked:true (never autofills again). */
+    /** 清除某字段 → state:"cleared"、locked:true（以后不再自动填充）。 */
     clearField(storageKey, fieldId) {
       const record = store.get(storageKey);
       if (!record) return { ok: false, error: "not-found" };
@@ -66,7 +65,7 @@ export function createProfileRepository({ profiles = [], version = 1 } = {}) {
       return { ok: true, revision: profileVersion };
     },
 
-    /** Reset a cleared field back to inherit (user unlock action). */
+    /** 把已清除的字段重置回 inherit（用户解锁动作）。 */
     resetField(storageKey, fieldId) {
       const record = store.get(storageKey);
       if (!record) return { ok: false, error: "not-found" };
@@ -76,16 +75,16 @@ export function createProfileRepository({ profiles = [], version = 1 } = {}) {
       return { ok: true, revision: profileVersion };
     },
 
-    /** Reopen semantics (P0-3 / a.md §5): cleared stays cleared after round-trip. */
+    /** 重开语义（P0-3 / a.md §5）：往返一次之后 cleared 仍然是 cleared。 */
     roundTrip(storageKey) {
       const record = store.get(storageKey);
       if (!record) return undefined;
-      // serialize/deserialize the way the settings ns would (plain JSON)
+      // 按设置命名空间的方式做序列化 / 反序列化（普通 JSON）
       const serialized = JSON.parse(JSON.stringify({ ...record, _version: undefined }));
       return serialized;
     },
 
-    /** Same storageKey on another route stays isolated (key includes route). */
+    /** 另一条路由上的同名字段仍相互隔离（键里含路由）。 */
     keys() {
       return [...store.keys()];
     },

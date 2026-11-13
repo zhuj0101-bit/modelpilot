@@ -1,4 +1,4 @@
-// P1-02 tests: CandidateEngine 8-level synthesis + short-circuit semantics.
+// P1-02 测试：CandidateEngine 8 级合成 + 短路语义。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const { synthesizeCandidates } = await import(pathToFileURL(join(root, "src", "core", "candidates.js")).href);
 
-test("full chain: profile > catalog > template > preset > default per field", () => {
+test("完整链路：每个字段的优先级为 档案 > 目录 > 模板 > 预设 > 默认", () => {
   const result = synthesizeCandidates({
     profile: { contextState: "value", contextValue: 555555, budgetState: "value", budgetValue: 4444, inputState: "value", inputValue: ["text"], reasoningState: "value", reasoningValue: { mode: "effort", defaultLevel: "low" } },
     resolved: { context: 262144, inputModalities: ["text", "image"], reasoningControls: [{ kind: "effort", values: ["low", "high"] }] },
@@ -24,21 +24,21 @@ test("full chain: profile > catalog > template > preset > default per field", ()
   assert.deepEqual(result.shortCircuited, []);
 });
 
-test("no profile: catalog context wins; budget skips catalog (capability≠budget)", () => {
+test("无档案：目录的上下文胜出；预算跳过目录（能力≠预算）", () => {
   const result = synthesizeCandidates({
     resolved: { context: 262144, outputLimit: 65536, inputModalities: ["text"], reasoningControls: [{ kind: "effort", values: ["low", "medium", "high"] }] },
     preset: { contextWindow: 32768, outputBudget: 4096, input: ["text"] },
   });
   assert.equal(result.fields.contextWindow.candidate.value, 262144);
   assert.equal(result.fields.contextWindow.candidate.via, "catalog");
-  // budget never inherits a catalog capability value
+  // 预算从不继承目录的能力值
   assert.equal(result.fields.outputBudget.candidate.via, "preset");
   assert.equal(result.fields.input.candidate.value.join(), "text");
   assert.equal(result.fields.reasoning.candidate.value.mode, "effort");
   assert.equal(result.fields.reasoning.candidate.value.defaultLevel, "low");
 });
 
-test("touched short-circuit: late catalog does not override user edit", () => {
+test("已触碰短路：迟到的目录结果不覆盖用户编辑", () => {
   const result = synthesizeCandidates({
     touched: new Set(["contextWindow"]),
     resolved: { context: 262144, inputModalities: ["text"] },
@@ -47,39 +47,39 @@ test("touched short-circuit: late catalog does not override user edit", () => {
   assert.ok(result.fields.contextWindow.shortCircuited);
 });
 
-test("locked short-circuit same as touched", () => {
+test("已锁定短路与已触碰相同", () => {
   const result = synthesizeCandidates({ locked: new Set(["reasoning"]), resolved: { reasoningControls: [{ kind: "effort", values: ["low"] }] } });
   assert.ok(result.fields.reasoning.shortCircuited);
 });
 
-test("cleared field never autofills (a.md §3.B closed loop)", () => {
+test("已清除字段绝不自动填充（a.md §3.B 闭环）", () => {
   const result = synthesizeCandidates({
     profile: { contextState: "cleared", budgetState: "inherit", inputState: "cleared" },
     resolved: { context: 262144, inputModalities: ["text", "image"] },
     preset: { contextWindow: 32768, outputBudget: 4096 },
   });
   assert.ok(result.fields.contextWindow.shortCircuited === false);
-  // cleared → no candidate picked from any level for that field:
+  // 已清除 → 该字段不从任何层级挑选候选：
   assert.equal(result.fields.contextWindow.candidate, undefined);
   assert.equal(result.fields.input.candidate, undefined);
-  // inherit → falls through to catalog
+  // 继承 → 下落到目录
   assert.equal(result.fields.outputBudget.candidate.via, "preset");
 });
 
-test("unknown model: defaults still produce a proposal (unknown but not empty)", () => {
+test("未知模型：默认值仍产出建议（未知但不为空）", () => {
   const result = synthesizeCandidates({});
-  assert.equal(result.fields.contextWindow.candidate, undefined); // no context default invented
+  assert.equal(result.fields.contextWindow.candidate, undefined); // 未编造上下文默认值
   assert.equal(result.fields.outputBudget.candidate.via, "default-budget");
   assert.deepEqual(result.fields.input.candidate.value, ["text"]);
   assert.equal(result.fields.reasoning.candidate.value.mode, "inherit");
 });
 
-test("toggle-only reasoning maps to disabled policy", () => {
+test("仅 toggle 的推理能力映射为禁用策略", () => {
   const result = synthesizeCandidates({ resolved: { reasoningControls: [{ kind: "toggle" }] } });
   assert.equal(result.fields.reasoning.candidate.value.mode, "disabled");
 });
 
-test("input modalities filtered to host-supported set (pdf/audio kept in evidence, dropped from value)", () => {
+test("输入模态过滤为宿主支持的集合（pdf/audio 保留在证据中，从值中剔除）", () => {
   const result = synthesizeCandidates({ resolved: { inputModalities: ["text", "image", "pdf", "audio"] } });
   assert.deepEqual(result.fields.input.candidate.value, ["text", "image"]);
 });

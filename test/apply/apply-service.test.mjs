@@ -1,4 +1,4 @@
-// P1-04/P1-05 tests: prepare/commit, idempotency, fingerprints, undo.
+// P1-04/P1-05 测试：prepare/commit、幂等、指纹、撤销。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -41,19 +41,19 @@ function makePorts({ conflictOnce = false, section } = {}) {
   };
 }
 
-test("prepare: builds planId bound to ops+profileVersion", () => {
+test("prepare：构建绑定到 ops+profileVersion 的 planId", () => {
   const plan = svc.prepare({ projection: projectionOk, hostRevision: 9, profileVersion: 3 });
   assert.equal(plan.refused, false);
   assert.equal(plan.planId, svc.makePlanId(projectionOk.settingsOps, 3));
-  // same content+version → same planId (idempotent re-click)
+  // 内容+版本相同 → planId 相同（幂等重复点击）
   const again = svc.prepare({ projection: projectionOk, hostRevision: 9, profileVersion: 3 });
   assert.equal(again.planId, plan.planId);
-  // content change → different planId
+  // 内容变化 → planId 不同
   const changed = svc.prepare({ projection: { ...projectionOk, settingsOps: [projectionOk.settingsOps[0]] }, hostRevision: 9, profileVersion: 4 });
   assert.notEqual(changed.planId, plan.planId);
 });
 
-test("prepare: unacked catalog-replacement refuses; acked passes", () => {
+test("prepare：未确认的 catalog-replacement 拒绝；已确认则通过", () => {
   const withGate = { ...projectionOk, warnings: [{ code: "catalog-replacement", requiresAck: true, removedCatalogIds: ["a"] }] };
   const refused = svc.prepare({ projection: withGate, hostRevision: 9, profileVersion: 1 });
   assert.equal(refused.refused, true);
@@ -62,15 +62,15 @@ test("prepare: unacked catalog-replacement refuses; acked passes", () => {
   assert.equal(acked.refused, false);
 });
 
-test("prepare: unsupported controls refuse with reason", () => {
+test("prepare：不支持的控件带原因拒绝", () => {
   const result = svc.prepare({ projection: { ...projectionOk, unsupportedControls: [{ control: "append", reason: "duplicate-model-id" }] }, hostRevision: 9, profileVersion: 1 });
   assert.equal(result.refused, true);
   assert.equal(result.reason, "no-viable-ops");
 });
 
-test("commit: profile-first; host failure keeps profile as desired (B5 §1.2)", async () => {
+test("commit：档案优先；宿主失败时档案保持为期望状态（B5 §1.2）", async () => {
   const { ports, events } = makePorts({ conflictOnce: false });
-  // make host always fail
+  // 让宿主始终失败
   ports.settingsWriter.write = async () => ({ ok: false, conflict: { expected: 9, actual: 12 } });
   const plan = svc.prepare({ projection: projectionOk, hostRevision: 9, profileVersion: 1 });
   const result = await svc.commit(plan, ports, { ns: "llm-pi-ai", profile: { key: "k" } });
@@ -81,7 +81,7 @@ test("commit: profile-first; host failure keeps profile as desired (B5 §1.2)", 
   assert.ok(events.some((e) => e.result === "conflict"));
 });
 
-test("commit: conflict retried once with fresh revision (A2: re-read, same relocated ops)", async () => {
+test("commit：冲突后用新修订号重试一次（A2：重读，同样重定位后的操作）", async () => {
   const { ports } = makePorts({ conflictOnce: true });
   const plan = svc.prepare({ projection: projectionOk, hostRevision: 9, profileVersion: 1 });
   const result = await svc.commit(plan, ports, { ns: "llm-pi-ai", profile: {} });
@@ -89,7 +89,7 @@ test("commit: conflict retried once with fresh revision (A2: re-read, same reloc
   assert.equal(result.host.revision, 10);
 });
 
-test("commit: success records lastApplied fingerprints (B5 §3.1)", async () => {
+test("commit：成功时记录 lastApplied 指纹（B5 §3.1）", async () => {
   const { ports } = makePorts();
   const plan = svc.prepare({ projection: projectionOk, hostRevision: 9, profileVersion: 1 });
   const result = await svc.commit(plan, ports, { ns: "llm-pi-ai", profile: {} });
@@ -99,23 +99,23 @@ test("commit: success records lastApplied fingerprints (B5 §3.1)", async () => 
   assert.equal(entry.appliedRevision, 10);
 });
 
-test("undoField: matching fingerprint reverts (unset row); external edit refuses", async () => {
+test("undoField：指纹匹配则回退（unset 该行）；外部编辑则拒绝", async () => {
   const { ports } = makePorts();
   const plan = svc.prepare({ projection: projectionOk, hostRevision: 9, profileVersion: 1 });
   const committed = await svc.commit(plan, ports, { ns: "llm-pi-ai", profile: {} });
   const entry = { ...committed.lastApplied[0] };
-  // current section still holds the row → unset works
+  // 当前分节仍持有该行 → unset 生效
   const undo = await svc.undoField(entry, ports, { ns: "llm-pi-ai" });
   assert.equal(undo.ok, true);
   assert.deepEqual(undo.reverse, { op: "unset", path: entry.path });
-  // external modification: fingerprint mismatch → refuse, never overwrite
+  // 外部修改：指纹不匹配 → 拒绝，绝不覆盖
   ports.settingsReader.read = async () => ({ providers: { gw: { models: [{ id: "m1" }, { id: "m2" }, { id: "m3", maxTokens: 99999 }] } } });
   const refused = await svc.undoField(entry, ports, { ns: "llm-pi-ai" });
   assert.equal(refused.ok, false);
   assert.equal(refused.reason, "external-modification");
 });
 
-test("fingerprint canonicalization: key order irrelevant, numeric strings distinct", () => {
+test("指纹规范化：键顺序无关，数字字符串区分", () => {
   assert.equal(fieldFingerprint(["a"], { x: 1, y: 2 }), fieldFingerprint(["a"], { y: 2, x: 1 }));
   assert.notEqual(fieldFingerprint(["a"], { x: "1" }), fieldFingerprint(["a"], { x: 1 }));
 });

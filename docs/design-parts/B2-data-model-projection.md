@@ -1,15 +1,15 @@
-# B2 — 数据模型与投影（Data Model & Projection）
+# B2 — 数据模型与投影
 
-状态：设计定案 v1（供直接采用进代码）。日期：2026-11-10。
-上游输入：`01-gap-fill.md`（U4 deepseek 字段集 / U5 runtime 降级 / U6 models.dev 映射）、a.md §3.B（StoredField 三态修正版）、任务事实基线（llm-pi-ai 与 llm-deepseek 两版已核字段集与解析语义）。
+状态：设计定案 v1（可直接采用进代码）。日期：2026-11-10。
+上游输入：`01-gap-fill.md`（U4 的 `deepseek` 字段集／U5 的运行时降级／U6 的 models.dev 映射）、a.md §3.B（StoredField 三态修正版）、任务事实基线（llm-pi-ai 与 llm-deepseek 两版已核的字段集与解析语义）。
 
-证据标签沿用 dsh-compat-audit 规则：[已核对-源码]（源码逐行核过）、[已核对-基线]（任务事实基线已核）、[推断-设计定案]（设计层决定，源码不约束）、[推断-命名]（纯命名）、[待验证-0.2.x]（需对宿主 0.2.x 实测）、[待验证-P3]（留 P3 运行时验证）。
+证据标签沿用 dsh-compat-audit 规则：[已核对-源码]（逐行核过源码）、[已核对-基线]（任务事实基线已核）、[推断-设计定案]（设计层决定，源码不约束）、[推断-命名]（纯命名）、[待验证-0.2.x]（需对宿主 0.2.x 实测）、[待验证-P3]（留到 P3 做运行时验证）。
 
 ---
 
 ## 1. 数据模型总览
 
-[推断-设计定案] 五层管线，每层只依赖上一层：
+[推断-设计定案] 五层管线，每一层只依赖上一层：
 
 ```
 models.dev / 宿主目录 / 用户输入 / 参数实测
@@ -26,25 +26,26 @@ models.dev / 宿主目录 / 用户输入 / 参数实测
  ProjectionResult ── settingsOps / appliedFields / profileOnlyFields / unsupportedControls / requestPreview / previewFidelity
         ▼
  mutate(ns, ops, expectedRevision)   ← 宿主 settings 写路径（SETTINGS_CONFLICT 在调用方重试）
+
 ```
 
-关键语义约束（全部为后续规则表的公理）：
+关键语义约束（全部是后续规则表的公理）：
 
-- **A1** [已核对-源码] pi-ai 模型条目 `modelFields = {name, contextWindow, maxTokens, input: text|image[], reasoningEfforts, compat(24字段)}`；`modelProfile = {id(required), ...modelFields}`；`modelOverride` 同集无 id。`MODALITIES = {text, image}`。
-- **A2** [已核对-源码] pi-ai `resolveRouteModels`：`models` 非空 = **整体替换**路由目录；`modelOverrides` 与 `models` 互斥且只收已安装目录内 ID；重复 ID 拒绝；未知键物化时丢弃。
-- **A3** [已核对-源码] pi-ai `reasoningEfforts` 解析：未声明 = 继承目录；`false` = 非推理（≠ 关掉上游思考）；`off: null` = 不发参数；`off: "<wire>"` = 发送该值；未声明档 pin 不支持；`xhigh`/`max` 必须显式声明；必须至少一个 off 以外档位；请求侧 `UNSUPPORTED_REASONING_EFFORT` 先于 IO 抛出。
-- **A4** [已核对-源码] pi-ai `maxTokens` 双重身份：调用未显式给 `maxTokens` 时，条目值被物化为请求缺省预算 → 任何展示/预览必须三值分明（请求显式 / 条目物化 / 宿主缺省）。
-- **A5** [已核对-源码/U4] deepseek `catalogModel = {id(required), name, description, contextWindow, maxTokens, inputModalities(default ["text"]), imagePixelBudget, imageMaxBytes, systemPromptUpdate, toolUpdate}`；路由级 `thinking(enabled|disabled)`、`reasoningEffort(off|low|high|max)`、`maxTokens(default 256e3)`、`defaultContextWindow(default 1e6)`、`models[]`。无 reasoningEfforts dict、无 compat、无 thinkingBudgets、无 modelOverrides。
-- **A6** [已核对-基线/U4] deepseek 投影白名单 = `{name?, contextWindow?, maxTokens?, inputModalities?}` + 路由级 `reasoningEffort?`；**reasoningEfforts dict 输入 deepseek 投影必须报 unsupported**（档位系不同，禁止静默映射）。
-- **A7** [已核对-基线] settings 写路径：pi-ai `providers.<id>.models.<String(i)>.<field>`；deepseek 的 models 数组同理在其自身 ns 下。写入经 `mutate(ns, ops, expectedRevision)`，冲突返回 `SETTINGS_CONFLICT`。
-- **A8** [已核对-源码] budget（`thinkingBudgets{minimal,low,medium,high}`）仅 pi-ai 路由级，**无 per-model 承接点**。
-- **A9** [已核对-基线] pi-ai 路由级还有 `apiKeyEnv(credential-ref)/displayName/api/baseURL/headers/reasoning/transport/timeoutMs/cacheRetention/defaultContextWindow(262144)/defaultMaxTokens(32768)/defaultInput(["text"])`；pi-ai 缺省值与 deepseek（256e3 / 1e6）不同。
+- **A1** [已核对-源码] `pi-ai` 的模型条目 `modelFields = {name, contextWindow, maxTokens, input: text|image[], reasoningEfforts, compat(24字段)}`；`modelProfile = {id(required), ...modelFields}`；`modelOverride` 同集但没有 `id`。`MODALITIES = {text, image}`。
+- **A2** [已核对-源码] `pi-ai` 的 `resolveRouteModels`：`models` 非空 = **整体替换**路由目录；`modelOverrides` 与 `models` 互斥，且只收已安装目录内的 ID；重复 ID 拒绝；未知键在物化时丢弃。
+- **A3** [已核对-源码] `pi-ai` 的 `reasoningEfforts` 解析：未声明 = 继承目录；`false` = 非推理（≠ 关掉上游思考）；`off: null` = 不发参数；`off: "<wire>"` = 发送该值；未声明的档位一律判定为不支持；`xhigh`／`max` 必须显式声明；至少要有一个 `off` 以外的档位；请求侧的 `UNSUPPORTED_REASONING_EFFORT` 先于 IO 抛出。
+- **A4** [已核对-源码] `pi-ai` 的 `maxTokens` 有双重身份：调用方没有显式给 `maxTokens` 时，条目值会被物化为请求的缺省预算 → 任何展示／预览都必须把三个值分清（请求显式值／条目物化值／宿主缺省值）。
+- **A5** [已核对-源码/U4] `deepseek` 的 `catalogModel = {id(required), name, description, contextWindow, maxTokens, inputModalities(default ["text"]), imagePixelBudget, imageMaxBytes, systemPromptUpdate, toolUpdate}`；路由级有 `thinking(enabled|disabled)`、`reasoningEffort(off|low|high|max)`、`maxTokens(default 256e3)`、`defaultContextWindow(default 1e6)`、`models[]`。没有 `reasoningEfforts` 字典、没有 `compat`、没有 `thinkingBudgets`、没有 `modelOverrides`。
+- **A6** [已核对-基线/U4] `deepseek` 的投影白名单 = `{name?, contextWindow?, maxTokens?, inputModalities?}` + 路由级 `reasoningEffort?`；**`reasoningEfforts` 字典一旦输入 `deepseek` 投影，必须报不支持**（档位系不同，禁止静默映射）。
+- **A7** [已核对-基线] `settings` 的写路径：`pi-ai` 是 `providers.<id>.models.<String(i)>.<field>`；`deepseek` 的 `models` 数组同理，落在它自己的命名空间下。写入经 `mutate(ns, ops, expectedRevision)`，冲突返回 `SETTINGS_CONFLICT`。
+- **A8** [已核对-源码] 预算（`thinkingBudgets{minimal,low,medium,high}`）只存在于 `pi-ai` 路由级，**没有逐模型的承接点**。
+- **A9** [已核对-基线] `pi-ai` 路由级还有 `apiKeyEnv(credential-ref)/displayName/api/baseURL/headers/reasoning/transport/timeoutMs/cacheRetention/defaultContextWindow(262144)/defaultMaxTokens(32768)/defaultInput(["text"])`；`pi-ai` 的缺省值与 `deepseek`（256e3 / 1e6）不同。
 
 ---
 
 ## 2. TypeScript 类型定义（完整，可直接采用）
 
-[推断-设计定案] 以下类型为本章交付物；命名前缀按 ModelPilot 包内约定不加前缀，调用方以 `import type` 引入。每个字段附 JSDoc 说明语义与来源。
+[推断-设计定案] 下列类型即本章交付物；命名前缀按 ModelPilot 包内约定不加前缀，调用方以 `import type` 引入。每个字段都附 JSDoc，说明语义与来源。
 
 ```ts
 // ============================================================
@@ -624,159 +625,160 @@ export interface HostProjectionAdapter {
 
 /** 驱动注册表：driverCapabilities(driverId) 即任务书 capabilities(driverId) 形态；实现由 B3 装配（pi-ai / deepseek 各一份字面量表），此处仅声明契约。[推断-设计定案] */
 export declare function driverCapabilities(driverId: DriverId): DriverCapabilities;
+
 ```
 
 ---
 
-## 3. HostProjectionAdapter 接口设计说明
+## 3. HostProjectionAdapter 接口的设计说明
 
 [推断-设计定案] 五条设计决定：
 
-1. **纯函数、事实注入**：adapter 不读宿主、不发请求；`HostRouteState`/`DriverRouteFacts` 由调用方（B3 投影引擎）准备。这样 diff 预演（"写了会怎样"）与真实写共用同一条代码路径，SETTINGS_CONFLICT 重试也只发生在引擎层。
-2. **职责切分**：`validateField` 服务编辑器即时校验（字段级）；`projectReasoning` 服务推理策略（跨条目/路由两级，语义最险）；`toSettingsOps` 服务整体落盘（组装 + 副作用警告）。三层复用同一套字段词表（`ProfileFieldId`），禁止 adapter 私有词表。
-3. **整体拒写不走异常**：`toSettingsOps` 返回 `{ops, warnings}`（任务给定形态）；拒写（缺先决条件 / 重复 ID / overrides 冲突）表现为 `ops: []`，原因由引擎归入 `ProjectionResult.unsupportedControls`（code 复用 `UnsupportedReasonCode`）。保持返回形态稳定，UI 不需要两套错误通道。
-4. **capabilities 静态化**：`DriverCapabilities` 是常量表，pi-ai/deepseek 各一份字面量；规则表（§4/§5）是它的人读投影，两者必须同步修改（B3 侧加一致性测试：表驱动断言 capabilities 与文档表格行一致）。
-5. **reasoning 拒绝优先于一切写**：`projectReasoning` 的失败会让引擎丢弃本次全部 ops（推理写坏一条 → pi-ai 路由整体解析失败，代价是整路由模型不可用，见 §4.R）。
+1. **纯函数、事实注入**：适配器不读宿主、不发请求；`HostRouteState`／`DriverRouteFacts` 由调用方（B3 的投影引擎）准备好。这样一来，差异预演（"写了会怎样"）与真实写入共用同一条代码路径，`SETTINGS_CONFLICT` 重试也只发生在引擎层。
+2. **职责切分**：`validateField` 服务编辑器的即时校验（字段级）；`projectReasoning` 服务推理策略（跨条目／路由两级，语义最险）；`toSettingsOps` 服务整体落盘（组装 + 副作用告警）。三层复用同一套字段词表（`ProfileFieldId`），禁止适配器自带私有词表。
+3. **整体拒写不走异常**：`toSettingsOps` 返回 `{ops, warnings}`（任务给定形态）；拒写（缺先决条件／重复 ID／`overrides` 冲突）表现为 `ops: []`，原因由引擎归入 `ProjectionResult.unsupportedControls`（错误码复用 `UnsupportedReasonCode`）。这样返回形态保持稳定，界面不需要两套错误通道。
+4. **能力声明静态化**：`DriverCapabilities` 是常量表，`pi-ai`／`deepseek` 各一份字面量；规则表（§4／§5）是它的人读投影，两者必须同步修改（B3 侧加一致性测试：表驱动断言能力声明与文档表格行一致）。
+5. **推理被拒优先于一切写入**：`projectReasoning` 一旦失败，引擎会丢弃本次的全部操作（推理写坏一条 → `pi-ai` 整条路由解析失败，代价是整路由的模型都不可用，见 §4.R）。
 
 ---
 
-## 4. pi-ai 投影规则表
+## 4. `pi-ai` 投影规则表
 
-[已核对-源码] 字段词表对照（档案字段 → wire 路径；`<P>` = providerId，`<i>` = models 数组下标十进制字符串）：
+[已核对-源码] 字段词表对照（档案字段 → 线上路径；`<P>` = `providerId`，`<i>` = `models` 数组下标的十进制字符串）：
 
-| 档案字段 | wire 路径 | 校验（validateField） | 副作用 / 警告 | 分类 |
+| 档案字段 | 线上路径 | 校验（`validateField`） | 副作用／告警 | 分类 |
 | --- | --- | --- | --- | --- |
-| displayName | `providers.<P>.models.<i>.name` | 非空 string | 无 | host |
-| contextWindow | `providers.<P>.models.<i>.contextWindow` | 正整数 | 无（展示时叠加继承链 defaultContextWindow=262144） | host |
-| maxTokens | `providers.<P>.models.<i>.maxTokens` | 正整数 | `max-tokens-default-budget`（A4：调用未显式给 maxTokens 时条目值物化为缺省预算，预览必须三值分明） | host |
-| inputModalities | `providers.<P>.models.<i>.input` | 数组 ⊆ {text,image}、非空、去重 | 未知模态裁剪并警告（parser 全量保留） | host |
-| reasoning = disabled | `providers.<P>.models.<i>.reasoningEfforts = false` | 见 R 清单 | `false` = 非推理 ≠ `off:null`（不发参数）；UI 必须区分两种"关" | host |
-| reasoning = effort | `providers.<P>.models.<i>.reasoningEfforts = <dict>` | 见 R 清单（effortMap 投影） | 见 R 清单 | host |
-| reasoning = inherit | remove `providers.<P>.models.<i>.reasoningEfforts`（若存在） | — | 无键则 no-op | host |
-| reasoning = budget | 无条目承接点 | — | profile-only（`no-per-model-slot`）+ `budget-route-level` 警告；可选路由级写 `providers.<P>.thinkingBudgets`，默认关闭（`route-write-would-leak`：波及同路由全部模型） | profile-only |
-| outputModalities | 无宿主字段 | — | profile-only（`host-field-absent`） | profile-only |
-| compat（24 字段） | `providers.<P>.models.<i>.compat.*`（可写） | 逐字段词表 P2 建 | v1 白名单外 → profile-only（`out-of-whitelist-v1`），只存不写 | profile-only（v1） |
-| deepseekExtras / 未知协议字段 | 不猜路径 | `unknown-field` | profile-only（`out-of-whitelist-v1` / `unknown-protocol-field`） | profile-only |
+| `displayName` | `providers.<P>.models.<i>.name` | 非空字符串 | 无 | 宿主 |
+| `contextWindow` | `providers.<P>.models.<i>.contextWindow` | 正整数 | 无（展示时叠加继承链的 `defaultContextWindow`=262144） | 宿主 |
+| `maxTokens` | `providers.<P>.models.<i>.maxTokens` | 正整数 | `max-tokens-default-budget`（A4：调用未显式给 `maxTokens` 时条目值被物化为缺省预算，预览必须三值分明） | 宿主 |
+| `inputModalities` | `providers.<P>.models.<i>.input` | 数组 ⊆ {`text`,`image`}、非空、去重 | 未知模态裁剪并告警（解析器全量保留） | 宿主 |
+| 推理 = 关闭 | `providers.<P>.models.<i>.reasoningEfforts = false` | 见 R 清单 | `false` = 非推理 ≠ `off:null`（不发参数）；界面必须区分这两种"关" | 宿主 |
+| 推理 = 档位 | `providers.<P>.models.<i>.reasoningEfforts = <dict>` | 见 R 清单（`effortMap` 投影） | 见 R 清单 | 宿主 |
+| 推理 = 继承 | 删掉 `providers.<P>.models.<i>.reasoningEfforts`（若存在） | — | 无键则不做任何事 | 宿主 |
+| 推理 = 预算 | 无条目级承接点 | — | 仅档案（`no-per-model-slot`）+ `budget-route-level` 告警；可选的路由级写入 `providers.<P>.thinkingBudgets`，默认关闭（`route-write-would-leak`：会波及同路由的全部模型） | 仅档案 |
+| `outputModalities` | 无宿主字段 | — | 仅档案（`host-field-absent`） | 仅档案 |
+| `compat`（24 字段） | `providers.<P>.models.<i>.compat.*`（可写） | 逐字段词表 P2 再建 | v1 白名单外 → 仅档案（`out-of-whitelist-v1`），只存不写 | 仅档案（v1） |
+| `deepseekExtras`／未知协议字段 | 不猜路径 | `unknown-field` | 仅档案（`out-of-whitelist-v1`／`unknown-protocol-field`） | 仅档案 |
 
-### 4.1 models / modelOverrides 通道规则
+### 4.1 `models` 与 modelOverrides 两条通道的规则
 
 [已核对-源码 A2]
 
-- **models 非空 = 整体替换路由目录**：向目录路由（`handDeclared=false` 且原无 models 数组）写入新条目时，宿主目录里其他模型将从该路由消失 → 强制 `catalog-replacement` 警告，UI 侧（B4 diff-review）必须显式确认后才允许落盘；引擎在未确认状态返回 ops=[]。
-- **追加语义**：路由已有 models 数组时，投影 = 读取 `hostState.models` → 追加本条目（下标 = 现有长度）→ 整体回写数组；不重排既有条目（保持用户既有序与既有 settings 下标稳定）。
-- **互斥**：`hostState.modelOverrides` 非空时写 models → `models-overrides-exclusive` 警告；且未知 ID 无法走 modelOverrides 通道（只收已安装目录内 ID）→ 若同时 `handDeclared=false` 且 overrides 非空，整体拒写（`overrides-channel-conflict`），提示用户改走新建 hand-declared provider。
-- **重复 ID**：`rawModelId` 已存在于 `hostState.models`（或 override 键集）→ 拒写（`duplicate-model-id`）；同名不同大小写视为重复（宿主按字面匹配，保守等同）。
-- **未知键丢弃**：档案中白名单外字段若被用户期待写入 → `unknown-key-dropped` 警告（宿主物化时丢弃）。
+- **`models` 非空 = 整体替换路由目录**：向目录路由（`handDeclared=false` 且原本没有 `models` 数组）写入新条目时，宿主目录里的其他模型会从该路由消失 → 强制 `catalog-replacement` 告警，界面侧（B4 的差异复核）必须显式确认后才允许落盘；引擎在未确认状态下返回 `ops=[]`。
+- **追加语义**：路由已有 `models` 数组时，投影 = 读取 `hostState.models` → 追加本条目（下标 = 现有长度）→ 整体回写数组；不重排既有条目（保持用户既有的顺序与既有 `settings` 下标稳定）。
+- **互斥**：`hostState.modelOverrides` 非空时再写 `models` → `models-overrides-exclusive` 告警；而且未知 ID 走不了 `modelOverrides` 通道（它只收已安装目录内的 ID）→ 若同时 `handDeclared=false` 且 `overrides` 非空，整体拒写（`overrides-channel-conflict`），提示用户改走新建的 `hand-declared` 提供方。
+- **重复 ID**：`rawModelId` 已存在于 `hostState.models`（或 `override` 的键集）→ 拒写（`duplicate-model-id`）；同名但大小写不同也视为重复（宿主按字面匹配，保守起见等同处理）。
+- **未知键丢弃**：档案中白名单外的字段若被用户期待写入 → `unknown-key-dropped` 告警（宿主物化时会丢弃）。
 
 ### 4.2 reasoningEfforts 合法性预检（R 清单）
 
-[已核对-源码 A3] 目标：**在客户端先行复刻宿主 `resolveModelReasoning` 的全部拒绝条件**，避免写入后路由整体解析失败（一条坏 dict 报废整个路由的模型目录）。违反任一条 → `projectReasoning` 返回 unsupported（或 validateField 拒绝），不产生 ops：
+[已核对-源码 A3] 目标：**在客户端先行复刻宿主 `resolveModelReasoning` 的全部拒绝条件**，避免写入之后整条路由解析失败（一条坏字典就能废掉该路由的整个模型目录）。违反任一条 → `projectReasoning` 返回不支持（或由 `validateField` 拒绝），不产生操作：
 
-- **R1 形态**：值只能是 `false` 或对象；对象键 ⊆ {off,minimal,low,medium,high,xhigh,max}，值 string 或 null。非 off 键为 null → 拒（`effort-null-on-non-off`）；off 以外档值必须 string（`effort-value-type`）。
-- **R2 非空档**：对象至少含一个 off 以外档位键 → 否则拒（`effort-map-off-only`）。
-- **R3 off 双义**：`off: null` = 请求不发参数；`off: "<wire>"` = 发送该值。两者都合法，但 UI 必须展示差异（这是"推理模型但不发参数"与"非推理 false"的第三种态）。
-- **R4 档位引用**：`policy.effort.defaultLevel` 若 ∉ 写入 dict 键 且 ∉ `driver.catalogDeclaredLevels` → 拒（`level-unknown`；宿主侧 = "未声明档 pin 不支持"，请求期 `UNSUPPORTED_REASONING_EFFORT` 先于 IO 抛出）。
-- **R5 xhigh/max 显式**：`defaultLevel ∈ {xhigh, max}` 时写入 dict **必须显式含该档**（`level-unknown` 拒；即使目录看似声明也要求显式，保守策略 [推断-设计定案]）。
-- **R6 disabled 表达**：`policy.mode="disabled"` → 写 `reasoningEfforts: false`；严禁翻译成 `off: null`（语义不同：false=非推理模型；off:null=推理模型但请求省略参数）。
-- **R7 wireProfile 自洽**：所选 `WireProfile.protocol !== "pi-ai"` → 拒（`efforts-dict-not-in-dialect` 同码复用，detail 指明方言错配）。
+- **R1 形态**：值只能是 `false` 或对象；对象键 ⊆ {`off`,`minimal`,`low`,`medium`,`high`,`xhigh`,`max`}，值为字符串或 `null`。非 `off` 键取 `null` → 拒（`effort-null-on-non-off`）；`off` 以外的档位值必须是字符串（`effort-value-type`）。
+- **R2 非空档**：对象至少要含一个 `off` 以外的档位键，否则拒（`effort-map-off-only`）。
+- **R3 `off` 的双义**：`off: null` = 请求不发参数；`off: "<wire>"` = 发送该值。两者都合法，但界面必须展示差异（这是"推理模型但不发参数"与"非推理 `false`"之间的第三种状态）。
+- **R4 档位引用**：`policy.effort.defaultLevel` 若 ∉ 写入字典的键且 ∉ `driver.catalogDeclaredLevels` → 拒（`level-unknown`；宿主侧对应"未声明档位被固定为不支持"，请求期先于 IO 抛出 `UNSUPPORTED_REASONING_EFFORT`）。
+- **R5 `xhigh`／`max` 必须显式**：`defaultLevel ∈ {xhigh, max}` 时，写入的字典**必须显式含该档**（否则 `level-unknown` 拒；即便目录看起来声明过也要求显式，保守策略 [推断-设计定案]）。
+- **R6 关闭的表达**：`policy.mode="disabled"` → 写 `reasoningEfforts: false`；严禁翻译成 `off: null`（语义不同：`false` 是非推理模型；`off:null` 是推理模型但请求省略参数）。
+- **R7 wireProfile 自洽**：所选 `WireProfile.protocol !== "pi-ai"` → 拒（复用 `efforts-dict-not-in-dialect` 同码，详情里指明方言错配）。
 
-### 4.3 路由级字段（pi-ai）
+### 4.3 路由级字段（`pi-ai`）
 
-[已核对-基线 A9] `apiKeyEnv / displayName / api / baseURL / headers / reasoning / transport / timeoutMs / cacheRetention / defaultContextWindow / defaultMaxTokens / defaultInput` 属连接管理层（B1/B3 域），B2 投影器**只读不写**；`thinkingBudgets` 是唯一预算承接点但为路由级 → 默认 profile-only（见上表 budget 行）。
+[已核对-基线 A9] `apiKeyEnv / displayName / api / baseURL / headers / reasoning / transport / timeoutMs / cacheRetention / defaultContextWindow / defaultMaxTokens / defaultInput` 属连接管理层（B1／B3 的领域），B2 的投影器**只读不写**；`thinkingBudgets` 是唯一的预算承接点，但它是路由级 → 默认只入档案（见上表预算行）。
 
 ---
 
-## 5. deepseek 投影规则表
+## 5. `deepseek` 投影规则表
 
 [已核对-源码/U4 A5/A6] 白名单五项 + 路由级推理：
 
-| 档案字段 | wire 路径 | 校验 | 副作用 / 警告 | 分类 |
+| 档案字段 | 线上路径 | 校验 | 副作用／告警 | 分类 |
 | --- | --- | --- | --- | --- |
-| displayName | `providers.<P>.models.<i>.name` | 非空 string | 无 | host |
-| contextWindow | `providers.<P>.models.<i>.contextWindow` | 正整数 | 展示继承链 defaultContextWindow=1e6 | host |
-| maxTokens | `providers.<P>.models.<i>.maxTokens` | 正整数 | 展示路由缺省 256e3；同样受 A4 类"缺省预算"语义影响（deepseek 路由级 maxTokens 缺省）[推断-设计定案] | host |
-| inputModalities | `providers.<P>.models.<i>.inputModalities` | 数组 ⊆ {text,image}、非空、去重；缺省 ["text"] | 未知模态裁剪 | host |
-| reasoning = effort | `providers.<P>.reasoningEffort = <level>` | level ∈ {off,low,high,max}；policy 无 defaultLevel → 拒（`level-required`） | `route-level-reasoning` 警告：影响该 models[] 全体条目 | host（路由级） |
-| reasoning = disabled | `providers.<P>.thinking = "disabled"` | — | `route-level-reasoning` 警告；与 `reasoningEffort:"off"` 的取舍见 5.1 | host（路由级） |
-| reasoning = inherit | 不写任何路由级推理键（若现值存在且源于本档案则 remove） | — | 无 | host |
-| reasoning（输入为 reasoningEfforts dict） | — | — | **`efforts-dict-not-in-dialect` 拒**：档位系不同（七档 vs 四档，无 minimal/medium/xhigh），禁止静默映射 [已核对-基线 A6] | unsupported |
-| reasoning = budget | 无任何承接点（无 thinkingBudgets） | — | profile-only（`no-per-model-slot`） | profile-only |
-| outputModalities | 无宿主字段 | — | profile-only（`host-field-absent`） | profile-only |
-| deepseekExtras（description/imagePixelBudget/imageMaxBytes/systemPromptUpdate/toolUpdate） | 可写但插件白名单不写 | — | profile-only（`out-of-whitelist-v1`，U4：保持最小写入面） | profile-only |
-| compat | 本方言无此字段 | — | 输入即 `unknown-protocol-field`（若档案源自 pi-ai 复制） | profile-only |
+| `displayName` | `providers.<P>.models.<i>.name` | 非空字符串 | 无 | 宿主 |
+| `contextWindow` | `providers.<P>.models.<i>.contextWindow` | 正整数 | 展示继承链 `defaultContextWindow`=1e6 | 宿主 |
+| `maxTokens` | `providers.<P>.models.<i>.maxTokens` | 正整数 | 展示路由缺省 256e3；同样受 A4 类"缺省预算"语义影响（`deepseek` 的路由级 `maxTokens` 缺省）[推断-设计定案] | 宿主 |
+| `inputModalities` | `providers.<P>.models.<i>.inputModalities` | 数组 ⊆ {`text`,`image`}、非空、去重；缺省 `["text"]` | 未知模态裁剪 | 宿主 |
+| 推理 = 档位 | `providers.<P>.reasoningEffort = <level>` | `level` ∈ {`off`,`low`,`high`,`max`}；策略里没有 `defaultLevel` → 拒（`level-required`） | `route-level-reasoning` 告警：影响该 `models[]` 的全部条目 | 宿主（路由级） |
+| 推理 = 关闭 | `providers.<P>.thinking = "disabled"` | — | `route-level-reasoning` 告警；与 `reasoningEffort:"off"` 的取舍见 5.1 | 宿主（路由级） |
+| 推理 = 继承 | 不写任何路由级推理键（若现值存在且源自本档案则删除） | — | 无 | 宿主 |
+| 推理（输入为 `reasoningEfforts` 字典） | — | — | **`efforts-dict-not-in-dialect` 拒**：档位系不同（七档对四档，没有 `minimal`／`medium`／`xhigh`），禁止静默映射 [已核对-基线 A6] | 不支持 |
+| 推理 = 预算 | 无任何承接点（没有 `thinkingBudgets`） | — | 仅档案（`no-per-model-slot`） | 仅档案 |
+| `outputModalities` | 无宿主字段 | — | 仅档案（`host-field-absent`） | 仅档案 |
+| `deepseekExtras`（`description/imagePixelBudget/imageMaxBytes/systemPromptUpdate/toolUpdate`） | 可写但插件白名单不写 | — | 仅档案（`out-of-whitelist-v1`，U4：保持最小写入面） | 仅档案 |
+| `compat` | 本方言没有此字段 | — | 输入即 `unknown-protocol-field`（若档案是从 `pi-ai` 复制来的） | 仅档案 |
 
-### 5.1 deepseek 推理投影细则
+### 5.1 `deepseek` 推理投影细则
 
 [已核对-源码 A5 + 推断-设计定案]
 
-- **effort 档位校验**：`policy.effort.defaultLevel` 必须 ∈ {off,low,high,max}，否则 `level-not-in-dialect`（如 medium/xhigh/minimal）；**不做最近档映射**（medium→low 之类一律拒绝，理由同 A6：档位系不同禁止静默映射）。
-- **disabled 主表达**：写路由级 `thinking: "disabled"`（与目录字段同形）；`reasoningEffort: "off"` 作为用户显式选择 `WireDisableSpec{protocol:"deepseek", kind:"effort-off"}` 时的替代表达。两者并存时的宿主优先级 [待验证-0.2.x]——保守默认：disabled 策略只写 `thinking`，不动 `reasoningEffort`，预览按"thinking 优先"标注。
-- **路由级波及**：deepseek 单路由多模型时，路由级推理写影响全部条目 → 除警告外，B4 UI 需显示受影响模型清单（来自 `hostState.models`）。
-- **models 数组**：deepseek `models[]` 即路由自身目录；追加规则同 §4.1 追加语义，重复 ID 拒绝（`duplicate-model-id`）；无 modelOverrides 通道（`supportsPerModelOverrides=false`）。
+- **档位校验**：`policy.effort.defaultLevel` 必须 ∈ {`off`,`low`,`high`,`max`}，否则 `level-not-in-dialect`（例如 `medium`／`xhigh`／`minimal`）；**不做就近档映射**（`medium`→`low` 之类一律拒绝，理由同 A6：档位系不同禁止静默映射）。
+- **关闭的主表达**：写路由级 `thinking: "disabled"`（与目录字段同形）；`reasoningEffort: "off"` 作为用户显式选择 `WireDisableSpec{protocol:"deepseek", kind:"effort-off"}` 时的替代表达。两者并存时宿主的优先级 [待验证-0.2.x]——保守默认：关闭策略只写 `thinking`，不动 `reasoningEffort`，预览按"`thinking` 优先"标注。
+- **路由级波及**：`deepseek` 单路由多模型时，路由级推理写会影响全部条目 → 除告警之外，B4 的界面还需显示受影响的模型清单（来自 `hostState.models`）。
+- **`models` 数组**：`deepseek` 的 `models[]` 就是路由自身的目录；追加规则同 §4.1 的追加语义，重复 ID 拒绝（`duplicate-model-id`）；没有 `modelOverrides` 通道（`supportsPerModelOverrides=false`）。
 
 ---
 
-## 6. 未知路由兜底投影（hand-declared route）
+## 6. 未知路由的兜底投影（`hand-declared` 路由）
 
 [已核对-基线（兜底规则给定）+ 推断-设计定案]
 
-**定义**：`hostState.handDeclared = true`（provider 存在但 routeId ∉ 已安装目录路由集合，或用户从零新建的 provider 条目）。
+**定义**：`hostState.handDeclared = true`（提供方存在，但 routeId ∉ 已安装目录的路由集合，或用户从零新建的提供方条目）。
 
 规则：
 
-1. **先决条件**：必须同时具备 `api` 与 `baseURL`（`hostState.api` 与 `hostState.baseURL` 均为非空 string）才允许写任何 models 条目。缺失 → 整体拒写（`missing-route-prerequisites`，ops=[]）。v1 投影器**不代填**这两个字段——它们是连接身份，归 B1 连接管理域；投影器只在 UI 文案中指路。
-2. **空路由追加**：`hostState.models` 为空/不存在 → 创建数组，本条目写 `models.0`（路径段 `String(0)`）；此场景无目录可丢，**不触发** `catalog-replacement`（无 catalog 可替换），改发 `hand-declared-no-catalog` 提示（能力值全部来自 user-declared / parameter-tested，UI 需标注"无目录背书"）。
-3. **非空路由追加**：按 §4.1 追加语义执行（读现有数组 → 尾部追加 → 回写）；重复 ID 拒绝。
-4. **hand-declared 上的目录继承失效**：`DriverRouteFacts.catalogDeclaredLevels` 视为空 → R4/R5 预检严格按写入 dict 判定，任何 `defaultLevel` 未在 dict 显式声明即拒（`level-unknown`）——hand-declared 没有目录兜底，宁严勿松。
-5. **Evidence 要求**：hand-declared 条目的能力值若全部 `origin=user-declared`，预览保真度封顶 `static-only`；一旦用户跑过验证请求（U5 通道），相关 Evidence 升级 `parameter-tested`，保真度可到 `exact`。
+1. **先决条件**：必须同时具备 `api` 与 `baseURL`（`hostState.api` 与 `hostState.baseURL` 均为非空字符串）才允许写任何 `models` 条目。缺失 → 整体拒写（`missing-route-prerequisites`，`ops=[]`）。v1 的投影器**不代填**这两个字段——它们是连接身份，归 B1 的连接管理领域；投影器只在界面文案里指路。
+2. **空路由追加**：`hostState.models` 为空／不存在 → 创建数组，本条目写到 `models.0`（路径段 `String(0)`）；这种场景没有目录可丢，**不触发** `catalog-replacement`（本来就没有目录可替换），改发 `hand-declared-no-catalog` 提示（能力值全部来自用户声明／参数实测，界面需标注"无目录背书"）。
+3. **非空路由追加**：按 §4.1 的追加语义执行（读现有数组 → 尾部追加 → 回写）；重复 ID 拒绝。
+4. **`hand-declared` 上的目录继承失效**：`DriverRouteFacts.catalogDeclaredLevels` 视为空 → R4／R5 的预检严格按写入字典判定，任何 `defaultLevel` 未在字典里显式声明即拒（`level-unknown`）——`hand-declared` 没有目录兜底，宁严勿松。
+5. **证据要求**：`hand-declared` 条目的能力值若全部为 `origin=user-declared`，预览保真度封顶在 `static-only`；一旦用户跑过验证请求（U5 通道），相关证据升级为 `parameter-tested`，保真度可到 `exact`。
 
 ---
 
 ## 7. 投影三分类判定表
 
-[已核对-基线 + 推断-设计定案] 每个档案控制项的归宿：**可应用宿主**（进 settingsOps）/ **仅档案 profile-only**（存档不写）/ **需 runtime adapter（P3+）**。
+[已核对-基线 + 推断-设计定案] 每个档案控制项的归宿：**可应用宿主**（进 `settingsOps`）／**仅档案**（存档不写）／**需运行时适配器（P3+）**。
 
-| 控制项 | pi-ai | deepseek | 分类 | 阶段 |
+| 控制项 | `pi-ai` | `deepseek` | 分类 | 阶段 |
 | --- | --- | --- | --- | --- |
-| displayName | 条目 `name` | 条目 `name` | host | P0 |
-| contextWindow | 条目 `contextWindow` | 条目 `contextWindow` | host | P0 |
-| maxTokens | 条目 `maxTokens`（A4 三值展示义务） | 条目 `maxTokens` | host | P0 |
-| inputModalities | 条目 `input` | 条目 `inputModalities` | host | P0 |
-| reasoning = disabled | 条目 `reasoningEfforts: false` | 路由 `thinking:"disabled"` | host | P0 |
-| reasoning = effort（本方言档位） | 条目 `reasoningEfforts` dict | 路由 `reasoningEffort`（四值） | host | P0 |
-| reasoning = effort（跨方言档位/dict） | —（收到他方言 dict 拒） | `efforts-dict-not-in-dialect` / `level-not-in-dialect` | unsupported（不投影） | P0 |
-| reasoning = inherit | remove 条目键 | 不写路由键 | host | P0 |
-| budget | 路由 `thinkingBudgets`（无条目承接点） | 无 | profile-only（`no-per-model-slot` + `budget-route-level`） | P0 存档；路由写 P2（显式 route-scope 开关） |
-| outputModalities | 无条目字段 | 无条目字段 | profile-only（`host-field-absent`） | P0 |
-| compat（pi-ai 24 字段） | 可写但 v1 白名单外 | 无此字段 | profile-only（`out-of-whitelist-v1`） | P2 评估直写 |
-| deepseekExtras | — | 白名单不写 | profile-only（`out-of-whitelist-v1`） | P2 评估 |
-| 未知协议字段（未来宿主新增键） | 不猜路径 | 不猜路径 | profile-only（`unknown-protocol-field`） | 持续 |
-| 参数实测 wire 值回填（effortMap wire 值修正） | 需请求侧观测 | 需请求侧观测 | runtime adapter | P3+（U5 waterfall，按可拒设计） |
-| 预算运行时执行（agent/request 改写） | waterfall 通道 | waterfall 通道 | runtime adapter | P3+（U5，自检探测 + ledger） |
+| `displayName` | 条目 `name` | 条目 `name` | 宿主 | P0 |
+| `contextWindow` | 条目 `contextWindow` | 条目 `contextWindow` | 宿主 | P0 |
+| `maxTokens` | 条目 `maxTokens`（A4 的三值展示义务） | 条目 `maxTokens` | 宿主 | P0 |
+| `inputModalities` | 条目 `input` | 条目 `inputModalities` | 宿主 | P0 |
+| 推理 = 关闭 | 条目 `reasoningEfforts: false` | 路由 `thinking:"disabled"` | 宿主 | P0 |
+| 推理 = 档位（本方言档位） | 条目 `reasoningEfforts` 字典 | 路由 `reasoningEffort`（四值） | 宿主 | P0 |
+| 推理 = 档位（跨方言档位／字典） | —（收到他方言字典即拒） | `efforts-dict-not-in-dialect` / `level-not-in-dialect` | 不支持（不投影） | P0 |
+| 推理 = 继承 | 删条目键 | 不写路由键 | 宿主 | P0 |
+| 预算 | 路由 `thinkingBudgets`（无条目承接点） | 无 | 仅档案（`no-per-model-slot` + `budget-route-level`） | P0 只存档；路由写 P2（显式 `route-scope` 开关） |
+| `outputModalities` | 无条目字段 | 无条目字段 | 仅档案（`host-field-absent`） | P0 |
+| `compat`（`pi-ai` 24 字段） | 可写但 v1 白名单外 | 无此字段 | 仅档案（`out-of-whitelist-v1`） | P2 评估直写 |
+| `deepseekExtras` | — | 白名单不写 | 仅档案（`out-of-whitelist-v1`） | P2 评估 |
+| 未知协议字段（未来宿主新增的键） | 不猜路径 | 不猜路径 | 仅档案（`unknown-protocol-field`） | 持续 |
+| 参数实测的线上值回填（`effortMap` 线上值修正） | 需请求侧观测 | 需请求侧观测 | 运行时适配器 | P3+（U5 瀑布流，按可拒设计） |
+| 预算的运行时执行（`agent/request` 改写） | 瀑布流通道 | 瀑布流通道 | 运行时适配器 | P3+（U5，自检探测 + 台账） |
 
 ---
 
-## 8. Open Questions + 保守默认
+## 8. 开放问题 + 保守默认
 
-### Open Questions
+### 开放问题
 
 | # | 问题 | 标签 | 建议验证点 |
 | --- | --- | --- | --- |
-| Q1 | 宿主 `mutate` 的 op 具体编码（path/value 对 vs patch 对象）与本档 `SettingsOp` 的换算 | [待验证-0.2.x] | 读 settings 包 op 执行器源码；adapter 内做一次归一化即可隔离 |
-| Q2 | pi-ai 单 provider 是否存在多路由形态（影响 ModelKey.routeId = providerId 的惯例） | [待验证-0.2.x] | resolveRouteModels 的路由键来源 |
-| Q3 | deepseek `thinking` 与 `reasoningEffort:"off"` 并存时宿主优先级 | [待验证-0.2.x] | 请求构造器读取顺序 |
-| Q4 | `cleared` 在 contextWindow/maxTokens/input 上"删键降级"是否满足 a.md §3.B 原意 | [推断-设计定案] | 与 a.md 作者对表；UI 需显式展示 lossy |
-| Q5 | 单值 budget（policy.budget.tokens）→ 四桶 thinkingBudgets 的映射策略（写哪桶？其余桶缺省行为？） | [推断-设计定案→P2] | 仅在 route-scope 开启后设计 |
-| Q6 | models.dev `outputModalities` 是否值得尝试写入 pi-ai `compat` 键曲线表达 | [待验证-0.2.x] | compat 24 字段语义表建立后判定 |
-| Q7 | SETTINGS_CONFLICT 重试归属（引擎重试 vs 交还 UI）与 revision 刷新策略 | [推断-设计定案] | 引擎单次重读-重投影（≤2 次），仍冲突则交 UI |
-| Q8 | pi-ai 条目级 `reasoning`（路由级字段之一）与条目 dict 的叠加语义是否需要投影器感知 | [待验证-0.2.x] | resolveModelReasoning 是否读路由级 reasoning |
+| Q1 | 宿主 `mutate` 的操作具体编码（`path`／`value` 对，还是 `patch` 对象）与本档 `SettingsOp` 的换算 | [待验证-0.2.x] | 读 `settings` 包的操作执行器源码；在适配器内做一次归一化即可隔离 |
+| Q2 | `pi-ai` 单个提供方是否存在多路由形态（影响 `ModelKey.routeId = providerId` 这个惯例） | [待验证-0.2.x] | `resolveRouteModels` 的路由键来源 |
+| Q3 | `deepseek` 的 `thinking` 与 `reasoningEffort:"off"` 并存时宿主的优先级 | [待验证-0.2.x] | 请求构造器的读取顺序 |
+| Q4 | `cleared` 在 `contextWindow`／`maxTokens`／`input` 上"删键降级"是否满足 a.md §3.B 的原意 | [推断-设计定案] | 与 a.md 作者对表；界面需显式展示有损 |
+| Q5 | 单值预算（`policy.budget.tokens`）→ 四桶 `thinkingBudgets` 的映射策略（写哪一桶？其余桶的缺省行为？） | [推断-设计定案→P2] | 只在 `route-scope` 开启后再设计 |
+| Q6 | models.dev 的 `outputModalities` 是否值得尝试写进 `pi-ai` 的 `compat` 键做曲线表达 | [待验证-0.2.x] | `compat` 24 字段语义表建立后再判定 |
+| Q7 | `SETTINGS_CONFLICT` 重试的归属（引擎重试还是交还界面）与修订号刷新策略 | [推断-设计定案] | 引擎单次重读-重投影（≤2 次），仍冲突则交界面 |
+| Q8 | `pi-ai` 条目级的 `reasoning`（路由级字段之一）与条目字典的叠加语义，是否需要投影器感知 | [待验证-0.2.x] | `resolveModelReasoning` 是否读路由级 `reasoning` |
 
 ### 保守默认（与上表冲突时按此收敛）
 
-1. **未知字段一律 profile-only，不猜路径**——写错路径的代价（静默无效或解析失败）高于少写一个字段。
-2. **档位系不同一律 unsupported，不做最近档/近似映射**——A6 红线，无例外。
-3. **路由级写入默认关闭**——任何会波及同路由其他模型的操作（thinkingBudgets、deepseek 路由推理例外项）必须显式 route-scope 开关 + 受影响清单展示。
-4. **cleared 无空值表达 → 删键 + lossy 警告**，绝不造宿主不存在的值（如写 0 或空串）。
-5. **hand-declared 缺先决条件 → 整体拒写**，不部分落盘（半初始化路由比没有路由更难排查）。
-6. **推理预检失败 → 丢弃全部 ops**，不让"其他字段先写进去"造成半态。
-7. **预览保真度就低不就高**：证据不完整时标 `static-only` / `merged-approx`，UI 明示，不冒充 `exact`。
+1. **未知字段一律只入档案，不猜路径**——写错路径的代价（静默无效或解析失败）高于少写一个字段。
+2. **档位系不同一律不支持，不做就近档／近似映射**——A6 红线，无例外。
+3. **路由级写入默认关闭**——任何会波及同路由其他模型的操作（`thinkingBudgets`、`deepseek` 路由推理的例外项）都必须有显式 `route-scope` 开关 + 受影响清单展示。
+4. **`cleared` 没有空值表达 → 删键 + 有损告警**，绝不造宿主不存在的值（例如写 0 或空串）。
+5. **`hand-declared` 缺先决条件 → 整体拒写**，不部分落盘（半初始化的路由比没有路由更难排查）。
+6. **推理预检失败 → 丢弃全部操作**，不让"其他字段先写进去"造成半态。
+7. **预览保真度就低不就高**：证据不完整时标 `static-only`／`merged-approx`，界面明示，不冒充 `exact`。

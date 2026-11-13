@@ -1,7 +1,7 @@
-// Domain types + shared primitives (DESIGN-v2 §4; B2 §2 TS types, runtime JS form).
-// Pure, zero host dependencies — everything here is fixture-testable.
+// 领域类型 + 共享原语（DESIGN-v2 §4；B2 §2 的 TS 类型，这里是运行时 JS 形态）。
+// 纯逻辑、零宿主依赖 —— 此处每一处都可以用夹具直接测试。
 
-/** Driver identifiers with a host settings namespace. */
+/** 带宿主设置命名空间的驱动标识。 */
 export const DRIVERS = Object.freeze({
   "pi-ai": { settingsNs: "llm-pi-ai", pathPrefix: ["providers"] },
   deepseek: { settingsNs: "llm-deepseek", pathPrefix: [] },
@@ -12,7 +12,7 @@ export const PI_AI_LEVELS = Object.freeze(["off", "minimal", "low", "medium", "h
 export const DEEPSEEK_EFFORTS = Object.freeze(["off", "low", "high", "max"]);
 export const MODALITIES = Object.freeze(["text", "image"]);
 
-/** FNV-1a 32-bit digest (change detection / fingerprints; not crypto). */
+/** FNV-1a 32 位摘要（用于变更检测 / 指纹；不做密码学用途）。 */
 export function digest(text) {
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
@@ -22,7 +22,7 @@ export function digest(text) {
   return `fnv1a-${hash.toString(16).padStart(8, "0")}`;
 }
 
-/** Canonical JSON: sorted object keys, stable number/string forms. */
+/** 规范 JSON：对象键排序，数字 / 字符串形态稳定。 */
 export function canonicalJson(value) {
   if (value === null) return "null";
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -33,19 +33,19 @@ export function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
-/** Field fingerprint: sha-style path+canonical-value (B5 §3.1; digest here is FNV). */
+/** 字段指纹：sha 风格的 path + 规范值（B5 §3.1；这里的摘要算法是 FNV）。 */
 export function fieldFingerprint(path, value) {
   return digest(`${JSON.stringify(path)}:${canonicalJson(value)}`);
 }
 
-/** Canonical storage key of a ModelKey five-tuple (B3 §6; %2F escaping).
- * Only used for OUR namespace storage — host paths use raw segments. */
+/** ModelKey 五元组的规范存储键（B3 §6；按 %2F 转义）。
+ * 只用于我们自己命名空间的存储 —— 宿主路径使用原始分段。 */
 export function modelKeyStorageKey(key) {
   const esc = (s) => String(s).replace(/%/g, "%25").replace(/\//g, "%2F");
   return [key.connectionId, key.driverId, key.routeId, key.protocol, key.rawModelId].map(esc).join("/");
 }
 
-/** One catalog/route model row shape we project onto (pi-ai modelFields subset). */
+/** 我们投影落点的一行目录 / 路由模型形态（pi-ai modelFields 的子集）。 */
 export function piAiModelRow({ id, name, contextWindow, maxTokens, input, reasoningEfforts, compat }) {
   return {
     id,
@@ -59,36 +59,35 @@ export function piAiModelRow({ id, name, contextWindow, maxTokens, input, reason
 }
 
 /**
- * Client-side pre-check replicating pi-ai resolveModelReasoning refusals
- * [audit 02-S3; B2 §4.2 R1–R7]. Returns null when the dict is legal, or a
- * {code, message} refusal. `efforts` is the raw reasoningEfforts value.
+ * 客户端预检：复刻 pi-ai resolveModelReasoning 的拒绝规则
+ * [audit 02-S3；B2 §4.2 R1–R7]。字典合法时返回 null，否则返回
+ * {code, message} 形式的拒绝结果。`efforts` 是原始的 reasoningEfforts 值。
  */
 export function validatePiAiReasoningEfforts(efforts) {
-  if (efforts === undefined) return null; // R-inherit: keep catalog capability
-  if (efforts === false) return null; // R6: false = non-reasoning model (legal)
+  if (efforts === undefined) return null; // R-inherit：沿用目录能力事实
+  if (efforts === false) return null; // R6：false 表示非推理模型（合法）
   if (efforts === null || typeof efforts !== "object" || Array.isArray(efforts) || Object.keys(efforts).length === 0) {
-    return { code: "efforts-empty", message: "reasoningEfforts is empty; declare levels, set false, or omit" };
+    return { code: "efforts-empty", message: "reasoningEfforts 为空；请声明档位、设为 false，或直接省略" };
   }
   const declared = PI_AI_LEVELS.filter((level) => efforts[level] !== undefined);
   for (const level of declared) {
     const wire = efforts[level];
     if (wire === null) {
-      if (level !== "off") return { code: "efforts-null-non-off", message: `reasoningEfforts.${level}: only "off" may leave the wire value empty` };
+      if (level !== "off") return { code: "efforts-null-non-off", message: `reasoningEfforts.${level}：只有 "off" 允许线上值为空` };
     } else if (typeof wire !== "string" || wire.length === 0) {
-      return { code: "efforts-empty-wire", message: `reasoningEfforts.${level}: wire value must be a non-empty string` };
+      return { code: "efforts-empty-wire", message: `reasoningEfforts.${level}：线上值必须是非空字符串` };
     }
   }
   if (!declared.some((level) => level !== "off")) {
-    return { code: "efforts-only-off", message: "reasoningEfforts offers no level beyond off; declare a thinking level or set false" };
+    return { code: "efforts-only-off", message: "reasoningEfforts 除 off 之外没有任何档位；请声明一个思考档位，或设为 false" };
   }
-  // R5-adjacent: xhigh/max must be explicitly declared to be selectable —
-  // that is a UI selection rule; here we only refuse UNKNOWN level keys that
-  // pi-ai would silently ignore (THINKING_LEVELS unknown keys are dropped,
-  // so writing them is allowed but useless — warn, not refuse).
+  // 与 R5 相邻：xhigh / max 必须显式声明才可选 —— 那是 UI 的选项规则；
+  // 这里只处理会被 pi-ai 静默忽略的未知档位键（THINKING_LEVELS 的未知键会被丢弃，
+  // 所以写进去合法但没意义 —— 仅告警，不拒绝）。
   return null;
 }
 
-/** deepseek dialect gate [B2 §5; p1-precheck B2-Q3]: efforts dict → refuse. */
+/** deepseek 方言门禁 [B2 §5；p1-precheck B2-Q3]：efforts 字典 → 拒绝。 */
 export function projectDeepseekReasoning(policy) {
   if (policy === undefined || policy.mode === "inherit") return { value: undefined, warning: undefined };
   if (policy.mode === "disabled") return { value: "off", warning: "deepseek-disabled-as-off" };

@@ -1,4 +1,4 @@
-// P0-05: models.dev v1 parser fixture tests (F1–F20, B3 §9).
+// P0-05：models.dev v1 解析器固件测试（F1–F20，B3 §9）。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -18,20 +18,20 @@ const aux = {
 };
 
 for (const fixture of FIXTURES) {
-  test(`parser fixture ${fixture.id}`, () => {
+  test(`解析器固件 ${fixture.id}`, () => {
     const text = JSON.stringify(fixture.doc);
     const result = parser.parseModelsDevV1(text);
     assert.equal(fixture.expect(result, aux), true, `fixture ${fixture.id} expectation failed: ${JSON.stringify(result).slice(0, 400)}`);
   });
 }
 
-test("bad JSON keeps last-known-good path (structural fail, no throw)", () => {
+test("非法 JSON 保留上一次已知良好路径（结构性失败，不抛错）", () => {
   const result = parser.parseModelsDevV1("{not json");
   assert.equal(result.ok, false);
   assert.equal(result.errors[0].code, "bad-json");
 });
 
-test("oversize guard: >maxProviders refuses structurally", () => {
+test("超限守卫：>maxProviders 时结构性拒绝", () => {
   const doc = {};
   for (let i = 0; i < 5001; i++) doc[`p${i}`] = { models: {} };
   const result = parser.parseModelsDevV1(JSON.stringify(doc));
@@ -39,14 +39,14 @@ test("oversize guard: >maxProviders refuses structurally", () => {
   assert.equal(result.errors[0].code, "too-many-providers");
 });
 
-test("reasoning_options cap (maxReasoningOptions=8)", () => {
+test("reasoning_options 上限（maxReasoningOptions=8）", () => {
   const options = Array.from({ length: 12 }, (_, i) => ({ type: "toggle" }));
   const result = parser.parseModelsDevV1(JSON.stringify({ p: { models: { m: { id: "m", reasoning_options: options, limit: { context: 1, output: 1 } } } } }));
   assert.equal(result.entries[0].reasoning.controls.length, 8);
 });
 
-test("real snapshot excerpt: llmtech provider parses with effort values", () => {
-  // Rebuilt from the captured api.json (gap-fill U6); escaped underscores cleaned.
+test("真实快照片段：llmtech 提供方带 effort 值解析", () => {
+  // 依据抓取的 api.json 重建（补齐 U6）；转义下划线已清理。
   const excerpt = {
     llmtech: {
       id: "llmtech",

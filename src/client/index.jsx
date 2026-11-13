@@ -1,13 +1,11 @@
-// ModelPilot workbench — minimal usable screen (P1-07 MVP).
+// ModelPilot 工作台 —— 最小可用界面（P1-07 MVP）。
 //
-// Registers one settings.section: "modelpilot.workbench".
-// Flow: pick a pi-ai route → type a model id → review the projected row and
-// every warning the engine produced → write it with the host's own
-// configForms.mutate (revision-fenced, auto-recovering).
+// 注册一个 settings.section："modelpilot.workbench"。
+// 流程：选一条 pi-ai 路由 → 输入模型 id → 检查投影出的行和引擎产出的每一条
+// 告警 → 用宿主自己的 configForms.mutate 写入（带修订号围栏、自动恢复）。
 //
-// The projection engine is INLINED from src/core by the build step, so this
-// screen runs byte-identical logic to the Host-side tests: R1–R7 reasoning
-// pre-check, catalog-replacement gate, whitelist filtering, duplicate guards.
+// 投影引擎由构建步骤从 src/core 内联进来，因此这个界面跑的逻辑与宿主侧测试
+// 逐字节相同：R1–R7 推理预检、目录替换门禁、白名单过滤、重复条目守卫。
 
 import * as React from "react";
 import { projectPiAi } from "../core/pi-ai-projection.js";
@@ -19,7 +17,7 @@ export const inject = ["slots", "configForms"];
 const SECTION_ID = "modelpilot.workbench";
 const LLM_NS = "llm-pi-ai";
 
-/** Read the current pi-ai providers map from a configForms snapshot. */
+/** 从 configForms 快照里读取当前的 pi-ai providers 映射。 */
 function providersOf(snapshot) {
   const value = snapshot?.value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -34,16 +32,15 @@ function userProvidersOf(snapshot) {
   return providers && typeof providers === "object" && !Array.isArray(providers) ? providers : {};
 }
 
-/** Convert models.dev-style catalog ids on a route into a Set for the gate. */
+/** 把某条路由上 models.dev 风格的目录 id 转成供门禁使用的 Set。 */
 function catalogIdsOf(route) {
   const models = Array.isArray(route?.models) ? route.models : [];
   return new Set(models.map((m) => m?.id).filter((id) => typeof id === "string"));
 }
 
-/** Route models are the only catalog facts the bundled engine may treat as a
- * replacement target. Computed under useMemo below so the Set identity is
- * stable per route document — a fresh Set each render would re-run projection
- * on every keystroke. */
+/** 路由自带的 models 是打包引擎唯一可以当作替换对象的目录事实。下面用
+ * useMemo 计算，好让 Set 的身份按路由文档保持稳定 —— 每次渲染都新建 Set
+ * 会导致每敲一个键就重跑一次投影。 */
 
 const s = {
   page: { display: "flex", flexDirection: "column", gap: 16, padding: "4px 2px 32px" },
@@ -100,7 +97,7 @@ function Field({ label, children }) {
   );
 }
 
-/** The workbench screen. */
+/** 工作台界面。 */
 function Workbench({ configForms }) {
   const scope = configForms.get(LLM_NS);
   const [snap, setSnap] = React.useState(() => scope.getSnapshot());
@@ -133,7 +130,7 @@ function Workbench({ configForms }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const catalogIds = React.useMemo(() => catalogIdsOf(route), [route]);
 
-  // ── live projection: exactly what the Host engine computed in unit tests ──
+  // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
   const draft = React.useMemo(() => {
     const levels = efforts
       .split(",")
@@ -176,7 +173,7 @@ function Workbench({ configForms }) {
       setToast(
         ok
           ? { tone: "good", text: `已写入 ${routeId} / ${draft.id}` }
-          : { tone: "bad", text: "写入被宿主拒绝（revision 冲突或校验失败），已重新读取当前配置，请核对后重试" },
+          :           { tone: "bad", text: "写入被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" },
       );
       if (ok) {
         setModelId("");
@@ -193,8 +190,8 @@ function Workbench({ configForms }) {
     }
   }
 
-  // ConfigFormController snapshot shape (0.2.2): {status, value, base, user, revision, writable}.
-  // There is no `mode` field — namespace availability is `status`, write access is `writable`.
+  // ConfigFormController 快照形态（0.2.2）：{status, value, base, user, revision, writable}。
+  // 没有 `mode` 字段 —— 命名空间是否可用看 `status`，写权限看 `writable`。
   const status = snap?.status;
 
   return (
@@ -202,9 +199,9 @@ function Workbench({ configForms }) {
       <div>
         <h2 style={s.h}>ModelPilot · 模型配置助手</h2>
         <p style={s.sub}>
-          输入模型 ID，引擎按「档案 → 路由目录 → 模板 → 预设」合成字段，只写字段级最小 patch。
-          写入走宿主 configForms（revision 围栏 + 冲突自动重读）。
-          {status === "unavailable" ? " 当前 profile 未提供该命名空间。" : ""}
+          输入模型 ID，引擎按「用户档案 → 路由目录 → 模板 → 预设」合成字段，只写字段级最小补丁。
+          写入走宿主 configForms（修订号围栏 + 冲突自动重读）。
+          {status === "unavailable" ? " 当前配置档案未提供该命名空间。" : ""}
         </p>
       </div>
 
@@ -237,7 +234,7 @@ function Workbench({ configForms }) {
         <Field label="输出上限 (maxTokens)">
           <input style={s.input} value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} placeholder="如 8192" inputMode="numeric" />
         </Field>
-        <Field label="推理档位（逗号分隔，空=不写）">
+        <Field label="推理档位（逗号分隔，留空则不写）">
           <input style={s.input} value={efforts} onChange={(e) => setEfforts(e.target.value)} placeholder="off,low,high" />
         </Field>
       </div>
@@ -250,7 +247,7 @@ function Workbench({ configForms }) {
           <input type="checkbox" checked={inputImage} onChange={(e) => setInputImage(e.target.checked)} /> image
         </label>
         <span style={{ ...s.chip, opacity: 0.75 }}>
-          路由现有条目 {routeModels.length} · 目录条目 {catalogIds.size}
+          该路由现有模型条目 {routeModels.length} · 目录条目 {catalogIds.size}
         </span>
       </div>
 
@@ -258,7 +255,7 @@ function Workbench({ configForms }) {
         <div style={s.sub}>填入模型 ID 后这里显示将要写入的内容。</div>
       ) : (
         <>
-          <div style={s.label}>投影结果（只写这些字段）</div>
+          <div style={s.label}>投影结果（写出的只有这些字段）</div>
           <pre style={s.pre}>{JSON.stringify(projection?.settingsOps ?? [], null, 2)}</pre>
 
           {(projection?.warnings ?? []).map((w, i) => (
@@ -279,7 +276,7 @@ function Workbench({ configForms }) {
             <label style={{ ...s.warn, display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
               <input type="checkbox" checked={ackReplace} onChange={(e) => setAckReplace(e.target.checked)} style={{ marginTop: 2 }} />
               <span>
-                该路由是目录路由，写入 models 会<b>整体替换</b>它的模型目录，上面列出的
+                该路由是目录路由，写入 models 会<b>整体替换</b>它的模型目录，上列
                 {gate.removedCatalogIds?.length ?? 0} 个条目将从该路由消失。我确认继续。
               </span>
             </label>
@@ -320,7 +317,7 @@ function Workbench({ configForms }) {
       <p style={s.sub}>
         支持的推理档位：{PI_AI_LEVELS.join(" / ")}　·　输入模态：{MODALITIES.join(" / ")}
         <br />
-        maxTokens 同时是该模型的默认请求输出预算（DSH 双重身份），不填则跟随路由默认。
+        maxTokens 同时充当该模型的默认请求输出预算（DSH 双重身份），不填则跟随路由默认。
       </p>
     </div>
   );

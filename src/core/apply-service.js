@@ -1,22 +1,22 @@
-// P1-04/P1-05: ApplyService — prepare/commit, planId idempotency, lastApplied
-// field fingerprints & undo (B5 §1–§4). Pure orchestration over injected
-// ports: settingsWriter (read revision, apply ops), profileStore, ledger.
+// P1-04/P1-05：ApplyService —— prepare/commit、planId 幂等、lastApplied
+// 字段指纹与撤销（B5 §1–§4）。在注入端口之上的纯编排：
+// settingsWriter（读修订号、应用 ops）、profileStore、台账。
 
 import { canonicalJson, fieldFingerprint } from "./domain.js";
 
-/** Build a planId bound to the desired content (B5 §2.1). */
+/** 构造与目标内容绑定的 planId（B5 §2.1）。 */
 export function makePlanId(ops, desiredProfileVersion) {
   return `plan-${fieldFingerprint("$plan", { ops, desiredProfileVersion })}`;
 }
 
 /**
- * prepare(): locate target rows, validate projection, produce the plan.
+ * prepare()：定位目标行、校验投影、产出计划。
  * @param {object} input
- *   projection: ProjectionResult from the adapter (already has settingsOps/warnings)
- *   hostRevision: current revision of the target ns (from describe)
- *   profileVersion: desiredProfileVersion of the draft
- *   ackedWarnings: Set of warning codes the user confirmed (e.g. catalog-replacement)
- * @returns plan or {refused, reason}
+ *   projection: 适配器给出的 ProjectionResult（已包含 settingsOps / warnings）
+ *   hostRevision: 目标命名空间当前的修订号（来自 describe）
+ *   profileVersion: 草稿的 desiredProfileVersion
+ *   ackedWarnings: 用户已确认的告警 code 集合（例如 catalog-replacement）
+ * @returns 计划，或 {refused, reason}
  */
 export function prepare({ projection, hostRevision, profileVersion, ackedWarnings = new Set() }) {
   const blocking = projection.warnings.filter((w) => w.requiresAck && !ackedWarnings.has(w.code));
@@ -39,8 +39,8 @@ export function prepare({ projection, hostRevision, profileVersion, ackedWarning
 }
 
 /**
- * commit(): profile first (desired/pending), then host patch via the writer.
- * Both steps report independently — the two namespaces are NOT atomic [B5 §1.3].
+ * commit()：先写用户档案（desired / pending），再通过写入器打宿主补丁。
+ * 两步各自独立汇报 —— 两个命名空间并不具备原子性 [B5 §1.3]。
  * @param {object} ports
  *   profileStore: {save(planId, profileVersion, record) → {ok, revision} | {ok:false, error}}
  *   settingsWriter: {write(ns, ops, expectedRevision) → {ok, revision} | {ok:false, conflict:{expected,actual}}}
@@ -54,7 +54,7 @@ export async function commit(plan, ports, { ns, profile } = {}) {
     return event;
   };
 
-  // ① profile line (desired/pending)
+  // ① 档案行（desired / pending）
   const profileResult = await ports.profileStore.save(plan.planId, plan.profileVersion, { ...profile, state: "pending" });
   if (!profileResult.ok) {
     record({ ts: now(), planId: plan.planId, ns: "modelpilot", op: "profile-save", path: "$", via: "ui", result: "error" });
@@ -62,11 +62,11 @@ export async function commit(plan, ports, { ns, profile } = {}) {
   }
   record({ ts: now(), planId: plan.planId, ns: "modelpilot", op: "profile-save", path: "$", via: "ui", result: "ok" });
 
-  // ② host minimal patch with revision fence + one retry (re-read + relocate + re-diff)
+  // ② 带修订号围栏的宿主最小补丁 + 一次重试（重读 + 重定位 + 重算差异）
   let hostResult = await ports.settingsWriter.write(ns, plan.ops, plan.hostRevision);
   if (!hostResult.ok && hostResult.conflict) {
     record({ ts: now(), planId: plan.planId, ns, op: "host-write", path: plan.ops[0]?.path?.join("."), via: "ui", result: "conflict" });
-    const retry = await ports.settingsWriter.write(ns, plan.ops, hostResult.conflict.actual); // re-read revision
+    const retry = await ports.settingsWriter.write(ns, plan.ops, hostResult.conflict.actual); // 重读修订号
     hostResult = retry.ok ? retry : { ...retry, retried: true };
   }
   if (!hostResult.ok) {
@@ -81,7 +81,7 @@ export async function commit(plan, ports, { ns, profile } = {}) {
   }
   record({ ts: now(), planId: plan.planId, ns, op: "host-write", path: plan.ops[0]?.path?.join("."), via: "ui", result: "ok", meta: { revision: hostResult.revision } });
 
-  // ③ lastApplied field fingerprints + reverse patch (B5 §3)
+  // ③ lastApplied 字段指纹 + 反向补丁（B5 §3）
   const lastApplied = plan.ops.map((op) => ({
     path: op.path,
     fingerprint: fieldFingerprint(op.path, op.op === "set" ? op.value : undefined),
@@ -99,9 +99,9 @@ export async function commit(plan, ports, { ns, profile } = {}) {
 }
 
 /**
- * undoField(): revert one field only if its current value still matches the
- * applied fingerprint (external edits are never overwritten) [B5 §3.3].
- * @param ports.settingsWriter.read(ns) → section (current host doc)
+ * undoField()：仅当该字段当前值仍与已应用指纹一致时才回滚
+ * （外部改动绝不覆盖）[B5 §3.3]。
+ * @param ports.settingsWriter.read(ns) → section（当前宿主文档）
  * @param ports.settingsWriter.write(ns, ops, expectedRevision)
  */
 export async function undoField(entry, ports, { ns }) {
@@ -112,9 +112,9 @@ export async function undoField(entry, ports, { ns }) {
   if (currentFp !== fingerprint) {
     return { ok: false, reason: "external-modification", current };
   }
-  // Reverse op: set → restore previous value if the caller recorded one,
-  // else unset (delete key); append-row (set with rest empty on an array) →
-  // unset the whole row. Location is re-resolved by id for array rows [B5 §3.2].
+  // 反向 op：set → 调用方记录过原值就还原原值，否则 unset（删键）；
+  // 追加行（数组上的 set，且尾部为空）→ 整行 unset。
+  // 数组行的位置会按 id 重新定位 [B5 §3.2]。
   let reverse;
   if (op === "set" && entry.reverseValue !== undefined) {
     reverse = { op: "set", path, value: entry.reverseValue };

@@ -1,8 +1,8 @@
-// Build script: bundle the Web client half with esbuild.
-// React / react-dom / jsx-runtime stay EXTERNAL — the DSH client module loader
-// resolves them from the host graph (dsh-client-modules `require(spec)` walk).
-// Our own pure core modules are INLINED so the browser runs the exact same
-// projection/R1–R7 logic the Host tests cover (no logic drift between halves).
+// 构建脚本：用 esbuild 打包 Web 客户端侧。
+// React / react-dom / jsx-runtime 保持 EXTERNAL —— DSH 客户端模块加载器
+// 从宿主图中解析它们（dsh-client-modules 的 `require(spec)` 遍历）。
+// 我们自己的纯核心模块被 INLINE，使浏览器运行的投影/R1–R7 逻辑与宿主测试
+// 覆盖的完全一致（两侧之间无逻辑漂移）。
 
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
@@ -30,8 +30,8 @@ const footer = `
 await build({
   entryPoints: [join(root, "src", "client", "index.jsx")],
   bundle: true,
-  // cjs so esbuild emits `module.exports = __toCommonJS(...)` — the factory
-  // below must RETURN that object; iife would leave module.exports empty.
+  // 用 cjs，esbuild 才能产出 `module.exports = __toCommonJS(...)` —— 下面的
+  // factory 必须 RETURN 那个对象；iife 会让 module.exports 为空。
   format: "cjs",
   platform: "browser",
   target: ["es2022"],
@@ -45,4 +45,4 @@ await build({
   logLevel: "info",
 });
 
-console.log("built lib/client.js");
+console.log("已构建 lib/client.js");

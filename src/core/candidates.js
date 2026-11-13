@@ -1,17 +1,17 @@
-// P1-02: CandidateEngine — field-level candidate synthesis (B3 §4, 8-level order).
-// Pure function; touched/locked short-circuit; conflicts kept side-by-side.
+// P1-02：CandidateEngine —— 字段级候选合成（B3 §4，八级优先序）。
+// 纯函数；已改动 / 已锁定的字段直接短路；冲突项并列保留。
 
 import { PI_AI_LEVELS, MODALITIES } from "./domain.js";
 
 /**
- * Synthesize per-field candidates for one model draft.
+ * 为一个模型草稿合成逐字段候选。
  * @param {object} input
- *   profile:    ModelProfileV2-like StoredField map (may be undefined)
- *   resolved:   resolved identity entry (route/catalog hit) — may be undefined
- *   template:   user-selected template values — may be undefined
- *   preset:     one of the three presets (basic/coding/long) — may be undefined
- *   touched:    Set of field ids the user edited
- *   locked:     Set of field ids locked by the user
+ *   profile:    形如 ModelProfileV2 的 StoredField 映射（可能为 undefined）
+ *   resolved:   已解析的身份条目（命中路由 / 目录）—— 可能为 undefined
+ *   template:   用户选定的模板值 —— 可能为 undefined
+ *   preset:     三个预设之一（basic / coding / long）—— 可能为 undefined
+ *   touched:    用户改过的字段 id 集合
+ *   locked:     被用户锁定的字段 id 集合
  * @returns {fields: {contextWindow|outputBudget|input|reasoning: Candidate}}
  *   Candidate = {value, origin, evidence:{scope,status,source}, confidence, via}
  */
@@ -25,9 +25,9 @@ export function synthesizeCandidates(input) {
     if (locked.has(fieldId) || touched.has(fieldId)) {
       return { fieldId, shortCircuited: true };
     }
-    // cleared = explicit "never autofill again" (a.md §3.B / B2 StoredField):
-    // the whole chain is skipped, not just the stored link. Re-enabling is a
-    // user action (unlock/clear-reset), never a late catalog arrival.
+    // cleared = 明确的「以后永不自动填充」（a.md §3.B / B2 StoredField）：
+    // 整条链都会被跳过，而不只是跳过已存储的那一环。重新启用属于用户动作
+    // （解锁 / 清除重置），绝不会因为目录数据迟到而自动恢复。
     if (noAutofill) return { fieldId, candidate: undefined, shortCircuited: false, noAutofill: true };
     for (const link of chain) {
       if (link === undefined || link === null) continue;
@@ -38,9 +38,9 @@ export function synthesizeCandidates(input) {
     return { fieldId, candidate: undefined, shortCircuited: false };
   };
 
-  // StoredField tri-state: cleared → noAutofill for the whole chain;
-  // inherit → no explicit value (fall through);
-  // value → the stored value is the top-priority candidate.
+  // StoredField 三态：cleared → 整条链都不自动填充；
+  // inherit → 没有显式值（继续往下走）；
+  // value → 存储值就是最高优先级候选。
   const storedInfo = (stored) => {
     if (stored === undefined) return { link: undefined, cleared: false };
     if (stored.state === "cleared") return { link: undefined, cleared: true };
@@ -63,8 +63,8 @@ export function synthesizeCandidates(input) {
   const budgetStored = storedInfo(input.profile?.budgetState !== undefined ? { state: input.profile.budgetState, value: input.profile.budgetValue } : undefined);
   fields.outputBudget = decide("outputBudget", [
     budgetStored.link,
-    // Models.dev declared output limit is capability FACT, not the user budget —
-    // it surfaces as evidence only (B4 three-value display), never as the budget.
+    // Models.dev 声明的输出上限是能力事实，不是用户预算 ——
+    // 它只作为证据出现（B4 三值展示），永远不当成预算。
     template?.outputBudget ? { value: template.outputBudget, origin: "protocol-template", evidence: { scope: "model", status: "unknown", source: "template" }, confidence: "low", via: "template" } : undefined,
     preset?.outputBudget ? { value: preset.outputBudget, origin: "fallback-preset", evidence: { scope: "model", status: "unknown", source: "preset" }, confidence: "low", via: "preset" } : undefined,
     { value: 8192, origin: "fallback-preset", evidence: { scope: "model", status: "unknown", source: "default" }, confidence: "low", via: "default-budget" },
@@ -82,7 +82,7 @@ export function synthesizeCandidates(input) {
   const reasoningStored = storedInfo(input.profile?.reasoningState !== undefined ? { state: input.profile.reasoningState, value: input.profile.reasoningValue } : undefined);
   fields.reasoning = decide("reasoning", [
     reasoningStored.link,
-    // Catalog-declared reasoning: convert models.dev controls into an effort policy
+    // 目录声明的推理：把 models.dev 的 controls 转成档位策略（effort policy）
     resolved?.reasoningControls?.length ? { value: reasoningPolicyFromControls(resolved.reasoningControls), origin: "route-metadata", evidence: { scope: "model", status: "declared", source: "catalog" }, confidence: "medium", via: "catalog-reasoning" } : undefined,
     template?.reasoning ? { value: template.reasoning, origin: "protocol-template", evidence: { scope: "model", status: "unknown", source: "template" }, confidence: "low", via: "template" } : undefined,
     { value: { mode: "inherit" }, origin: "fallback-preset", evidence: { scope: "model", status: "unknown", source: "default" }, confidence: "low", via: "default-inherit" },
@@ -91,7 +91,7 @@ export function synthesizeCandidates(input) {
   return { fields, shortCircuited: Object.values(fields).filter((f) => f.shortCircuited).map((f) => f.fieldId) };
 }
 
-/** models.dev controls → ReasoningPolicy [B3 §2 mapping; effort values preserved]. */
+/** models.dev controls → ReasoningPolicy [B3 §2 映射；档位值保持原样]。 */
 export function reasoningPolicyFromControls(controls) {
   const effort = controls.find((c) => c.kind === "effort");
   if (effort) {

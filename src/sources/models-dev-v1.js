@@ -1,9 +1,9 @@
-// models.dev v1 parser (DESIGN-v2 §3 SourceRegistry; gap-fill U6).
-// Endpoint: https://models.dev/api.json (anonymous). Fixture-driven tests
-// inject the document — this module never fetches on its own.
+// models.dev v1 解析器（DESIGN-v2 §3 SourceRegistry；补齐 U6）。
+// 端点：https://models.dev/api.json（匿名可访问）。夹具驱动的测试自行注入
+// 文档 —— 本模块本身从不发起抓取。
 
 export const PARSER_SCHEMA_VERSION = 1;
-/** Conservative poisoning guards [B3 §2.2]. */
+/** 保守的投毒守卫 [B3 §2.2]。 */
 export const LIMITS = Object.freeze({
   maxBytes: 10 * 1024 * 1024,
   maxProviders: 5000,
@@ -12,9 +12,9 @@ export const LIMITS = Object.freeze({
   maxReasoningOptions: 8,
 });
 
-/** Digest two documents for change detection (ETag-less dedup fallback). */
+/** 对文档求摘要用于变更检测（无 ETag 时的去重兜底）。 */
 export function contentDigest(jsonText) {
-  let hash = 0x811c9dc5; // FNV-1a 32-bit — enough for change detection, not crypto
+  let hash = 0x811c9dc5; // FNV-1a 32 位 —— 做变更检测足够，非密码学用途
   for (let i = 0; i < jsonText.length; i++) {
     hash ^= jsonText.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193) >>> 0;
@@ -23,10 +23,9 @@ export function contentDigest(jsonText) {
 }
 
 /**
- * Parse one models.dev v1 document into normalized entries.
- * Never throws for malformed content — malformed parts are skipped and
- * counted; only a non-object root fails structurally (caller keeps
- * last-known-good) [B3 I4].
+ * 把一个 models.dev v1 文档解析成归一化条目。
+ * 内容畸形时绝不抛异常 —— 畸形部分会被跳过并计数；只有根不是对象时
+ * 才算结构性失败（调用方继续沿用上一个已知良好版本）[B3 I4]。
  * @returns {ok, entries, errors, digest}
  */
 export function parseModelsDevV1(jsonText, { now = new Date().toISOString() } = {}) {
@@ -38,7 +37,7 @@ export function parseModelsDevV1(jsonText, { now = new Date().toISOString() } = 
     return { ok: false, entries: [], errors: [{ code: "bad-json", message: String(error) }], digest: contentDigest(jsonText) };
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
-    return { ok: false, entries: [], errors: [{ code: "bad-root", message: "root is not a provider map" }], digest: contentDigest(jsonText) };
+    return { ok: false, entries: [], errors: [{ code: "bad-root", message: "根节点不是 provider 映射" }], digest: contentDigest(jsonText) };
   }
   const providerIds = Object.keys(doc);
   if (providerIds.length > LIMITS.maxProviders) {
@@ -76,10 +75,10 @@ function normalizeModel(providerId, provider, modelId, model, errors, now) {
   }
   const limit = typeof model.limit === "object" && model.limit !== null ? model.limit : {};
   const modalities = typeof model.modalities === "object" && model.modalities !== null ? model.modalities : {};
-  // context semantics: limit.input present → input; else combined (U6 mapping)
+  // 上下文语义：有 limit.input → input；否则按 combined（U6 映射）
   const context = numberOrNull(limit.context);
   const contextSemantics = context === null ? "unknown" : numberOrNull(limit.input) !== null ? "input" : "combined";
-  // reasoning controls from reasoning_options (three shapes; capped)
+  // 从 reasoning_options 取推理 controls（三种形态；有上限）
   const controls = [];
   const options = Array.isArray(model.reasoning_options) ? model.reasoning_options.slice(0, LIMITS.maxReasoningOptions) : [];
   for (const option of options) {

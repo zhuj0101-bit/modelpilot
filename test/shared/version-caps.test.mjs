@@ -1,14 +1,14 @@
-// P0-04: prepareCall dual-track detection (version-capabilities + VerifyTransport).
+// P0-04：prepareCall 双轨探测（version-capabilities + VerifyTransport）。
 //
-// Facts under test [audit 02-S2]:
-//   0.2.0: prepareCall(config, signal)                      → length 2
-//   0.2.1: prepareCall(config, signal, configure)           → length 3
-// Track A (configure): prepared call is one-shot (INVALID_PREPARED_CALL on
-//   second dispatch and on config mutation); configure receives deep-frozen
-//   structuredClone of (controls, modelInfo).
-// Track B (precheck): resolveCallConfig validates; UNSUPPORTED_REASONING_EFFORT
-//   surfaces before any dispatch; explicit stream() is then used.
-// Missing/absent runtime → explicit all-false capabilities, never throws.
+// 被测事实 [audit 02-S2]：
+//   0.2.0: prepareCall(config, signal)                      → 长度 2
+//   0.2.1: prepareCall(config, signal, configure)           → 长度 3
+// 轨道 A（configure）：预置调用一次性有效（第二次派发和配置变更都会
+//   报 INVALID_PREPARED_CALL）；configure 收到深冻结的 (controls, modelInfo)
+//   structuredClone。
+// 轨道 B（precheck）：resolveCallConfig 负责校验；UNSUPPORTED_REASONING_EFFORT
+//   在任何派发前浮现；随后使用显式 stream()。
+// 运行时缺失/不存在 → 显式全 false 能力，绝不抛错。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -25,7 +25,7 @@ const { LlmError } = repoRequire("@deepseek-ai/dsh-llm");
 const caps = await import(pathToFileURL(join(root, "src", "shared", "version-capabilities.js")).href);
 const transport = await import(pathToFileURL(join(root, "src", "host", "verify-transport.js")).href);
 
-test("detection matrix: length 2 / 3 / missing / non-function", () => {
+test("探测矩阵：长度 2 / 3 / 缺失 / 非函数", () => {
   assert.deepEqual(caps.detectVersionCapabilities({ prepareCall: (a, b) => {} }), {
     supportsConfigure: false, probeArgs: 2, nativeReasoningEditing: false,
   });
@@ -114,40 +114,40 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-test("track A (configure, arity 3): configure called once, frozen inputs, one-shot stream", async () => {
+test("轨道 A（configure，3 参）：configure 调用一次、输入冻结、流一次性", async () => {
   const runtime = makeRuntime({ arity: 3 });
   const t = transport.createVerifyTransport(runtime);
   assert.equal(t.mode, "configure");
   const result = await t.verify({ provider: "pi-ai", model: "m1", reasoningEffort: "high" });
   assert.equal(runtime.__calls.configure, 1);
   assert.equal(result.fidelity, "driver-confirmed");
-  assert.equal(result.config.maxTokens, 32768); // default materialized
-  // One-shot enforcement: consume the stream once, then a second dispatch
-  // on the same prepared handle must fail [audit 02-S2: INVALID_PREPARED_CALL].
+  assert.equal(result.config.maxTokens, 32768); // 默认值已落实
+  // 一次性强制：先消费一次流，之后在同一预置句柄上再次派发
+  // 必须失败 [audit 02-S2: INVALID_PREPARED_CALL]。
   for await (const chunk of result.stream()) void chunk;
   await assert.rejects(async () => result.dispatchAgain(), /INVALID_PREPARED_CALL|only be dispatched once/);
 });
 
-test("track A: config mutation before dispatch → INVALID_PREPARED_CALL", async () => {
+test("轨道 A：派发前修改配置 → INVALID_PREPARED_CALL", async () => {
   const runtime = makeRuntime({ arity: 3 });
   const t = transport.createVerifyTransport(runtime);
   const result = await t.verify({ provider: "pi-ai", model: "m1", reasoningEffort: "low" });
   await assert.rejects(async () => result.dispatchWithMutatedConfig(), /INVALID_PREPARED_CALL|changed before adapter dispatch/);
 });
 
-test("track B (precheck, arity 2): resolveCallConfig validates, then explicit stream", async () => {
+test("轨道 B（precheck，2 参）：resolveCallConfig 校验，随后显式 stream", async () => {
   const runtime = makeRuntime({ arity: 2 });
   const t = transport.createVerifyTransport(runtime);
   assert.equal(t.mode, "precheck");
   const result = await t.verify({ provider: "pi-ai", model: "m1", reasoningEffort: "high", maxTokens: 8192 });
   assert.equal(result.fidelity, "driver-confirmed");
-  assert.equal(result.config.maxTokens, 8192); // explicit value passes through
+  assert.equal(result.config.maxTokens, 8192); // 显式值原样传递
   const chunks = [];
   for await (const chunk of result.stream()) chunks.push(chunk);
   assert.equal(chunks.length, 1);
 });
 
-test("track B: unsupported effort rejects with UNSUPPORTED_REASONING_EFFORT", async () => {
+test("轨道 B：不支持的 effort 以 UNSUPPORTED_REASONING_EFFORT 拒绝", async () => {
   const runtime = makeRuntime({ arity: 2 });
   const t = transport.createVerifyTransport(runtime);
   await assert.rejects(
@@ -156,7 +156,7 @@ test("track B: unsupported effort rejects with UNSUPPORTED_REASONING_EFFORT", as
   );
 });
 
-test("absent runtime: transport degrades explicitly, verify reports unavailable", async () => {
+test("运行时缺失：传输层显式降级，verify 报告不可用", async () => {
   const t = transport.createVerifyTransport(undefined);
   assert.equal(t.mode, "unavailable");
   const result = await t.verify({ provider: "pi-ai", model: "m1" });
