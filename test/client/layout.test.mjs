@@ -12,74 +12,14 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildLayoutHtml } from "./layout-harness.mjs";
+import { fileURLToPath } from "node:url";
+import { buildLayoutHtml, findChrome, runPageProbe } from "./layout-harness.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const bundle = readFileSync(join(root, "lib", "client.js"), "utf8");
-
-/** 找可用的 Chrome/Chromium；找不到返回 null。 */
-function findChrome() {
-  const candidates = [
-    process.env.CHROME_PATH,
-    "google-chrome",
-    "google-chrome-stable",
-    "chromium",
-    "chromium-browser",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    const probe = spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: 10_000 });
-    if (probe.status === 0) return candidate;
-  }
-  return null;
-}
-
-/** 解析 --dump-dom 的文本节点转义，仅处理测量结果里可能出现的字符。 */
-function decodeText(text) {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-function runLayoutProbe(chrome) {
-  const dir = mkdtempSync(join(tmpdir(), "modelpilot-layout-"));
-  const page = join(dir, "index.html");
-  writeFileSync(page, buildLayoutHtml(bundle));
-  try {
-    const run = spawnSync(
-      chrome,
-      [
-        "--headless=new",
-        "--no-sandbox",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--allow-file-access-from-files",
-        "--window-size=1440,1000",
-        "--virtual-time-budget=10000",
-        "--dump-dom",
-        pathToFileURL(page).href,
-      ],
-      { encoding: "utf8", timeout: 60_000, maxBuffer: 20 * 1024 * 1024 },
-    );
-    assert.equal(run.error, undefined, `chrome failed to start: ${run.error?.message}`);
-    const match = run.stdout?.match(/<pre id="result">([\s\S]*?)<\/pre>/);
-    assert.ok(match, `layout result missing. stderr: ${run.stderr?.slice(-2000)}`);
-    return JSON.parse(decodeText(match[1]));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
 
 test("布局回归：提示行不浮动、同行顶边对齐、候选始终全量", (t) => {
   const chrome = findChrome();
@@ -87,7 +27,7 @@ test("布局回归：提示行不浮动、同行顶边对齐、候选始终全�
     t.skip("未找到 Chrome/Chromium，跳过真实布局测量");
     return;
   }
-  const result = runLayoutProbe(chrome);
+  const result = runPageProbe(chrome, buildLayoutHtml(bundle));
 
   // 判据 5：空态 → 合法值 → 非法值 → 清空，输入框屏幕坐标不变。
   assert.equal(result.emptyTop, result.filledTop, "合法值出现提示行后输入框 top 不变");
