@@ -9,7 +9,7 @@
 
 import * as React from "react";
 import { projectPiAi } from "../core/pi-ai-projection.js";
-import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId } from "../core/domain.js";
+import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
 import {
   allReasoningLevels,
   defaultReasoningLevels,
@@ -24,6 +24,15 @@ export const inject = ["slots", "configForms"];
 
 const SECTION_ID = "modelpilot.workbench";
 const LLM_NS = "llm-pi-ai";
+
+// token 字段的候选清单按 #5 写死，不做成用户配置。
+const CONTEXT_WINDOW_CANDIDATES = Object.freeze([8192, 32768, 65536, 131072, 200000, 262144, 1000000]);
+const MAX_TOKENS_CANDIDATES = Object.freeze([4096, 8192, 16384, 32768, 65536, 131072]);
+
+/** 输入只接受十进制正整数；空字符串表示「不写该字段」。 */
+function isPositiveTokenCount(text) {
+  return /^\d+$/.test(text) && Number(text) > 0;
+}
 
 /** 从 configForms 快照里读取当前的 pi-ai providers 映射。 */
 function providersOf(snapshot) {
@@ -56,6 +65,8 @@ const s = {
   sub: { fontSize: 12, opacity: 0.66, margin: 0, lineHeight: 1.55 },
   row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" },
   field: { display: "flex", flexDirection: "column", gap: 4, minWidth: 148 },
+  fieldHint: { fontSize: 11, lineHeight: 1.4, opacity: 0.62 },
+  fieldError: { fontSize: 11, lineHeight: 1.4, color: "#e05252" },
   label: { fontSize: 11, opacity: 0.7, letterSpacing: 0.2 },
   input: {
     padding: "6px 8px", fontSize: 13, borderRadius: 6,
@@ -129,6 +140,8 @@ function Workbench({ configForms }) {
   const displayNameTouched = React.useRef(false);
   const [contextWindow, setContextWindow] = React.useState("");
   const [maxTokens, setMaxTokens] = React.useState("");
+  const [contextWindowError, setContextWindowError] = React.useState(false);
+  const [maxTokensError, setMaxTokensError] = React.useState(false);
   const [inputText, setInputText] = React.useState(true);
   const [inputImage, setInputImage] = React.useState(false);
   const [reasoningLevels, setReasoningLevels] = React.useState(() => defaultReasoningLevels());
@@ -183,6 +196,18 @@ function Workbench({ configForms }) {
   );
   const canApply = writable && !busy && reasoningGuard === null && modelId.trim() !== "" && projection && !blocked && !hardStop && projection.settingsOps.length > 0;
 
+  /** token 输入：合法值写入状态；非法值不落状态，回显最近一次合法值并给出错误。 */
+  function changeTokenCount(event, current, setValue, setError) {
+    const next = event.target.value;
+    if (next === "" || isPositiveTokenCount(next)) {
+      setValue(next);
+      setError(false);
+      return;
+    }
+    setError(true);
+    event.target.value = current;
+  }
+
   async function apply() {
     if (!projection || projection.settingsOps.length === 0) return;
     setBusy(true);
@@ -200,6 +225,8 @@ function Workbench({ configForms }) {
         setDisplayName("");
         setContextWindow("");
         setMaxTokens("");
+        setContextWindowError(false);
+        setMaxTokensError(false);
         setReasoningLevels(noReasoningLevels());
         setAckReplace(false);
       }
@@ -266,10 +293,44 @@ function Workbench({ configForms }) {
 
       <div style={s.row}>
         <Field label="上下文窗口 (contextWindow)">
-          <input style={s.input} value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} placeholder="如 131072" inputMode="numeric" />
+          <input
+            style={s.input}
+            value={contextWindow}
+            onChange={(e) => changeTokenCount(e, contextWindow, setContextWindow, setContextWindowError)}
+            placeholder="如 131072"
+            inputMode="numeric"
+            list="modelpilot-context-window-candidates"
+          />
+          <datalist id="modelpilot-context-window-candidates">
+            {CONTEXT_WINDOW_CANDIDATES.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+          {contextWindowError ? (
+            <span style={s.fieldError}>请输入正整数</span>
+          ) : humanizeTokenCount(contextWindow) !== "" ? (
+            <span style={s.fieldHint}>{humanizeTokenCount(contextWindow)}</span>
+          ) : null}
         </Field>
         <Field label="输出上限 (maxTokens)">
-          <input style={s.input} value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} placeholder="如 8192" inputMode="numeric" />
+          <input
+            style={s.input}
+            value={maxTokens}
+            onChange={(e) => changeTokenCount(e, maxTokens, setMaxTokens, setMaxTokensError)}
+            placeholder="如 8192"
+            inputMode="numeric"
+            list="modelpilot-max-tokens-candidates"
+          />
+          <datalist id="modelpilot-max-tokens-candidates">
+            {MAX_TOKENS_CANDIDATES.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+          {maxTokensError ? (
+            <span style={s.fieldError}>请输入正整数</span>
+          ) : humanizeTokenCount(maxTokens) !== "" ? (
+            <span style={s.fieldHint}>{humanizeTokenCount(maxTokens)}</span>
+          ) : null}
         </Field>
         <div style={s.levels}>
           <span style={s.label}>推理档位（多选；全不选则不写 reasoningEfforts）</span>
@@ -362,6 +423,8 @@ function Workbench({ configForms }) {
             setDisplayName("");
             setContextWindow("");
             setMaxTokens("");
+            setContextWindowError(false);
+            setMaxTokensError(false);
             setReasoningLevels(noReasoningLevels());
             setAckReplace(false);
             setToast(null);
