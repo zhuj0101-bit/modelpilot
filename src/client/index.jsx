@@ -9,7 +9,7 @@
 
 import * as React from "react";
 import { projectPiAi } from "../core/pi-ai-projection.js";
-import { PI_AI_LEVELS, MODALITIES } from "../core/domain.js";
+import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId } from "../core/domain.js";
 import {
   allReasoningLevels,
   defaultReasoningLevels,
@@ -125,6 +125,8 @@ function Workbench({ configForms }) {
   const [routeId, setRouteId] = React.useState("");
   const [modelId, setModelId] = React.useState("");
   const [displayName, setDisplayName] = React.useState("");
+  // 用户手动改过显示名后，模型 ID 的后续变化不再覆盖它；「清空」可恢复联动。
+  const displayNameTouched = React.useRef(false);
   const [contextWindow, setContextWindow] = React.useState("");
   const [maxTokens, setMaxTokens] = React.useState("");
   const [inputText, setInputText] = React.useState(true);
@@ -193,6 +195,7 @@ function Workbench({ configForms }) {
           :           { tone: "bad", text: "写入被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" },
       );
       if (ok) {
+        displayNameTouched.current = false;
         setModelId("");
         setDisplayName("");
         setContextWindow("");
@@ -237,10 +240,27 @@ function Workbench({ configForms }) {
           </select>
         </Field>
         <Field label="模型 ID（原样写入）">
-          <input style={s.input} value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="如 tflow/alpha-32b" />
+          <input
+            style={s.input}
+            value={modelId}
+            onChange={(e) => {
+              const next = e.target.value;
+              setModelId(next);
+              if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(next));
+            }}
+            placeholder="如 tflow/alpha-32b"
+          />
         </Field>
         <Field label="显示名（可选）">
-          <input style={s.input} value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="留空则不写" />
+          <input
+            style={s.input}
+            value={displayName}
+            onChange={(e) => {
+              displayNameTouched.current = true;
+              setDisplayName(e.target.value);
+            }}
+            placeholder="留空则不写"
+          />
         </Field>
       </div>
 
@@ -337,6 +357,7 @@ function Workbench({ configForms }) {
         <button
           style={s.btn}
           onClick={() => {
+            displayNameTouched.current = false;
             setModelId("");
             setDisplayName("");
             setContextWindow("");
