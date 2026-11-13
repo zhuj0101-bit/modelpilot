@@ -115,12 +115,21 @@ export function displayNameFromModelId(modelId) {
 }
 
 /**
- * 把 token 数量转成便于阅读的 K 表示法，供工作台的上下文窗口 / 输出上限
- * 实时提示共用。非有限数或非正数没有可展示的值，返回空字符串。
+ * 把 token 数量转成便于阅读的 K / M 表示法，供工作台的上下文窗口 /
+ * 输出上限实时提示共用。
+ *
+ * - 大于等于 1000000：用 M，保留一位小数并去掉末尾的 .0
+ * - 大于等于 1000：用 K，四舍五入取整
+ * - 其余：原样输出
+ * - 非有限数或非正数：空字符串
  */
 export function humanizeTokenCount(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v <= 0) return "";
+  if (v >= 1_000_000) {
+    const millions = Math.round((v / 1_000_000) * 10) / 10;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
+  }
   if (v >= 1000) return `${Math.round(v / 1000)}K`;
   return String(v);
 }

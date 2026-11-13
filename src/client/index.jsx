@@ -67,11 +67,36 @@ const s = {
   field: { display: "flex", flexDirection: "column", gap: 4, minWidth: 148 },
   fieldHint: { fontSize: 11, lineHeight: 1.4, opacity: 0.62 },
   fieldError: { fontSize: 11, lineHeight: 1.4, color: "#e05252" },
+  // 提示行始终占位：高度固定，内容出现/消失时字段高度不变（问题 3）。
+  hintLine: { minHeight: 16, height: 16, lineHeight: "16px", display: "flex", alignItems: "center" },
   label: { fontSize: 11, opacity: 0.7, letterSpacing: 0.2 },
+  comboBox: { position: "relative", display: "flex", alignItems: "stretch" },
+  comboToggle: {
+    padding: "0 8px", fontSize: 11, cursor: "pointer", borderRadius: 6,
+    border: "1px solid rgba(128,128,128,0.32)", background: "rgba(128,128,128,0.1)",
+    color: "inherit", fontFamily: "inherit", marginLeft: 4,
+  },
+  comboPanel: {
+    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
+    maxHeight: 220, overflowY: "auto", padding: 4, borderRadius: 8,
+    border: "1px solid rgba(128,128,128,0.32)",
+    background: "Canvas", boxShadow: "0 6px 20px rgba(0,0,0,0.18)",
+  },
+  comboItem: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    width: "100%", padding: "5px 8px", fontSize: 12, borderRadius: 5,
+    border: "none", background: "transparent", color: "inherit",
+    fontFamily: "inherit", cursor: "pointer", textAlign: "left",
+  },
+  comboItemActive: { background: "rgba(90,140,230,0.22)" },
+  comboItemHint: { fontSize: 10, opacity: 0.6 },
   input: {
     padding: "6px 8px", fontSize: 13, borderRadius: 6,
     border: "1px solid rgba(128,128,128,0.32)", background: "transparent",
     color: "inherit", fontFamily: "inherit", minWidth: 0,
+    // 固定盒高：原生 select 与 input 的默认高度不同，同一行 flex-end
+    // 对齐时顶边会差 2px（验收判据 6）。
+    boxSizing: "border-box", height: 29,
   },
   pre: {
     margin: 0, padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5,
@@ -113,11 +138,99 @@ const s = {
   },
 };
 
-function Field({ label, children }) {
+function Field({ label, children, hint }) {
   return (
     <label style={s.field}>
       <span style={s.label}>{label}</span>
       {children}
+      <div style={s.hintLine}>
+        {hint ? <span style={s.fieldHint}>{hint}</span> : null}
+      </div>
+    </label>
+  );
+}
+
+/**
+ * token 数值输入 + 自定义候选下拉。
+ *
+ * 不用原生 datalist：datalist 会按当前输入值过滤候选项，选中一个之后
+ * 其余的就不再可见（工单问题 1）。这里始终渲染完整候选列表。
+ */
+function TokenCountField({ label, value, candidates, error, placeholder, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const boxRef = React.useRef(null);
+
+  // 点击面板外部或按 Esc 关闭。
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event) => {
+      if (boxRef.current !== null && !boxRef.current.contains(event.target)) setOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <label style={s.field}>
+      <span style={s.label}>{label}</span>
+      <div ref={boxRef} style={s.comboBox}>
+        <input
+          style={s.input}
+          value={value}
+          onChange={onChange}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          inputMode="numeric"
+          role="combobox"
+          aria-expanded={open}
+          aria-autocomplete="none"
+        />
+        <button
+          type="button"
+          style={s.comboToggle}
+          onClick={() => setOpen((current) => !current)}
+          aria-label="展开候选"
+          tabIndex={-1}
+        >
+          ▾
+        </button>
+        {open ? (
+          <div style={s.comboPanel} role="listbox">
+            {/* 全部候选，不过滤；当前值高亮 */}
+            {candidates.map((n) => (
+              <button
+                key={n}
+                type="button"
+                role="option"
+                aria-selected={String(n) === value}
+                style={String(n) === value ? { ...s.comboItem, ...s.comboItemActive } : s.comboItem}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onChange({ target: { value: String(n) } });
+                  setOpen(false);
+                }}
+              >
+                {n} <span style={s.comboItemHint}>{humanizeTokenCount(n)}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {/* 固定高度提示行，见问题 3 */}
+      <div style={s.hintLine}>
+        {error ? (
+          <span style={s.fieldError}>请输入正整数</span>
+        ) : humanizeTokenCount(value) !== "" ? (
+          <span style={s.fieldHint}>{humanizeTokenCount(value)}</span>
+        ) : null}
+      </div>
     </label>
   );
 }
@@ -259,14 +372,14 @@ function Workbench({ configForms }) {
       ) : null}
 
       <div style={s.row}>
-        <Field label="路由 (provider)">
+        <Field label="路由 (provider)" hint="">
           <select style={s.input} value={routeId} onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}>
             {routes.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
           </select>
         </Field>
-        <Field label="模型 ID（原样写入）">
+        <Field label="模型 ID（原样写入）" hint="">
           <input
             style={s.input}
             value={modelId}
@@ -278,7 +391,7 @@ function Workbench({ configForms }) {
             placeholder="如 tflow/alpha-32b"
           />
         </Field>
-        <Field label="显示名（可选）">
+        <Field label="显示名（可选）" hint="">
           <input
             style={s.input}
             value={displayName}
@@ -292,46 +405,22 @@ function Workbench({ configForms }) {
       </div>
 
       <div style={s.row}>
-        <Field label="上下文窗口 (contextWindow)">
-          <input
-            style={s.input}
-            value={contextWindow}
-            onChange={(e) => changeTokenCount(e, contextWindow, setContextWindow, setContextWindowError)}
-            placeholder="如 131072"
-            inputMode="numeric"
-            list="modelpilot-context-window-candidates"
-          />
-          <datalist id="modelpilot-context-window-candidates">
-            {CONTEXT_WINDOW_CANDIDATES.map((n) => (
-              <option key={n} value={n} />
-            ))}
-          </datalist>
-          {contextWindowError ? (
-            <span style={s.fieldError}>请输入正整数</span>
-          ) : humanizeTokenCount(contextWindow) !== "" ? (
-            <span style={s.fieldHint}>{humanizeTokenCount(contextWindow)}</span>
-          ) : null}
-        </Field>
-        <Field label="输出上限 (maxTokens)">
-          <input
-            style={s.input}
-            value={maxTokens}
-            onChange={(e) => changeTokenCount(e, maxTokens, setMaxTokens, setMaxTokensError)}
-            placeholder="如 8192"
-            inputMode="numeric"
-            list="modelpilot-max-tokens-candidates"
-          />
-          <datalist id="modelpilot-max-tokens-candidates">
-            {MAX_TOKENS_CANDIDATES.map((n) => (
-              <option key={n} value={n} />
-            ))}
-          </datalist>
-          {maxTokensError ? (
-            <span style={s.fieldError}>请输入正整数</span>
-          ) : humanizeTokenCount(maxTokens) !== "" ? (
-            <span style={s.fieldHint}>{humanizeTokenCount(maxTokens)}</span>
-          ) : null}
-        </Field>
+        <TokenCountField
+          label="上下文窗口 (contextWindow)"
+          value={contextWindow}
+          candidates={CONTEXT_WINDOW_CANDIDATES}
+          error={contextWindowError}
+          placeholder="如 131072"
+          onChange={(e) => changeTokenCount(e, contextWindow, setContextWindow, setContextWindowError)}
+        />
+        <TokenCountField
+          label="输出上限 (maxTokens)"
+          value={maxTokens}
+          candidates={MAX_TOKENS_CANDIDATES}
+          error={maxTokensError}
+          placeholder="如 8192"
+          onChange={(e) => changeTokenCount(e, maxTokens, setMaxTokens, setMaxTokensError)}
+        />
         <div style={s.levels}>
           <span style={s.label}>推理档位（多选；全不选则不写 reasoningEfforts）</span>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
