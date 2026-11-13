@@ -29,14 +29,21 @@ test("结果去掉首尾空白（含最后一段为空的情况）", () => {
   assert.equal(displayNameFromModelId("tflow/"), "");
 });
 
-test("humanizeTokenCount：千位以上用 K 表示法，其余原样显示", () => {
+test("humanizeTokenCount：问题 2 表中的 K/M 表示法", () => {
   const cases = [
     [0, ""],
+    [-1, ""],
+    ["abc", ""],
     [999, "999"],
     [1000, "1K"],
     [8192, "8K"],
     [131072, "131K"],
-    [1000000, "1000K"],
+    [200000, "200K"],
+    [262144, "262K"],
+    [1000000, "1M"],
+    [1048576, "1M"],
+    [1500000, "1.5M"],
+    [2000000, "2M"],
   ];
   for (const [input, expected] of cases) {
     assert.equal(humanizeTokenCount(input), expected, `humanizeTokenCount(${input})`);
@@ -46,4 +53,6 @@ test("humanizeTokenCount：千位以上用 K 表示法，其余原样显示", ()
 test("humanizeTokenCount：非数字与非正数返回空字符串", () => {
   assert.equal(humanizeTokenCount("abc"), "");
   assert.equal(humanizeTokenCount(-1), "");
+  assert.equal(humanizeTokenCount(Number.NaN), "");
+  assert.equal(humanizeTokenCount(Number.POSITIVE_INFINITY), "");
 });

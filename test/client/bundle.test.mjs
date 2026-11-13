@@ -125,6 +125,17 @@ test("打包产物内联投影引擎（与宿主测试无逻辑漂移）", () =>
   assert.ok(!/react-dom\/client/.test(source.replace(/^\s*\/\/.*$/gm, "")), "react-dom not bundled");
 });
 
+test("打包产物包含自定义候选下拉与 K/M 提示逻辑", () => {
+  for (const marker of ["TokenCountField", "comboPanel", "hintLine"]) {
+    assert.ok(source.includes(marker), `bundle contains ${marker}`);
+  }
+  // datalist 会按当前值过滤候选（工单 #12 问题 1），产物里不应再出现。
+  assert.ok(!source.includes("datalist"), "bundle no longer renders datalist");
+  assert.ok(!source.includes("modelpilot-context-window-candidates"), "old list id removed");
+  // esbuild 会把 1_000_000 规范化为 1e6；两者都证明 M 分支进入了产物。
+  assert.ok(source.includes("1e6") || source.includes("1_000_000"), "bundle contains the million threshold");
+});
+
 test("无双宿主敌意的全局量：打包产物从不触碰 node 内置模块", () => {
   for (const banned of ["require(\"node:", "process.env", "import(\"node:"]) {
     assert.ok(!source.includes(banned), `bundle must not reference ${banned}`);
