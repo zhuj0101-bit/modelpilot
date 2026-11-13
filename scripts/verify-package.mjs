@@ -48,7 +48,22 @@ console.log(registered?.id === "dsh-model-assistant" ? "PASS" : "FAIL", "13 Modu
 console.log(typeof registered?.exports?.apply === "function" ? "PASS" : "FAIL", "14 exports.apply is a function");
 console.log(registered?.exports?.inject?.join(",") === "slots,configForms" ? "PASS" : "FAIL", "15 inject list");
 
-// Host half loads as plain ESM.
+// Host half loads as plain ESM. Its `@deepseek-ai/*` imports are supplied by
+// the DSH installation anchor at runtime (dsh-app-boot's
+// collectInstallationScopePackages), so link those packages in before loading —
+// exactly what the profile resolver does.
+import { mkdirSync, symlinkSync, existsSync as exists } from "node:fs";
+const anchorModules = "F:/AiTools/DSH/resources/app/dsh/node_modules";
+const needed = ["@deepseek-ai/schemastery", "@deepseek-ai/dsh-typert-protocol", "@deepseek-ai/cordis"];
+const nm = `${dir}/node_modules`;
+if (!exists(nm)) mkdirSync(nm, { recursive: true });
+for (const spec of needed) {
+  const target = `${nm}/${spec}`;
+  if (exists(target)) continue;
+  const parent = spec.slice(0, spec.lastIndexOf("/"));
+  mkdirSync(`${nm}/${parent}`, { recursive: true });
+  try { symlinkSync(`${anchorModules}/${spec}`, target, "junction"); } catch { /* already linked or unsupported */ }
+}
 const host = await import(pathToFileURL(`${dir}/lib/index.js`).href);
 console.log(host.SETTINGS_NS === "modelpilot" ? "PASS" : "FAIL", "16 host SETTINGS_NS");
 console.log(typeof host.apply === "function" ? "PASS" : "FAIL", "17 host apply");

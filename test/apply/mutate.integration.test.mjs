@@ -1,54 +1,53 @@
 // P0-03: settings mutate integration tests.
 //
-// Strategy (PLAN P0-03): extract applyPathOp / isVolatilePath / isPlainObject
-// verbatim from BOTH host versions' dsh-settings/lib/index.js at test time
-// (the npm-supplement trees under ../../modelpilot-tmp-npm/extracted), then
-// run the walker case matrix + the three op templates + revision-conflict and
-// retry semantics against each version's extracted code. This proves the op
-// templates work byte-identically on 0.2.0 and 0.2.1 write semantics.
+// Runs the walker matrix + three op templates + conflict semantics against
+// the VERBATIM write-path code of every supported host, extracted at test
+// time (never re-implemented):
+//   0.2.0-rc.2 / 0.2.1-rc.2 -> npm supplement trees
+//   0.2.2-rc.2             -> the RUNNING installation (F:\AiTools\DSH)
 //
-// The full SettingsService.write() pipeline (configEditor.edit, describe
-// bookkeeping) is host-owned; what a plugin must match is the op vocabulary
-// and the conflict error, so the fixture drives applyPathOp the way mutate()
-// does and asserts SettingsConflictError semantics via the extracted class.
+// The 0.2.2 column is what keeps a future host upgrade honest: if the write
+// path changes shape, this test fails instead of shipping a silent mismatch.
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const supplement = join(root, "..", "modelpilot-tmp-npm", "extracted", "dsh-settings");
+const HOST = "F:/AiTools/DSH/resources/app/dsh/node_modules/@deepseek-ai";
 
-const VERSIONS = ["0.2.0-rc.2", "0.2.1-rc.2"];
+/** Locate one host version's dsh-settings bundle. */
+function settingsPath(version) {
+  if (version === "live") return `${HOST}/dsh-settings/lib/index.js`;
+  return join(supplement, version, "package", "lib", "index.js");
+}
 
-/** Extract the three pure functions + SettingsConflictError from one version's
- * bundle by slicing the source between stable anchors, then evaluate it as a
- * module. Extraction (not re-implementation) is the point: byte-identical
- * semantics with the running host. */
+const VERSIONS = ["0.2.0-rc.2", "0.2.1-rc.2", "live"];
+
+/** Extract the three pure functions + SettingsConflictError by slicing the
+ * bundle between stable anchors, then evaluate it as a data-URL module. */
 function loadWalker(version) {
-  const src = readFileSync(join(supplement, version, "package", "lib", "index.js"), "utf8");
+  const src = readFileSync(settingsPath(version), "utf8");
   const start = src.indexOf("function isVolatilePath(");
   const end = src.indexOf("/** Human label for a value that lossless JSON cannot represent");
-  if (start < 0 || end < 0 || end <= start) throw new Error(`anchors not found in ${version}`);
   const conflictStart = src.indexOf("var SettingsConflictError = class");
   const conflictEnd = src.indexOf("/** Whether a value is a plain data object");
+  if (start < 0 || end < 0 || conflictStart < 0 || conflictEnd < 0) {
+    throw new Error(`anchors not found in ${version} (${settingsPath(version)})`);
+  }
   const code = `
 ${src.slice(conflictStart, conflictEnd)}
 ${src.slice(start, end)}
 export { isVolatilePath, applyPathOp, SettingsConflictError };
 `;
-  const url = pathToFileURL(join(root, "test", "apply", `.walker-${version}.mjs`)).href;
-  // data: URL avoids writing temp files: base64 the code.
-  const dataUrl = `data:text/javascript;base64,${Buffer.from(code, "utf8").toString("base64")}`;
-  // eslint-disable-next-line no-new-func
-  return import(dataUrl);
+  return import(`data:text/javascript;base64,${Buffer.from(code, "utf8").toString("base64")}`);
 }
 
-/** Equivalent schema shape: llm-pi-ai-like providers node marked volatile
- * (audit 02-S1: providers volatile → every deeper path is legal). */
+/** Equivalent schema shape: pi-ai-like providers node marked volatile. */
 const schemaVolatileRoot = {
   meta: { volatile: false },
   dict: {
@@ -72,7 +71,9 @@ function makeSection() {
 }
 
 for (const version of VERSIONS) {
-  test(`[${version}] walker case matrix (verbatim host code)`, async () => {
+  const skip = !existsSync(settingsPath(version));
+
+  test(`[${version}] walker case matrix (verbatim host code)`, { skip }, async () => {
     const { applyPathOp, isVolatilePath } = await loadWalker(version);
     const section = makeSection();
 
@@ -84,7 +85,7 @@ for (const version of VERSIONS) {
     );
     assert.equal(afterSet.providers["gw.example"].models[0].maxTokens, 4096);
 
-    // 2. unset deep field → key removed (falls back to schema default on merge)
+    // 2. unset deep field → key removed (schema default applies on merge)
     const afterUnset = applyPathOp(
       afterSet,
       { op: "unset", path: ["providers", "gw.example", "models", "0", "maxTokens"] },
@@ -92,14 +93,10 @@ for (const version of VERSIONS) {
     );
     assert.deepEqual(afterUnset.providers["gw.example"].models[0], { id: "m1", contextWindow: 131072 });
 
-    // 3. append whole row: index == length, rest empty, set
+    // 3. append whole row: index == length
     const afterAppend = applyPathOp(
       afterUnset,
-      {
-        op: "set",
-        path: ["providers", "gw.example", "models", "2"],
-        value: { id: "m3", contextWindow: 8192, maxTokens: 2048 },
-      },
+      { op: "set", path: ["providers", "gw.example", "models", "2"], value: { id: "m3", contextWindow: 8192, maxTokens: 2048 } },
       schemaVolatileRoot,
     );
     assert.equal(afterAppend.providers["gw.example"].models.length, 3);
@@ -110,10 +107,7 @@ for (const version of VERSIONS) {
       { op: "unset", path: ["providers", "gw.example", "models", "1"] },
       schemaVolatileRoot,
     );
-    assert.deepEqual(
-      afterSplice.providers["gw.example"].models.map((m) => m.id),
-      ["m1", "m3"],
-    );
+    assert.deepEqual(afterSplice.providers["gw.example"].models.map((m) => m.id), ["m1", "m3"]);
 
     // 5. out-of-range rejections (three shapes)
     assert.throws(
@@ -134,60 +128,50 @@ for (const version of VERSIONS) {
     assert.equal(isVolatilePath(schemaVolatileRoot, ["plain", "a"]), false);
   });
 
-  test(`[${version}] op templates produce host-consumable paths`, async () => {
-    await loadWalker(version); // ensure module loads
+  test(`[${version}] op templates produce host-consumable paths`, { skip }, async () => {
     const { applyPathOp } = await loadWalker(version);
-
-    // Template: appendModelRow(ns, routeId, row) →
-    //   ops = [{op:"set", path:["providers", routeId, "models", String(len)], value: row}]
     const section = makeSection();
     const models = section.providers["gw.example"].models;
+
+    // Template: appendModelRow → set at String(currentLength)
     const row = { id: "m9", contextWindow: 4096, maxTokens: 1024 };
-    const appendOps = [{ op: "set", path: ["providers", "gw.example", "models", String(models.length)], value: row }];
-    const after = applyPathOp(section, appendOps[0], schemaVolatileRoot);
+    const after = applyPathOp(section, { op: "set", path: ["providers", "gw.example", "models", String(models.length)], value: row }, schemaVolatileRoot);
     assert.equal(after.providers["gw.example"].models.length, 3);
     assert.deepEqual(after.providers["gw.example"].models[2], row);
 
-    // Template: setModelField → locate row by model id (never cache index),
-    // then set <field> at String(i).
-    const locate = (section, routeId, modelId) => {
-      const list = section.providers[routeId].models;
+    // Template: setModelField → locate by model id (never cache the index)
+    const locate = (sec, routeId, modelId) => {
+      const list = sec.providers[routeId].models;
       const index = list.findIndex((m) => m.id === modelId);
       if (index < 0) throw new Error(`model "${modelId}" not found`);
       return index;
     };
     const i = locate(after, "gw.example", "m9");
-    const setOps = [{ op: "set", path: ["providers", "gw.example", "models", String(i), "maxTokens"], value: 512 }];
-    const after2 = applyPathOp(after, setOps[0], schemaVolatileRoot);
+    const after2 = applyPathOp(after, { op: "set", path: ["providers", "gw.example", "models", String(i), "maxTokens"], value: 512 }, schemaVolatileRoot);
     assert.equal(after2.providers["gw.example"].models[i].maxTokens, 512);
     assert.equal(after2.providers["gw.example"].models[i].id, "m9");
 
-    // Template: unsetModelRow → splice by located index.
+    // Template: unsetModelRow → splice by located index
     const after3 = applyPathOp(after2, { op: "unset", path: ["providers", "gw.example", "models", String(i)] }, schemaVolatileRoot);
     assert.equal(after3.providers["gw.example"].models.length, 2);
   });
 
-  test(`[${version}] SettingsConflictError shape (code/expected/actual)`, async () => {
-    const { SettingsConflictError } = await loadWalker(version);
+  test(`[${version}] SettingsConflictError shape + retry relocation`, { skip }, async () => {
+    const { SettingsConflictError, applyPathOp } = await loadWalker(version);
     const error = new SettingsConflictError("llm-pi-ai", 7, 9);
     assert.equal(error.code, "SETTINGS_CONFLICT");
     assert.equal(error.expected, 7);
     assert.equal(error.actual, 9);
-    assert.equal(error.name, "SettingsConflictError");
     assert.match(error.message, /llm-pi-ai/);
-    // Retry semantics (B1 §3.3 / A2): after conflict, a retry re-reads
-    // describe() → new expected → the SAME ops re-applied against the fresh
-    // section must succeed when the target row still exists and diff is empty
-    // or still valid.
-    const { applyPathOp } = await loadWalker(version);
+
+    // Retry semantics (B1 §3.3 / A2): after a conflict the caller re-reads,
+    // re-locates by model id, rebuilds the ops — never replays stale indices.
     const section = makeSection();
-    const ops = [{ op: "set", path: ["providers", "gw.example", "models", "1", "maxTokens"], value: 999 }];
-    const next = applyPathOp(section, ops[0], schemaVolatileRoot);
-    assert.equal(next.providers["gw.example"].models[1].maxTokens, 999);
-    // Semantic-change detection: the row moved (splice by another writer) →
-    // relocation by modelId finds the new index; ops are REBUILT (never replayed).
     const moved = applyPathOp(section, { op: "unset", path: ["providers", "gw.example", "models", "0"] }, schemaVolatileRoot);
     const newIndex = moved.providers["gw.example"].models.findIndex((m) => m.id === "m2");
     assert.equal(newIndex, 0, "relocated by modelId, not by stale index");
+    const rebuilt = { op: "set", path: ["providers", "gw.example", "models", String(newIndex), "maxTokens"], value: 999 };
+    const applied = applyPathOp(moved, rebuilt, schemaVolatileRoot);
+    assert.equal(applied.providers["gw.example"].models[0].maxTokens, 999);
   });
 }

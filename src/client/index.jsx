@@ -40,6 +40,11 @@ function catalogIdsOf(route) {
   return new Set(models.map((m) => m?.id).filter((id) => typeof id === "string"));
 }
 
+/** Route models are the only catalog facts the bundled engine may treat as a
+ * replacement target. Computed under useMemo below so the Set identity is
+ * stable per route document — a fresh Set each render would re-run projection
+ * on every keystroke. */
+
 const s = {
   page: { display: "flex", flexDirection: "column", gap: 16, padding: "4px 2px 32px" },
   h: { fontSize: 16, fontWeight: 600, margin: 0 },
@@ -125,7 +130,8 @@ function Workbench({ configForms }) {
   const route = routeId ? providers[routeId] : undefined;
   const userRoute = routeId ? userProviders[routeId] : undefined;
   const routeModels = Array.isArray(route?.models) ? route.models : [];
-  const catalogIds = catalogIdsOf(route);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const catalogIds = React.useMemo(() => catalogIdsOf(route), [route]);
 
   // ── live projection: exactly what the Host engine computed in unit tests ──
   const draft = React.useMemo(() => {
@@ -187,7 +193,9 @@ function Workbench({ configForms }) {
     }
   }
 
-  const mode = snap?.mode;
+  // ConfigFormController snapshot shape (0.2.2): {status, value, base, user, revision, writable}.
+  // There is no `mode` field — namespace availability is `status`, write access is `writable`.
+  const status = snap?.status;
 
   return (
     <div style={s.page}>
@@ -196,12 +204,13 @@ function Workbench({ configForms }) {
         <p style={s.sub}>
           输入模型 ID，引擎按「档案 → 路由目录 → 模板 → 预设」合成字段，只写字段级最小 patch。
           写入走宿主 configForms（revision 围栏 + 冲突自动重读）。
-          {mode === "memory" ? " 当前为内存模式，改动不落盘。" : ""}
+          {status === "unavailable" ? " 当前 profile 未提供该命名空间。" : ""}
         </p>
       </div>
 
-      {!writable ? <div style={s.warn}>当前配置不可写（mode: {String(mode)}），只读预览。</div> : null}
-      {routes.length === 0 ? (
+      {!writable ? <div style={s.warn}>当前配置不可写（writable: false），仅只读预览；请检查是否处于只读连接或内存模式。</div> : null}
+      {status === "loading" ? <div style={s.sub}>正在读取 DSH 配置…</div> : null}
+      {status === "ready" && routes.length === 0 ? (
         <div style={s.warn}>没有检测到已配置的 pi-ai 路由。请先在「模型」页添加一个 provider。</div>
       ) : null}
 

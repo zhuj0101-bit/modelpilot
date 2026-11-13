@@ -19,29 +19,41 @@ test("package.json shape", () => {
   assert.equal(pkg.exports["./client"], "./lib/client.js");
   assert.ok(pkg.exports["./package.json"]);
   assert.equal(pkg.dsh.bundle.patch, "./cordis.patch.yml");
+  // `slots` comes from the renderer package, `configForms` from ui-settings.
+  // Both are package names (host convention), not service names.
   assert.deepEqual(pkg.dsh.client.inject, [
+    "@deepseek-ai/dsh-client-ui-renderer",
     "@deepseek-ai/dsh-client-ui-settings",
-    "@deepseek-ai/dsh-client-locale",
   ]);
   assert.equal(pkg.dsh.client.platform, "web");
-  // deps: only official schemastery-style packages allowed
+  // deps: only the official schemastery schema library is a real dependency;
+  // every host package is a peer supplied by the installation anchor.
   assert.deepEqual(Object.keys(pkg.dependencies), ["@deepseek-ai/schemastery"]);
 });
 
-test("peerDependencies range satisfies the N7 matrix", async () => {
+test("peerDependencies range satisfies the host matrix", async () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const range = pkg.peerDependencies["@deepseek-ai/dsh"];
-  assert.equal(range, ">=0.2.0-rc.2 <0.2.2-0");
-  // Use the host's own semver copy to mirror evaluatePluginCompatibility
-  // (dsh-app-boot: semver.satisfies(runtimeVersion, range, {includePrerelease:true})).
+  // Widened for 0.2.2 (running host) while still refusing 0.2.3+ until its
+  // surface diff is checked: every DSH API this plugin touches is byte-identical
+  // across 0.2.0 / 0.2.1 / 0.2.2 (docs/p0-evidence-notes.md N9).
+  assert.equal(range, ">=0.2.0-rc.2 <0.2.3-0");
+  // Typert protocol moves in lockstep with the host release.
+  assert.equal(pkg.peerDependencies["@deepseek-ai/dsh-typert-protocol"], ">=0.2.0-rc.2 <0.2.3-0");
+  assert.equal(pkg.peerDependencies["@deepseek-ai/cordis"], "~4.1.0");
+  // schemastery version must match the host's, or volatile markers and the
+  // settings form projection disagree (0.2.2 ships 3.19.0).
+  assert.equal(pkg.dependencies["@deepseek-ai/schemastery"], "~3.19.0");
+
   const semver = (await import("node:module")).createRequire(
     "F:/AiTools/DSH/resources/app/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js",
   )("semver");
   const matrix = {
     "0.2.0-rc.2": true,
     "0.2.1-rc.2": true,
-    "0.2.1-rc.5": true,
-    "0.2.2-rc.1": false,
+    "0.2.2-rc.2": true,   // the currently running host
+    "0.2.2": true,
+    "0.2.3-rc.1": false,  // unverified surface — refuse until checked
   };
   for (const [version, expected] of Object.entries(matrix)) {
     assert.equal(
@@ -90,4 +102,18 @@ test("Client half is the bundled ModuleLoader registration (not raw ESM)", () =>
   assert.ok(source.length > 5_000, "bundle carries the real client, not a stub");
   // The Host half stays plain ESM and is imported directly.
   assert.ok(!source.includes("export const name = \"model-assistant-client\""));
+});
+
+test("Host half declares no dynamic import inside apply (lifecycle-safe)", () => {
+  const source = readFileSync(join(root, "lib", "index.js"), "utf8");
+  const applyStart = source.indexOf("function apply(ctx)");
+  assert.ok(applyStart >= 0, "apply exists");
+  const body = source.slice(applyStart);
+  // A dynamic import inside apply() returns a promise the loader does not
+  // await on every entry path; the service module is imported statically.
+  assert.ok(!/await import\(/.test(body), "no await import inside apply");
+  assert.ok(/import \{ ModelAssistantService \}/.test(source), "service imported statically");
+  // Config must satisfy 0.2.2 volatileForm(): >=1 volatile top-level field.
+  const volatileCount = (source.match(/\.volatile\(\)/g) || []).length;
+  assert.ok(volatileCount >= 4, `expected >=4 volatile data lines, saw ${volatileCount}`);
 });
