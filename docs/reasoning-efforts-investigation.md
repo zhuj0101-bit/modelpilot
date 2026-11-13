@@ -457,5 +457,4 @@ node --test test/**/*.test.mjs
 ```
 
 DSH 官方文档引用自 **0.2.2-rc.3 发布包**的 `docs/user/guide/providers.zh.md`（本机安装的
-`@deepseek-ai/dsh` 包只带 `lib/`、`types/` 等运行文件，不附带 `docs/`；文档内容与源码中的
-`reasoning` 语义一致）。
+`@deepseek-ai/dsh` 包未附带 `docs/`，只装运行文件；文档内容与源码中的 `reasoning` 语义一致）。
