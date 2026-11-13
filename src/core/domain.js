@@ -102,3 +102,14 @@ export function projectDeepseekReasoning(policy) {
   }
   return { value: undefined, warning: "unknown-policy" };
 }
+
+/**
+ * 从模型 ID 推导默认显示名：取最后一个 `/` 之后的片段并去掉首尾空白。
+ * 无 `/` 时就是模型 ID 本身；空模型 ID 得到空字符串。
+ * 纯函数，供客户端联动与单元测试共用（B4 工作台）。
+ */
+export function displayNameFromModelId(modelId) {
+  const id = typeof modelId === "string" ? modelId : "";
+  if (id === "") return "";
+  return id.split("/").pop().trim();
+}
