@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { displayNameFromModelId } from "../../src/core/domain.js";
+import { displayNameFromModelId, humanizeTokenCount } from "../../src/core/domain.js";
 
 test("带前缀的模型 ID：取最后一段", () => {
   assert.equal(displayNameFromModelId("tflow/alpha-32b"), "alpha-32b");
@@ -27,4 +27,23 @@ test("结果去掉首尾空白（含最后一段为空的情况）", () => {
   assert.equal(displayNameFromModelId("  tflow/alpha-32b  "), "alpha-32b");
   assert.equal(displayNameFromModelId("a/b/ c "), "c");
   assert.equal(displayNameFromModelId("tflow/"), "");
+});
+
+test("humanizeTokenCount：千位以上用 K 表示法，其余原样显示", () => {
+  const cases = [
+    [0, ""],
+    [999, "999"],
+    [1000, "1K"],
+    [8192, "8K"],
+    [131072, "131K"],
+    [1000000, "1000K"],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(humanizeTokenCount(input), expected, `humanizeTokenCount(${input})`);
+  }
+});
+
+test("humanizeTokenCount：非数字与非正数返回空字符串", () => {
+  assert.equal(humanizeTokenCount("abc"), "");
+  assert.equal(humanizeTokenCount(-1), "");
 });

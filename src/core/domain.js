@@ -113,3 +113,14 @@ export function displayNameFromModelId(modelId) {
   if (id === "") return "";
   return id.split("/").pop().trim();
 }
+
+/**
+ * 把 token 数量转成便于阅读的 K 表示法，供工作台的上下文窗口 / 输出上限
+ * 实时提示共用。非有限数或非正数没有可展示的值，返回空字符串。
+ */
+export function humanizeTokenCount(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return "";
+  if (v >= 1000) return `${Math.round(v / 1000)}K`;
+  return String(v);
+}
