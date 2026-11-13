@@ -2,3 +2,4 @@ node_modules/
 lib/*.tgz
 *.log
 .DS_Store
+/*.tgz
