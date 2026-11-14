@@ -5,6 +5,7 @@
 // projectPiAi 的合并式写入才能保住 compat 与宿主未来新增的字段。
 
 import { MODALITIES, PI_AI_LEVELS } from "./domain.js";
+import { sameWireMap, wireMapFromApiValues, wireMapFromEfforts } from "./reasoning-wire.js";
 
 /** 正整数字符串 → number；空串 / 非数字 / <= 0 返回 undefined。 */
 function positiveNumber(text) {
@@ -26,19 +27,24 @@ function tokenFormValue(value) {
  * 现有模型行 → 编辑表单初值。
  *
  * 字段全量预填（不是模板值）；缺失字段显示为空 / 未勾选。
- * reasoningEfforts === false 表示「非推理模型」，表单里没有档位。
+ * reasoningEfforts === false 表示「非推理模型」，表单里没有档位，
+ * reasoningDisabled 让界面连档位组与 API 参数值一起隐藏。
+ *
+ * reasoningApiValues 只预填「值与档位名不同」的条目：off 的 null、
+ * 与档位名相同的值都留空，因为留空在语义上就等于「用档位名」。
  *
  * @param {object|undefined} model 现有 models 数组中的一行
  * @returns {{name:string, contextWindow:string, maxTokens:string,
- *            inputText:boolean, inputImage:boolean, reasoningLevels:string[]}}
+ *            inputText:boolean, inputImage:boolean, reasoningLevels:string[],
+ *            reasoningApiValues:Record<string,string>, reasoningDisabled:boolean}}
  */
 export function formFromModel(model) {
   const input = Array.isArray(model?.input) ? model.input : [];
   const efforts = model?.reasoningEfforts;
-  const reasoningLevels =
-    efforts !== null && typeof efforts === "object" && !Array.isArray(efforts)
-      ? PI_AI_LEVELS.filter((level) => Object.hasOwn(efforts, level))
-      : [];
+  const isEffortsObject = efforts !== null && typeof efforts === "object" && !Array.isArray(efforts);
+  const reasoningLevels = isEffortsObject
+    ? PI_AI_LEVELS.filter((level) => Object.hasOwn(efforts, level))
+    : [];
   return {
     name: typeof model?.name === "string" ? model.name : "",
     contextWindow: tokenFormValue(model?.contextWindow),
@@ -46,6 +52,8 @@ export function formFromModel(model) {
     inputText: input.includes("text"),
     inputImage: input.includes("image"),
     reasoningLevels,
+    reasoningApiValues: isEffortsObject ? wireMapFromEfforts(efforts) : {},
+    reasoningDisabled: efforts === false,
   };
 }
 
@@ -62,7 +70,10 @@ function sameArray(left, right) {
  * - reasoning 是 ReasoningPolicy；projectPiAi 会把它投影成 reasoningEfforts 字典。
  *
  * 保留现有 reasoningEfforts 的线上值映射：用户只增删档位时，已有档位的
- * 自定义 wire 值不会因为重新生成字典而丢失。
+ * 自定义 wire 值不会因为重新生成字典而丢失。wireMap 只包含当前勾选的非 off
+ * 档位；没勾的档位、留空的值、与档位名相同的值都不写入。
+ *
+ * 只改 API 参数值而不改档位集合也算改动 —— 否则用户改了值，保存按钮还是灰的。
  *
  * 注意：一期只支持「修改」，不支持清空字段；空 token 输入不产生写入。
  *
@@ -102,10 +113,14 @@ export function diffRow(form, existing) {
     efforts !== null && typeof efforts === "object" && !Array.isArray(efforts)
       ? PI_AI_LEVELS.filter((level) => Object.hasOwn(efforts, level))
       : [];
-  if (levels.length > 0 && !sameArray(levels, existingLevels)) {
-    const wireMap =
-      efforts !== null && typeof efforts === "object" && !Array.isArray(efforts) ? efforts : undefined;
-    changed.reasoning = { mode: "effort", levels, ...(wireMap === undefined ? {} : { wireMap }) };
+  const nextWire = wireMapFromApiValues(levels, form?.reasoningApiValues);
+  const existingWire = wireMapFromEfforts(efforts);
+  if (levels.length > 0 && (!sameArray(levels, existingLevels) || !sameWireMap(nextWire, existingWire))) {
+    changed.reasoning = {
+      mode: "effort",
+      levels,
+      ...(Object.keys(nextWire).length === 0 ? {} : { wireMap: nextWire }),
+    };
   }
 
   return changed;

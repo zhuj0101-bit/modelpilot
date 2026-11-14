@@ -55,6 +55,7 @@ import {
 } from "../core/route-create.js";
 import {
   allReasoningLevels,
+  customReasoningWireCount,
   defaultReasoningLevels,
   noReasoningLevels,
   reasoningLevelsGuard,
@@ -545,6 +546,14 @@ const s = {
     textDecoration: "underline", fontFamily: "inherit", opacity: 0.8,
   },
   levels: { display: "flex", flexDirection: "column", gap: GAP.xs, flex: "1 1 340px", minWidth: 280 },
+  // 「API 参数值」高级区：每个勾选中的档位一行，输入框复用 s.input 的 token。
+  wireRows: { display: "flex", flexDirection: "column", gap: GAP.sm, paddingTop: GAP.sm },
+  wireRow: { display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap" },
+  wireLevel: {
+    fontSize: FONT.caption, fontWeight: 600, minWidth: 64,
+    color: "var(--dsw-alias-label-primary, inherit)",
+  },
+  wireInput: { ...INPUT, flex: "1 1 220px" },
   // 七个推理档位是固定集合：不折行，窄容器下横向滚动，顺序始终可读。
   levelChips: {
     display: "flex", flexWrap: "nowrap", overflowX: "auto", overflowY: "hidden",
@@ -1220,6 +1229,49 @@ const EDIT_FIELD_LABELS = Object.freeze({
   reasoning: "推理档位",
 });
 
+// 与内置模型页 modelReasoningHelpText 同一段说明（工单 #23 验收 16）。
+const REASONING_WIRE_HELP_TEXT =
+  "API 参数值会写入请求的推理强度字段（如 OpenAI 的 reasoning_effort），默认与档位名相同；如有不同，以模型提供商的 API 文档为准。Off 表示关闭思考，不需要填写参数值；配置中已写入的值会保留并发送。";
+
+/**
+ * 推理档位的「API 参数值」高级区。
+ *
+ * 默认折叠：日常只看见 chip 组；展开后每个勾选中的非 off 档位一行输入框。
+ * 留空 = 用档位名，不写空串；off 没有输入框；与档位名相同的值不写入
+ * wireMap。折叠摘要会给出「N 个档位与档位名不同」，让用户不展开也能知道
+ * 当前有自定义映射。组件无 hook，供测试夹具直接展开。
+ */
+function ReasoningApiValues({ levels, apiValues, ariaPrefix, onChange }) {
+  const rows = PI_AI_LEVELS.filter((level) => level !== "off" && levels.includes(level));
+  const customCount = customReasoningWireCount(levels, apiValues);
+  const summary = customCount === 0
+    ? "自定义 API 参数值（全部与档位名相同）"
+    : `自定义 API 参数值（${customCount} 个档位与档位名不同）`;
+  return (
+    <details style={s.details} aria-label={`${ariaPrefix}自定义 API 参数值`}>
+      <summary style={s.summary}>{summary}</summary>
+      <div style={s.wireRows}>
+        {rows.length === 0 ? (
+          <div style={s.fieldHint}>先勾选至少一个思考档位，才能填写 API 参数值。</div>
+        ) : rows.map((level) => (
+          <label key={level} style={s.wireRow}>
+            <span style={s.wireLevel}>{level}</span>
+            <input
+              style={s.wireInput}
+              value={apiValues?.[level] ?? ""}
+              placeholder={level}
+              aria-label={`${ariaPrefix} API 参数值 ${level}`}
+              onChange={(event) => onChange(level, event.target.value)}
+            />
+          </label>
+        ))}
+        <div style={s.fieldHint}>ⓘ 留空 = 与档位名相同。Off 不需要参数值。</div>
+        <div style={s.fieldHint}>{REASONING_WIRE_HELP_TEXT}</div>
+      </div>
+    </details>
+  );
+}
+
 /**
  * 行内编辑表单。每个字段都预填现有值；保存按钮在改动集为空时禁用。
  * 表单状态由 Workbench 持有，便于把 diffRow 与 projectPiAi(update) 接起来。
@@ -1239,6 +1291,7 @@ function EditModelForm({
   onChange,
   onTokenChange,
   onToggleLevel,
+  onApiValueChange,
   onFillTemplate,
   onSave,
   onCancel,
@@ -1303,32 +1356,44 @@ function EditModelForm({
           onChange={(event) => onTokenChange(event, "maxTokens")}
         />
         <div style={s.levels}>
-          <span style={s.label}>推理档位（多选）</span>
-          <div style={s.levelChips}>
-            {PI_AI_LEVELS.map((level) => {
-              const checked = form.reasoningLevels.includes(level);
-              return (
-                <label key={level} style={checked ? { ...s.levelChip, ...s.levelChipOn } : s.levelChip}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => onToggleLevel(level)}
-                    aria-label={`编辑档位 ${level}`}
-                  />
-                  {level}
-                </label>
-              );
-            })}
-          </div>
-          <div style={s.levelChips}>
-            <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: allReasoningLevels() })}>全选</button>
-            <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: [] })}>全不选</button>
-            <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: defaultReasoningLevels() })}>恢复默认</button>
-          </div>
-          {guard ? <div style={s.err}>{guard}</div> : null}
-          {form.reasoningLevels.length === 0 ? (
-            <span style={s.sub}>全不选：不修改现有 reasoningEfforts（一期只支持修改档位，不清空字段）。</span>
-          ) : null}
+          {form.reasoningDisabled ? (
+            <span style={s.sub}>该模型声明为非推理模型（reasoningEfforts: false），不显示推理档位与 API 参数值。</span>
+          ) : (
+            <>
+              <span style={s.label}>推理档位（多选）</span>
+              <div style={s.levelChips}>
+                {PI_AI_LEVELS.map((level) => {
+                  const checked = form.reasoningLevels.includes(level);
+                  return (
+                    <label key={level} style={checked ? { ...s.levelChip, ...s.levelChipOn } : s.levelChip}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => onToggleLevel(level)}
+                        aria-label={`编辑档位 ${level}`}
+                      />
+                      {level}
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={s.levelChips}>
+                <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: allReasoningLevels() })}>全选</button>
+                <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: [] })}>全不选</button>
+                <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: defaultReasoningLevels() })}>恢复默认</button>
+              </div>
+              {guard ? <div style={s.err}>{guard}</div> : null}
+              {form.reasoningLevels.length === 0 ? (
+                <span style={s.sub}>全不选：不修改现有 reasoningEfforts（一期只支持修改档位，不清空字段）。</span>
+              ) : null}
+              <ReasoningApiValues
+                levels={form.reasoningLevels}
+                apiValues={form.reasoningApiValues}
+                ariaPrefix="编辑"
+                onChange={onApiValueChange}
+              />
+            </>
+          )}
         </div>
       </div>
 
@@ -2230,6 +2295,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const [inputText, setInputText] = React.useState(true);
   const [inputImage, setInputImage] = React.useState(false);
   const [reasoningLevels, setReasoningLevels] = React.useState(() => defaultReasoningLevels());
+  // 每个档位的「API 参数值」输入。空对象 = 全部留空 = 全部用档位名。
+  const [reasoningApiValues, setReasoningApiValues] = React.useState({});
   const [ackReplace, setAckReplace] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [toast, setToast] = React.useState(null);
@@ -2339,6 +2406,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setInputText(form.inputText);
     setInputImage(form.inputImage);
     setReasoningLevels(form.reasoningLevels);
+    setReasoningApiValues({});
   }, [template]);
 
   const reasoningGuard = reasoningLevelsGuard(reasoningLevels);
@@ -2565,10 +2633,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     if (inputText) input.push("text");
     if (inputImage) input.push("image");
     if (input.length > 0) d.input = input;
-    const reasoning = reasoningPolicyFor(reasoningLevels);
+    const reasoning = reasoningPolicyFor(reasoningLevels, reasoningApiValues);
     if (reasoning !== undefined) d.reasoning = reasoning;
     return d;
-  }, [modelId, displayName, contextWindow, maxTokens, inputText, inputImage, reasoningLevels]);
+  }, [modelId, displayName, contextWindow, maxTokens, inputText, inputImage, reasoningLevels, reasoningApiValues]);
 
   const projection = React.useMemo(() => {
     if (modelId.trim() === "") return undefined;
@@ -2791,6 +2859,11 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     event.target.value = current;
   }
 
+  /** 新增表单的「API 参数值」：原样保存输入，trim / 丢弃规则交给 reasoningPolicyFor。 */
+  function changeReasoningApiValue(level, value) {
+    setReasoningApiValues((current) => ({ ...current, [level]: value }));
+  }
+
   /** 打开某一行的编辑表单；换行时前一条自动收起（editingIndex 只有一个）。 */
   function openEditor(index) {
     const model = routeModels[index];
@@ -2948,7 +3021,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
    */
   function fillEditTemplate() {
     if (template === null) return;
-    updateEditForm(templateToForm(template));
+    // 模板不含 API 参数值：整体替换时一并清空，避免旧的映射残留在新档位上。
+    updateEditForm({ ...templateToForm(template), reasoningApiValues: {} });
     setEditErrors({ contextWindow: false, maxTokens: false });
   }
 
@@ -2968,6 +3042,16 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setEditForm((current) => (current === null
       ? current
       : { ...current, reasoningLevels: toggleReasoningLevel(current.reasoningLevels, level) }));
+  }
+
+  /** 编辑表单的「API 参数值」：只更新对应档位，空串保留为空串（语义 = 用档位名）。 */
+  function changeEditApiValue(level, value) {
+    setEditForm((current) => (current === null
+      ? current
+      : {
+        ...current,
+        reasoningApiValues: { ...(current.reasoningApiValues ?? {}), [level]: value },
+      }));
   }
 
   /** 保存编辑：恰好一条 set，路径是 models.<打开时的下标>。 */
@@ -3216,6 +3300,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         setInputText(form.inputText);
         setInputImage(form.inputImage);
         setReasoningLevels(form.reasoningLevels);
+        setReasoningApiValues({});
         setAckReplace(false);
         setBatchProjection(null);
       }
@@ -3677,6 +3762,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                   onChange={updateEditForm}
                   onTokenChange={changeEditToken}
                   onToggleLevel={toggleEditLevel}
+                  onApiValueChange={changeEditApiValue}
                   onFillTemplate={fillEditTemplate}
                   onSave={saveEdit}
                   onCancel={closeEditor}
@@ -3747,6 +3833,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             {reasoningLevels.length === 0 ? (
               <span style={s.sub}>全不选：本次投影不写 reasoningEfforts，沿用目录能力事实。</span>
             ) : null}
+            <ReasoningApiValues
+              levels={reasoningLevels}
+              apiValues={reasoningApiValues}
+              ariaPrefix="新增"
+              onChange={changeReasoningApiValue}
+            />
           </div>
         </div>
 
@@ -3894,6 +3986,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             setInputText(form.inputText);
             setInputImage(form.inputImage);
             setReasoningLevels(form.reasoningLevels);
+            setReasoningApiValues({});
             setAckReplace(false);
             setBatchProjection(null);
             setToast(null);
@@ -3934,6 +4027,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             setInputText(form.inputText);
             setInputImage(form.inputImage);
             setReasoningLevels(form.reasoningLevels);
+            setReasoningApiValues({});
           }}
           aria-label="填入默认模板"
         >

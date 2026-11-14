@@ -195,6 +195,8 @@ test("formFromModel：预填现有值，不是模板值", () => {
     inputText: true,
     inputImage: false,
     reasoningLevels: ["off", "low", "medium", "high"],
+    reasoningApiValues: {},
+    reasoningDisabled: false,
   });
 });
 
@@ -204,15 +206,143 @@ test("diffRow：完全相同 → 空改动；只改 maxTokens → 只含 maxToke
   assert.deepEqual(diffRow({ ...form, maxTokens: "65536" }, existingRow), { maxTokens: 65536 });
 });
 
-test("diffRow：推理档位变化时保留现有线上值映射", () => {
+test("diffRow：推理档位变化时保留现有自定义线上值，off 与同名值不写入 wireMap", () => {
   const custom = { ...existingRow, reasoningEfforts: { off: null, low: "reasoning_low", high: "reasoning_high" } };
   const form = formFromModel(custom);
   form.reasoningLevels = [...form.reasoningLevels, "xhigh"];
   const changed = diffRow(form, custom);
   assert.equal(changed.reasoning.mode, "effort");
   assert.deepEqual(changed.reasoning.levels, ["off", "low", "high", "xhigh"]);
-  assert.deepEqual(changed.reasoning.wireMap, custom.reasoningEfforts);
+  assert.deepEqual(changed.reasoning.wireMap, { low: "reasoning_low", high: "reasoning_high" });
 });
+
+// ── 工单 #23：API 参数值（wireMap）──────────────────────────────────────
+
+test("formFromModel：只预填「值与档位名不同」的条目，off:null 与同名值不预填", () => {
+  const custom = {
+    ...existingRow,
+    reasoningEfforts: { off: null, low: "reasoning_low", medium: "medium", high: "high_reasoning", xhigh: "max" },
+  };
+  const form = formFromModel(custom);
+  assert.deepEqual(form.reasoningLevels, ["off", "low", "medium", "high", "xhigh"]);
+  assert.deepEqual(form.reasoningApiValues, { low: "reasoning_low", high: "high_reasoning", xhigh: "max" });
+  assert.equal(form.reasoningDisabled, false);
+});
+
+test("formFromModel：reasoningEfforts:false → reasoningDisabled，且不勾任何档位、不预填参数值", () => {
+  const form = formFromModel({ id: "plain/model", reasoningEfforts: false });
+  assert.equal(form.reasoningDisabled, true);
+  assert.deepEqual(form.reasoningLevels, []);
+  assert.deepEqual(form.reasoningApiValues, {});
+});
+
+test("formFromModel：reasoningEfforts 缺失 → 七档全不勾、API 参数值全空", () => {
+  const form = formFromModel({ id: "missing/model" });
+  assert.equal(form.reasoningDisabled, false);
+  assert.deepEqual(form.reasoningLevels, []);
+  assert.deepEqual(form.reasoningApiValues, {});
+});
+
+test("diffRow：只改 API 参数值、档位集合不变 → 识别为改动并带 wireMap", () => {
+  const form = formFromModel(existingRow);
+  form.reasoningApiValues = { ...form.reasoningApiValues, high: "high_reasoning" };
+  assert.deepEqual(diffRow(form, existingRow), {
+    reasoning: {
+      mode: "effort",
+      levels: ["off", "low", "medium", "high"],
+      wireMap: { high: "high_reasoning" },
+    },
+  });
+});
+
+test("diffRow + projectPiAi(update)：只改 high 的参数值 → 写出 { off:null, high:'high_reasoning', … }", () => {
+  const form = formFromModel(existingRow);
+  form.reasoningApiValues = { high: "high_reasoning" };
+  const changed = diffRow(form, existingRow);
+  const result = projectPiAi({ id: existingRow.id, ...changed }, routeOf([existingRow]), {
+    routeId: "gw",
+    mode: "update",
+    index: 0,
+  });
+  assert.equal(result.settingsOps.length, 1);
+  assert.deepEqual(result.settingsOps[0].value.reasoningEfforts, {
+    off: null,
+    low: "low",
+    medium: "medium",
+    high: "high_reasoning",
+  });
+  assert.equal(result.unsupportedControls.length, 0);
+});
+
+test("diffRow：把自定义值改回与档位名相同 → 识别为改动并从 wireMap 移除", () => {
+  const custom = { ...existingRow, reasoningEfforts: { off: null, low: "low", medium: "medium", high: "high_reasoning" } };
+  const form = formFromModel(custom);
+  assert.deepEqual(form.reasoningApiValues, { high: "high_reasoning" });
+  form.reasoningApiValues = { high: "high" };
+  const changed = diffRow(form, custom);
+  assert.deepEqual(changed.reasoning, { mode: "effort", levels: ["off", "low", "medium", "high"] });
+  assert.equal("wireMap" in changed.reasoning, false);
+});
+
+test("diffRow：值填空串 / 纯空格 / 与档位名相同 → 都不写 wireMap，也不产生改动", () => {
+  for (const value of ["", "   ", "high"]) {
+    const form = formFromModel(existingRow);
+    form.reasoningApiValues = { high: value };
+    assert.deepEqual(diffRow(form, existingRow), {}, `value=${JSON.stringify(value)}`);
+  }
+});
+
+test("diffRow：取消勾选已填自定义值的档位 → 该条 wireMap 一并丢弃", () => {
+  const custom = {
+    ...existingRow,
+    reasoningEfforts: { off: null, low: "low", medium: "medium", high: "high", xhigh: "max" },
+  };
+  const form = formFromModel(custom);
+  form.reasoningApiValues = { ...form.reasoningApiValues, xhigh: "max" };
+  form.reasoningLevels = ["off", "low", "medium", "high"];
+  const changed = diffRow(form, custom);
+  assert.deepEqual(changed.reasoning, { mode: "effort", levels: ["off", "low", "medium", "high"] });
+  assert.equal("xhigh" in (changed.reasoning.wireMap ?? {}), false);
+  assert.equal("wireMap" in changed.reasoning, false);
+});
+
+test("diffRow：off 不允许填值；即便表单带了 apiValues.off 也被忽略", () => {
+  const form = formFromModel(existingRow);
+  form.reasoningApiValues = { off: "shutdown" };
+  assert.deepEqual(diffRow(form, existingRow), {});
+});
+
+test("diffRow：档位集合与 API 参数值都没变 → 空改动（保存保持禁用）", () => {
+  const custom = { ...existingRow, reasoningEfforts: { off: null, low: "reasoning_low", high: "high_reasoning" } };
+  const form = formFromModel(custom);
+  assert.deepEqual(diffRow(form, custom), {});
+});
+
+test("diffRow：现有线上值带首尾空白时，打开表单但不改动 → 仍为空改动", () => {
+  const custom = { ...existingRow, reasoningEfforts: { off: null, low: " low ", medium: "medium", high: " high_reasoning " } };
+  const form = formFromModel(custom);
+  assert.deepEqual(form.reasoningApiValues, { high: "high_reasoning" });
+  assert.deepEqual(diffRow(form, custom), {});
+});
+
+test("diffRow：只改参数值、不改档位时，投影的字典合法且不含空串", () => {
+  const form = formFromModel(existingRow);
+  form.reasoningApiValues = { high: "  high_reasoning  ", low: "   " };
+  const changed = diffRow(form, existingRow);
+  const result = projectPiAi({ id: existingRow.id, ...changed }, routeOf([existingRow]), {
+    routeId: "gw",
+    mode: "update",
+    index: 0,
+  });
+  assert.equal(result.unsupportedControls.length, 0);
+  assert.deepEqual(result.settingsOps[0].value.reasoningEfforts, {
+    off: null,
+    low: "low",
+    medium: "medium",
+    high: "high_reasoning",
+  });
+});
+
 
 test("describeModelRow：窗口 / 输出 / 模态 / 档位数", () => {
   assert.equal(
