@@ -20,7 +20,7 @@ export const MODEL_EDIT_ROUTE_SOURCE = String.raw`
         contextWindow: 1000000,
         maxTokens: 32768,
         input: ["text"],
-        reasoningEfforts: { off: null, low: "low", medium: "medium", high: "high" },
+        reasoningEfforts: { off: null, low: "low", medium: "medium", high: "high_reasoning" },
         // 宿主会物化空 compat；这不应触发「原样保留」提示。
         compat: { chatTemplateKwargs: {}, chatTemplateArgs: {} },
       },
@@ -39,6 +39,7 @@ export const MODEL_EDIT_ROUTE_SOURCE = String.raw`
         contextWindow: 128000,
         maxTokens: 8192,
         input: ["text"],
+        reasoningEfforts: false,
       },
     ],
   };
@@ -176,6 +177,50 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   };
   result.edit.zeroHint = document.body.innerText.includes("可用上下文 800,000（零损失 ✓）");
 
+  // ── 1b. API 参数值高级区：默认折叠、只预填与档位名不同的值、off 无输入框 ──
+  const wireDetails = byAria("编辑自定义 API 参数值");
+  result.wire = {
+    collapsed: wireDetails !== null && wireDetails.open === false,
+    summary: wireDetails?.querySelector("summary")?.textContent ?? "",
+    highValue: byAria("编辑 API 参数值 high")?.value ?? "",
+    noOffInput: byAria("编辑 API 参数值 off") === null,
+    helpText: wireDetails?.textContent.includes("默认与档位名相同；如有不同，以模型提供商的 API 文档为准") ?? false,
+  };
+  // 只改 API 参数值（档位集合不变）也必须被识别为改动。
+  setValue(byAria("编辑 API 参数值 high"), "max");
+  await sleep(30);
+  result.wire.saveEnabled = !byAria("保存修改").disabled;
+  result.wire.changedLine = [...document.querySelectorAll("div")]
+    .find((element) => element.textContent.startsWith("改动字段："))?.textContent ?? "";
+
+  // 更新会重建 DOM：重新查询后再展开、测量、改回。
+  const openedDetails = byAria("编辑自定义 API 参数值");
+  openedDetails.open = true;
+  result.wire.open = openedDetails.open;
+  const wireInput = byAria("编辑 API 参数值 high");
+  const wireLevel = wireInput?.closest("label")?.querySelector("span");
+  const wireHint = [...openedDetails.querySelectorAll("div")]
+    .find((element) => element.textContent.startsWith("ⓘ 留空"));
+  result.wire.theme = {
+    input: {
+      color: styleOf(wireInput).color,
+      background: styleOf(wireInput).backgroundColor,
+      ratio: contrast(parseColor(styleOf(wireInput).color), effectiveBackground(wireInput)),
+    },
+    level: {
+      color: styleOf(wireLevel).color,
+      ratio: contrast(parseColor(styleOf(wireLevel).color), effectiveBackground(wireLevel)),
+    },
+    hint: {
+      color: styleOf(wireHint).color,
+      ratio: contrast(parseColor(styleOf(wireHint).color), effectiveBackground(wireHint)),
+    },
+  };
+  // 改回同名值：wireMap 移除，表单回到与初始完全一致 → 保存再次禁用。
+  setValue(wireInput, "high_reasoning");
+  await sleep(30);
+  result.wire.saveDisabledAfterRevert = byAria("保存修改").disabled;
+
   setValue(byAria("编辑输出上限"), "150000");
   result.edit.slightHint = document.body.innerText.includes("可用上下文 784,464（比最优少 1.9%）");
   setValue(byAria("编辑输出上限"), "384000");
@@ -256,6 +301,17 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     listAfter: panelText(),
     modelsLength: route.models.length,
   };
+
+  // ── 4b. 非推理模型（reasoningEfforts:false）：档位组与 API 参数值都不显示 ──
+  byAria("编辑模型 tx/deepseek-v4.1-flash").click();
+  result.nonReasoning = {
+    note: document.body.innerText.includes("声明为非推理模型（reasoningEfforts: false）"),
+    noChips: byAria("编辑档位 off") === null,
+    noGroupLabel: !(byAria("编辑表单 tx/deepseek-v4.1-flash")?.innerText ?? "").includes("推理档位（多选）"),
+    noApiValues: byAria("编辑自定义 API 参数值") === null,
+    saveDisabled: byAria("保存修改").disabled,
+  };
+  byAria("取消编辑").click();
 
   // ── 5. stale-index：编辑期间配置被别处改动，保存必须禁用并提示重试 ──
   byAria("编辑模型 jxf/dsv4.1-flash").click();

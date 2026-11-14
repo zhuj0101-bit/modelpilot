@@ -441,7 +441,11 @@ function createHarness({ providers, remote, mutateImpl = async () => true, stora
       return harness.buttonByText("清空");
     },
     details() {
-      return findAll(current(), (node) => node.type === "details");
+      // 「API 参数值」高级区也是 details；这里只看 settingsOps 的 JSON 预览。
+      return findAll(current(), (node) => node.type === "details").filter((node) => {
+        const summary = findAll(node, (child) => child.type === "summary")[0];
+        return textOf(summary?.props?.children).trim().startsWith("settingsOps");
+      });
     },
     summaryTexts() {
       return harness.details().map((node) => {

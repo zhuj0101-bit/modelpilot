@@ -3,6 +3,7 @@
 // 组件本身只负责把这些结果接到 useState / JSX 上。
 
 import { PI_AI_LEVELS } from "../core/domain.js";
+import { customWireCount, wireMapFromApiValues } from "../core/reasoning-wire.js";
 
 /** 界面打开时默认勾选的档位。 */
 export const DEFAULT_REASONING_LEVELS = Object.freeze(["off", "low", "medium", "high"]);
@@ -37,10 +38,28 @@ export function defaultReasoningLevels() {
   return [...DEFAULT_REASONING_LEVELS];
 }
 
-/** 由勾选状态构造 draft.reasoning；一个都没勾时返回 undefined。 */
-export function reasoningPolicyFor(levels) {
+/**
+ * 由勾选状态 + API 参数值构造 draft.reasoning；一个都没勾时返回 undefined。
+ *
+ * wireMap 只覆盖当前勾选的档位：先给 xhigh 填了自定义值再取消勾选，
+ * 该条映射会一起消失（规则三）。留空或与档位名相同的值不写入 wireMap，
+ * 投影回落到「线上值 = 档位名」，不产生冗余映射。
+ *
+ * @param {string[]} levels
+ * @param {Record<string,string>} [apiValues]
+ */
+export function reasoningPolicyFor(levels, apiValues = {}) {
   const ordered = orderReasoningLevels(levels);
-  return ordered.length === 0 ? undefined : { mode: "effort", levels: ordered };
+  if (ordered.length === 0) return undefined;
+  const wireMap = wireMapFromApiValues(ordered, apiValues);
+  return Object.keys(wireMap).length === 0
+    ? { mode: "effort", levels: ordered }
+    : { mode: "effort", levels: ordered, wireMap };
+}
+
+/** 折叠摘要里的「N 个档位与档位名不同」。 */
+export function customReasoningWireCount(levels, apiValues) {
+  return customWireCount(levels, apiValues);
 }
 
 /** R5 守卫：只勾 off 会被宿主引擎以 efforts-only-off 拒绝。返回说明或 null。 */

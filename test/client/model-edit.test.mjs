@@ -40,7 +40,7 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.initial.editButtons.length, 3);
     assert.match(result.initial.summaries[0], /窗口 1M · 输出 33K · text · 4 档/);
     assert.match(result.initial.summaries[1], /窗口 1M · 输出 33K · text · 4 档/);
-    assert.match(result.initial.summaries[2], /窗口 128K · 输出 8K · text · 无档/);
+    assert.match(result.initial.summaries[2], /窗口 128K · 输出 8K · text · 非推理/);
   });
 
   test(`${scheme} 主题：编辑表单预填现有值，未改动时保存禁用`, async (t) => {
@@ -58,6 +58,45 @@ for (const scheme of ["light", "dark"]) {
       strongHint: true,
       canSaveAfterChange: true,
     });
+  });
+
+  test(`${scheme} 主题：API 参数值高级区默认折叠，只预填与档位名不同的值，off 无输入框`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.equal(result.wire.collapsed, true);
+    assert.match(result.wire.summary, /自定义 API 参数值（1 个档位与档位名不同）/);
+    assert.equal(result.wire.highValue, "high_reasoning");
+    assert.equal(result.wire.noOffInput, true);
+  });
+
+  test(`${scheme} 主题：只改 API 参数值也会启用保存，改回同名值再次禁用`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.equal(result.wire.saveEnabled, true);
+    assert.match(result.wire.changedLine, /改动字段：推理档位/);
+    assert.equal(result.wire.saveDisabledAfterRevert, true);
+  });
+
+  test(`${scheme} 主题：展开高级区显示帮助文案，输入框 / 档位 / 提示跟随 token 且对比度 ≥ 4.5`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.equal(result.wire.open, true);
+    assert.equal(result.wire.helpText, true);
+    assert.equal(result.wire.theme.input.background, token(scheme, "--dsw-alias-bg-layer-1"));
+    assert.equal(result.wire.theme.input.color, token(scheme, "--dsw-alias-label-primary"));
+    assert.ok(result.wire.theme.input.ratio >= 4.5, `API 参数值输入框对比度 ${result.wire.theme.input.ratio}`);
+    assert.ok(result.wire.theme.level.ratio >= 4.5, `档位标签对比度 ${result.wire.theme.level.ratio}`);
+    assert.ok(result.wire.theme.hint.ratio >= 4.5, `留空提示对比度 ${result.wire.theme.hint.ratio}`);
+  });
+
+  test(`${scheme} 主题：非推理模型（reasoningEfforts:false）不显示档位组与 API 参数值`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.equal(result.nonReasoning.note, true);
+    assert.equal(result.nonReasoning.noChips, true);
+    assert.equal(result.nonReasoning.noGroupLabel, true);
+    assert.equal(result.nonReasoning.noApiValues, true);
+    assert.equal(result.nonReasoning.saveDisabled, true);
   });
 
   test(`${scheme} 主题：同时只展开一条，compat 提示只在有 compat 时出现`, async (t) => {
