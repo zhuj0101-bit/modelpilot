@@ -22,6 +22,17 @@ import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } 
 import { describeModelRow, diffRow, formFromModel } from "../core/model-edit.js";
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
 import {
+  CACHE_RETENTION_CHOICES,
+  TRANSPORT_CHOICES,
+  apiChoicesFromSchema,
+  buildRouteDeleteOps,
+  buildRouteEditOps,
+  describeRouteSummary,
+  routeDeleteBlockReason,
+  routeFieldLabels,
+  routeFormFromProvider,
+} from "../core/route-edit.js";
+import {
   allReasoningLevels,
   defaultReasoningLevels,
   noReasoningLevels,
@@ -215,6 +226,19 @@ const s = {
   modelRowHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
   modelSummary: { fontSize: 11, lineHeight: 1.55, opacity: 0.72, overflowWrap: "anywhere" },
   modelEmpty: { fontSize: 12, lineHeight: 1.6, opacity: 0.66 },
+  // 路由设置卡片：默认折叠，摘要行先给出三个最有用的值。
+  routeCard: {
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
+    borderRadius: 10, padding: "8px 12px",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
+  },
+  routeSummary: {
+    display: "flex", alignItems: "center", gap: 6,
+    width: "100%", padding: 0, border: "none", background: "transparent",
+    color: "inherit", fontFamily: "inherit", textAlign: "left",
+    cursor: "pointer", fontSize: 12, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
+  },
+  routeBody: { display: "flex", flexDirection: "column", gap: 10, marginTop: 8 },
   // 编辑表单顶部：填入默认模板 + 模板摘要 / 无模板说明。
   templateBar: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
   modelEditor: {
@@ -326,13 +350,13 @@ const s = {
   pickerFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
 };
 
-function Field({ label, children, hint, style }) {
+function Field({ label, children, hint, error, style }) {
   return (
     <label style={style === undefined ? s.field : { ...s.field, ...style }}>
       <span style={s.label}>{label}</span>
       {children}
       <div style={s.hintLine}>
-        {hint ? <span style={s.fieldHint}>{hint}</span> : null}
+        {error ? <span style={s.fieldError}>{error}</span> : hint ? <span style={s.fieldHint}>{hint}</span> : null}
       </div>
     </label>
   );
@@ -851,8 +875,21 @@ function EditModelForm({
   );
 }
 
-/** 自绘的删除二次确认（不用原生 confirm，避免破坏主题）。 */
-function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
+/** 自绘的二次确认外壳（不用原生 confirm，避免破坏主题）。 */
+function ConfirmDialog({
+  ariaLabel,
+  title,
+  badge,
+  cancelAria,
+  confirmAria,
+  confirmLabel,
+  busyLabel,
+  footerHint,
+  busy,
+  onCancel,
+  onConfirm,
+  children,
+}) {
   const dialogRef = React.useRef(null);
   const cancelRef = React.useRef(null);
 
@@ -902,36 +939,343 @@ function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
         style={s.dialog}
         role="dialog"
         aria-modal="true"
-        aria-label="删除模型确认"
+        aria-label={ariaLabel}
         onKeyDown={handleKeyDown}
       >
         <div style={s.pickerHeader}>
-          <span style={s.h}>删除模型</span>
-          <span style={s.pickerHint}>二次确认</span>
+          <span style={s.h}>{title}</span>
+          <span style={s.pickerHint}>{badge}</span>
         </div>
-        <p style={s.sub}>
-          确定要从 <b>{routeId}</b> 删除模型 <b>{modelId}</b> 吗？
-        </p>
-        <p style={s.sub}>
-          删除会用一条 set 重写该路由的 models 数组（长度减一），不会在数组里留下空洞；此操作无法撤销。
-        </p>
+        {children}
         <div style={s.pickerFooter}>
-          <span style={s.pickerHint}>模型条目计数会立即同步。</span>
+          <span style={s.pickerHint}>{footerHint}</span>
           <span style={{ display: "flex", gap: 8 }}>
-            <button ref={cancelRef} type="button" style={s.btn} onClick={onCancel} aria-label="取消删除">取消</button>
+            <button ref={cancelRef} type="button" style={s.btn} onClick={onCancel} aria-label={cancelAria}>取消</button>
             <button
               type="button"
               style={busy ? { ...s.btnDanger, opacity: 0.55, cursor: "not-allowed" } : s.btnDanger}
               disabled={busy}
               onClick={onConfirm}
-              aria-label="确认删除"
+              aria-label={confirmAria}
             >
-              {busy ? "删除中…" : "删除"}
+              {busy ? busyLabel : confirmLabel}
             </button>
           </span>
         </div>
       </div>
     </div>
+  );
+}
+
+/** 删除单个模型的二次确认。 */
+function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
+  return (
+    <ConfirmDialog
+      ariaLabel="删除模型确认"
+      title="删除模型"
+      badge="二次确认"
+      cancelAria="取消删除"
+      confirmAria="确认删除"
+      confirmLabel="删除"
+      busyLabel="删除中…"
+      footerHint="模型条目计数会立即同步。"
+      busy={busy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <p style={s.sub}>
+        确定要从 <b>{routeId}</b> 删除模型 <b>{modelId}</b> 吗？
+      </p>
+      <p style={s.sub}>
+        删除会用一条 set 重写该路由的 models 数组（长度减一），不会在数组里留下空洞；此操作无法撤销。
+      </p>
+    </ConfirmDialog>
+  );
+}
+
+/** 删除整条路由的二次确认：写明模型条数与不可撤销。 */
+function DeleteRouteDialog({ routeId, modelCount, busy, onCancel, onConfirm }) {
+  return (
+    <ConfirmDialog
+      ariaLabel="删除路由确认"
+      title="删除路由"
+      badge="二次确认"
+      cancelAria="取消删除路由"
+      confirmAria="确认删除路由"
+      confirmLabel="删除路由"
+      busyLabel="删除中…"
+      footerHint="删除后不会影响其它路由。"
+      busy={busy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <p style={s.sub}>
+        确定要删除路由 <b>{routeId}</b> 吗？
+      </p>
+      <p style={s.sub}>
+        该路由下有 <b>{modelCount}</b> 个模型，删除后连同模型配置一起消失。这一步不能撤销。
+      </p>
+    </ConfirmDialog>
+  );
+}
+
+/**
+ * 路由（provider）级字段编辑卡片。
+ *
+ * 默认折叠；展开后可编辑九个路由级字段。写入只产出叶子 set / unset，
+ * 绝不重建整条路由；删除路由是唯一允许的整条 unset，并且带 stale-route
+ * 与「至少要保留一个路由」两道守卫。
+ */
+function RouteSettingsCard({
+  routeId,
+  provider,
+  routeCount,
+  apiChoices,
+  writable,
+  busy,
+  open,
+  form,
+  confirmOpen,
+  onChange,
+  onToggleOpen,
+  onOpenConfirm,
+  onCloseConfirm,
+  onSave,
+  onDelete,
+}) {
+  if (form === null) return null;
+
+  const plan = buildRouteEditOps(routeId, form, provider);
+  const errors = plan.errors;
+  const changedLabels = routeFieldLabels(plan.changed);
+  const stale = plan.warnings.find((warning) => warning.code === "stale-route");
+  const canSave =
+    writable &&
+    !busy &&
+    stale === undefined &&
+    plan.ops.length > 0 &&
+    Object.keys(errors).length === 0;
+  const deleteBlocked = routeDeleteBlockReason(routeCount);
+  const deleteDisabled = !writable || busy || deleteBlocked !== null || provider === undefined;
+  const modelCount = Array.isArray(provider?.models) ? provider.models.length : 0;
+  const apiChoicesList = Array.isArray(apiChoices?.choices) ? apiChoices.choices : [];
+  const apiChoicesSource = apiChoices?.source === "schema" ? "schema" : "fallback";
+
+  function update(field, value) {
+    onChange({ [field]: value });
+  }
+
+  async function save() {
+    if (!canSave) return;
+    await onSave(form);
+  }
+
+  return (
+    <section style={s.routeCard} aria-label="路由设置">
+      {/* 不用 <details>/<summary>：既有工作台测试断言 details 清单精确等于
+          投影预览的数量；这里的折叠状态本来就由 Workbench 持有。 */}
+      <button
+        type="button"
+        style={s.routeSummary}
+        aria-expanded={open}
+        aria-label={open ? "收起路由设置" : "展开路由设置"}
+        onClick={onToggleOpen}
+      >
+        {open ? "▾" : "▶"} 路由设置 · {describeRouteSummary(provider)}
+      </button>
+
+      {open ? (
+      <div style={s.routeBody}>
+        <span style={s.sub}>
+          编辑路由 <b>{routeId}</b> 的字段：只写改过的叶子路径，models / compat 与宿主未来字段原样保留。
+        </span>
+
+        <div style={s.row}>
+          <Field label="显示名 (displayName)" hint="留空 = 清空该字段">
+            <input
+              style={s.input}
+              value={form.displayName}
+              onChange={(event) => update("displayName", event.target.value)}
+              placeholder="如 Preview Chat"
+              aria-label="路由显示名"
+            />
+          </Field>
+          <Field label="接口地址 (baseURL)" error={errors.baseURL} hint="必须以 http:// 或 https:// 开头">
+            <input
+              style={s.input}
+              value={form.baseURL}
+              onChange={(event) => update("baseURL", event.target.value)}
+              placeholder="https://…"
+              aria-label="路由接口地址"
+            />
+          </Field>
+        </div>
+
+        <div style={s.row}>
+          <Field
+            label="协议 (api)"
+            hint={apiChoicesSource === "schema" ? "选项来自宿主 schema" : "使用内置协议清单"}
+          >
+            <select
+              style={s.input}
+              value={form.api}
+              onChange={(event) => update("api", event.target.value)}
+              aria-label="路由协议"
+            >
+              <option value="">（不声明，回落目录）</option>
+              {apiChoicesList.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+              {form.api !== "" && !apiChoicesList.includes(form.api) ? (
+                <option value={form.api}>{form.api}（当前值）</option>
+              ) : null}
+            </select>
+          </Field>
+          <Field label="密钥引用 (apiKeyEnv)" hint="只改引用名">
+            <input
+              style={s.input}
+              value={form.apiKeyEnv}
+              onChange={(event) => update("apiKeyEnv", event.target.value)}
+              placeholder="如 PREVIEW_CHAT_API_KEY"
+              aria-label="路由密钥引用"
+            />
+          </Field>
+        </div>
+
+        <span style={s.sub}>ⓘ 只改引用名，密钥值在第二批管理；这里不读取也不写入任何密钥内容。</span>
+
+        {apiChoicesSource === "fallback" ? (
+          <div style={s.warn} role="status" aria-label="协议清单来源">
+            协议清单读取失败，使用内置列表
+          </div>
+        ) : null}
+
+        <div style={s.row}>
+          <Field label="默认上下文 (defaultContextWindow)" error={errors.defaultContextWindow} hint="">
+            <input
+              style={s.input}
+              value={form.defaultContextWindow}
+              onChange={(event) => update("defaultContextWindow", event.target.value)}
+              placeholder="如 1000000"
+              aria-label="路由默认上下文"
+              inputMode="numeric"
+            />
+          </Field>
+          <Field label="默认输出上限 (defaultMaxTokens)" error={errors.defaultMaxTokens} hint="">
+            <input
+              style={s.input}
+              value={form.defaultMaxTokens}
+              onChange={(event) => update("defaultMaxTokens", event.target.value)}
+              placeholder="如 32768"
+              aria-label="路由默认输出上限"
+              inputMode="numeric"
+            />
+          </Field>
+          <Field label="超时 (timeoutMs)" error={errors.timeoutMs} hint="">
+            <input
+              style={s.input}
+              value={form.timeoutMs}
+              onChange={(event) => update("timeoutMs", event.target.value)}
+              placeholder="如 60000"
+              aria-label="路由超时"
+              inputMode="numeric"
+            />
+          </Field>
+        </div>
+
+        <span style={s.sub}>
+          未声明窗口 / 输出上限的模型回落到这两个值；留空表示清空（回到宿主回落），数字必须是正整数。
+        </span>
+
+        <div style={s.row}>
+          <Field label="缓存 (cacheRetention)" hint="留空 = 不声明">
+            <select
+              style={s.input}
+              value={form.cacheRetention}
+              onChange={(event) => update("cacheRetention", event.target.value)}
+              aria-label="路由缓存"
+            >
+              <option value="">（不声明）</option>
+              {CACHE_RETENTION_CHOICES.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+              {form.cacheRetention !== "" && !CACHE_RETENTION_CHOICES.includes(form.cacheRetention) ? (
+                <option value={form.cacheRetention}>{form.cacheRetention}（当前值）</option>
+              ) : null}
+            </select>
+          </Field>
+          <Field label="传输 (transport)" hint="留空 = 不声明">
+            <select
+              style={s.input}
+              value={form.transport}
+              onChange={(event) => update("transport", event.target.value)}
+              aria-label="路由传输"
+            >
+              <option value="">（不声明）</option>
+              {TRANSPORT_CHOICES.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+              {form.transport !== "" && !TRANSPORT_CHOICES.includes(form.transport) ? (
+                <option value={form.transport}>{form.transport}（当前值）</option>
+              ) : null}
+            </select>
+          </Field>
+        </div>
+
+        <div style={s.sub}>
+          改动字段：{changedLabels.length === 0 ? "无（保存已禁用）" : changedLabels.join(" / ")}
+        </div>
+
+        {Object.keys(errors).length > 0 ? (
+          <div style={s.err}>有字段未通过校验，修正前不会产出任何 op。</div>
+        ) : null}
+        {stale ? <div style={s.err}>{stale.message}</div> : null}
+
+        <details style={s.details}>
+          <summary style={s.summary}>
+            保存将写入的 settingsOps（{plan.ops.length} 条）· 点击展开
+          </summary>
+          <pre style={s.pre}>{JSON.stringify(plan.ops, null, 2)}</pre>
+        </details>
+
+        <div style={s.editorFooter}>
+          <span style={s.sub}>写入走宿主 configForms（修订号围栏 + 冲突自动重读）。</span>
+          <span style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {deleteBlocked === null ? null : <span style={s.fieldHint}>{deleteBlocked}</span>}
+            {provider === undefined ? <span style={s.fieldHint}>该路由已不存在</span> : null}
+            <button
+              type="button"
+              style={deleteDisabled ? { ...s.btnDanger, opacity: 0.5, cursor: "not-allowed" } : s.btnDanger}
+              disabled={deleteDisabled}
+              onClick={onOpenConfirm}
+              aria-label="删除路由"
+            >
+              删除路由
+            </button>
+            <button
+              type="button"
+              style={canSave ? s.btnPrimary : { ...s.btn, opacity: 0.5, cursor: "not-allowed" }}
+              disabled={!canSave}
+              onClick={save}
+              aria-label="保存路由设置"
+            >
+              {busy ? "保存中…" : "保存设置"}
+            </button>
+          </span>
+        </div>
+      </div>
+      ) : null}
+
+      {open && confirmOpen ? (
+        <DeleteRouteDialog
+          routeId={routeId}
+          modelCount={modelCount}
+          busy={busy}
+          onCancel={onCloseConfirm}
+          onConfirm={onDelete}
+        />
+      ) : null}
+    </section>
   );
 }
 
@@ -945,6 +1289,20 @@ function Workbench({ configForms, discoverModels }) {
   const userProviders = userProvidersOf(snap);
   const routes = Object.keys(providers);
   const writable = snap?.writable !== false;
+
+  // 协议清单从宿主命名空间 schema 现读：宿主加了新协议我们自动跟上；读不到
+  // （旧宿主 / schema 形态变化 / 描述镜像尚未就绪）时退回内置七种并在卡片上标注。
+  const apiChoices = React.useMemo(() => {
+    try {
+      const schemaOps = configForms?.schema ?? scope?.schema;
+      const mirror = typeof configForms?.describe === "function" ? configForms.describe() : undefined;
+      const view = mirror?.getSnapshot?.().view?.namespaces?.find?.((row) => row.ns === LLM_NS)
+        ?? scope?.mirror?.namespace?.(LLM_NS);
+      return apiChoicesFromSchema(schemaOps, view?.schema);
+    } catch {
+      return apiChoicesFromSchema(undefined, undefined);
+    }
+  }, [configForms, scope, snap]);
 
   const [routeId, setRouteId] = React.useState("");
   const [modelId, setModelId] = React.useState("");
@@ -998,6 +1356,12 @@ function Workbench({ configForms, discoverModels }) {
   // 自绘删除确认的目标；null 表示弹窗关闭。
   const [deleteTarget, setDeleteTarget] = React.useState(null);
 
+  // 路由设置卡片的状态放在 Workbench：卡片组件保持无 hook，测试用的轻量
+  // 渲染器（按组件树展开函数调用而不隔离 hook 槽）才能安全地展开它。
+  const [routeFormState, setRouteFormState] = React.useState(null);
+  const [routeCardOpen, setRouteCardOpen] = React.useState(false);
+  const [routeConfirmOpen, setRouteConfirmOpen] = React.useState(false);
+
   // 首次挂载：有模板就填进表单。只跑一次，用户之后的手动编辑不被覆盖。
   const templateApplied = React.useRef(false);
   React.useEffect(() => {
@@ -1019,6 +1383,13 @@ function Workbench({ configForms, discoverModels }) {
   }, [routes, routeId]);
 
   const route = routeId ? providers[routeId] : undefined;
+
+  // 切换路由时收起卡片并重新预填九个字段；不把上一条路由的表单带过来。
+  React.useEffect(() => {
+    setRouteCardOpen(false);
+    setRouteConfirmOpen(false);
+    setRouteFormState(routeFormFromProvider(route));
+  }, [routeId]);
   const userRoute = routeId ? userProviders[routeId] : undefined;
   const routeModels = Array.isArray(route?.models) ? route.models : [];
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1447,10 +1818,93 @@ function Workbench({ configForms, discoverModels }) {
     }
   }
 
+  /** 路由设置卡片：无 hook 的展示组件，状态全部由 Workbench 持有。 */
+  function updateRouteForm(patch) {
+    setRouteFormState((current) => (current === null ? current : { ...current, ...patch }));
+  }
+
+  function toggleRouteCard() {
+    setRouteCardOpen((current) => !current);
+  }
+
+  async function confirmDeleteRoute() {
+    await deleteRoute();
+    setRouteConfirmOpen(false);
+  }
+
+  /**
+   * 保存路由设置：先按最新快照重算 ops（路由若已被别处删除就拒绝写入），
+   * 再走与模型写入相同的修订号围栏。返回新表单供卡片重新预填。
+   */
+  async function saveRouteSettings(form) {
+    const latestProviders = providersOf(scope.getSnapshot());
+    const plan = buildRouteEditOps(routeId, form, latestProviders[routeId]);
+    if (plan.warnings.length > 0) {
+      setToast({ tone: "bad", text: plan.warnings[0].message });
+      return { ok: false, form };
+    }
+    if (Object.keys(plan.errors).length > 0) {
+      setToast({ tone: "bad", text: "路由设置有字段未通过校验，未生成写入操作" });
+      return { ok: false, form };
+    }
+    if (plan.ops.length === 0) {
+      setToast({ tone: "bad", text: "没有字段发生变化；未生成写入操作" });
+      return { ok: false, form };
+    }
+    setBusy(true);
+    setToast(null);
+    try {
+      const ok = await scope.mutate(plan.ops);
+      if (!ok) {
+        setToast({ tone: "bad", text: "保存被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+        return { ok: false, form };
+      }
+      const nextForm = routeFormFromProvider(providersOf(scope.getSnapshot())[routeId]);
+      setRouteFormState(nextForm);
+      setToast({ tone: "good", text: `已保存路由设置 ${routeId}（${plan.ops.length} 条 op）` });
+      return { ok: true, form: nextForm };
+    } catch (error) {
+      setToast({ tone: "bad", text: `保存异常：${error?.message ?? error}` });
+      return { ok: false, form };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * 删除整条路由：用最新快照复核 stale-route 与「至少保留一个路由」，
+   * 通过后只发一条 unset ["providers", routeId]。
+   */
+  async function deleteRoute() {
+    const latestProviders = providersOf(scope.getSnapshot());
+    const plan = buildRouteDeleteOps(routeId, latestProviders);
+    if (plan.warnings.length > 0) {
+      setToast({ tone: "bad", text: plan.warnings[0].message });
+      return { ok: false, message: plan.warnings[0].message };
+    }
+    setBusy(true);
+    setToast(null);
+    try {
+      const ok = await scope.mutate(plan.ops);
+      if (!ok) {
+        setToast({ tone: "bad", text: "删除被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+        return { ok: false, message: "删除被宿主拒绝" };
+      }
+      const remaining = Object.keys(providersOf(scope.getSnapshot()));
+      setRouteId(remaining[0] ?? "");
+      setToast({ tone: "good", text: `已删除路由 ${routeId}` });
+      return { ok: true };
+    } catch (error) {
+      setToast({ tone: "bad", text: `删除异常：${error?.message ?? error}` });
+      return { ok: false, message: String(error?.message ?? error) };
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // ConfigFormController 快照形态（0.2.2）：{status, value, base, user, revision, writable}。
   // 没有 `mode` 字段 —— 命名空间是否可用看 `status`，写权限看 `writable`。
   const status = snap?.status;
-
   return (
     <div style={s.page}>
       <div>
@@ -1520,6 +1974,26 @@ function Workbench({ configForms, discoverModels }) {
           />
         </Field>
       </div>
+
+      {routeId !== "" ? (
+        <RouteSettingsCard
+          routeId={routeId}
+          provider={route}
+          routeCount={routes.length}
+          apiChoices={apiChoices}
+          writable={writable}
+          busy={busy}
+          open={routeCardOpen}
+          form={routeFormState}
+          confirmOpen={routeConfirmOpen}
+          onChange={updateRouteForm}
+          onToggleOpen={toggleRouteCard}
+          onOpenConfirm={() => setRouteConfirmOpen(true)}
+          onCloseConfirm={() => setRouteConfirmOpen(false)}
+          onSave={saveRouteSettings}
+          onDelete={confirmDeleteRoute}
+        />
+      ) : null}
 
       <div style={s.modelsPanel} aria-label="该路由的模型列表">
         <div style={s.pendingHeader}>
