@@ -223,6 +223,71 @@ export function routeDeleteBlockReason(routeCount) {
   return Number.isFinite(routeCount) && routeCount > 1 ? null : "至少要保留一个路由";
 }
 
+// ── 模型排序（工单 #19） ────────────────────────────────────────────────
+//
+// 顺序是数组本身的属性，没有「第 i 位的顺序」这种叶子路径，所以排序只能
+// 用一条 set 重写整个 models 数组 —— 与删除模型相同的写入形态，但只换
+// 位置、不改内容：元素对象按引用原样搬走，compat / 宿主未来字段都跟着
+// 对应模型走，不按位置留下。
+//
+// 返回新数组，绝不原地 splice：原地修改会污染 React state 与宿主快照，
+// 失败回滚时也再没有「移动前」的数组可退回。
+
+/** 排序被拒绝时的告警码。 */
+export const MODEL_MOVE_WARNINGS = Object.freeze({
+  noChange: "no-change",
+  staleIndex: "stale-index",
+  invalidModels: "invalid-models",
+});
+
+function moveWarning(code, message) {
+  return { warning: { code, message } };
+}
+
+/**
+ * 把第 from 位的模型移到 to 位，返回新数组（不修改原数组）。
+ *
+ * - `from === to` → no-change 告警，不产出 op；
+ * - 越界 / 非整数 / models 不是数组 → stale-index（或 invalid-models）告警；
+ * - 其余：产出恰好 1 条整数组 set，path 为 ["providers", routeId, "models"]。
+ *
+ * routeId 是 op 路径必需的一环（函数本身无从得知当前路由），因此作为第 4
+ * 个参数传入；省略时只返回重排后的数组、不产出 op，方便调用方先看结果。
+ *
+ * @param {Array} models 现有 models 数组
+ * @param {number} from 源下标
+ * @param {number} to 目标下标
+ * @param {string} [routeId] 当前路由 id；提供时产出整数组 set
+ * @returns {{models: Array, ops: object[]}|{warning: object}}
+ */
+export function moveModel(models, from, to, routeId) {
+  if (!Array.isArray(models)) {
+    return moveWarning(
+      MODEL_MOVE_WARNINGS.invalidModels,
+      "invalid-models：当前路由没有可排序的 models 数组；请重新读取后重试",
+    );
+  }
+  const length = models.length;
+  const validIndex = (value) => Number.isInteger(value) && value >= 0 && value < length;
+  if (!validIndex(from) || !validIndex(to)) {
+    return moveWarning(
+      MODEL_MOVE_WARNINGS.staleIndex,
+      `stale-index：模型下标 ${String(from)} → ${String(to)} 已失效（当前 ${length} 条）；请重新读取后重试`,
+    );
+  }
+  if (from === to) {
+    return moveWarning(MODEL_MOVE_WARNINGS.noChange, `no-change：模型已经在第 ${from + 1} 位`);
+  }
+
+  const next = models.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  const ops = typeof routeId === "string" && routeId !== ""
+    ? [{ op: "set", path: ["providers", routeId, "models"], value: next }]
+    : [];
+  return { models: next, ops };
+}
+
 /** 折叠摘要：输出上限 / 上下文 / 模型数（未声明的值显示「未设置」）。 */
 export function describeRouteSummary(provider) {
   const token = (value) => {
