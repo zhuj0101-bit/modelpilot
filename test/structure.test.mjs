@@ -20,11 +20,12 @@ test("package.json 结构", () => {
   assert.equal(pkg.exports["./client"], "./lib/client.js");
   assert.ok(pkg.exports["./package.json"]);
   assert.equal(pkg.dsh.bundle.patch, "./cordis.patch.yml");
-  // `slots` 来自渲染器包，`configForms` 来自 ui-settings。
-  // 两者都是包名（宿主约定），不是服务名。
+  // `slots` 来自渲染器包，`configForms` 来自 ui-settings，
+  // `remote` 来自 api-remotes。三者都是包名（宿主约定），不是服务名。
   assert.deepEqual(pkg.dsh.client.inject, [
     "@deepseek-ai/dsh-client-ui-renderer",
     "@deepseek-ai/dsh-client-ui-settings",
+    "@deepseek-ai/dsh-api-remotes",
   ]);
   assert.equal(pkg.dsh.client.platform, "web");
   // 依赖：真正的 dependency 只有官方 schemastery 模式库；

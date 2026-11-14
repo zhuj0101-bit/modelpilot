@@ -28,7 +28,7 @@ import {
 } from "./reasoning-levels.js";
 
 export const name = "model-assistant-client";
-export const inject = ["slots", "configForms"];
+export const inject = ["slots", "configForms", "remote", "remote.llm"];
 
 const SECTION_ID = "modelpilot.workbench";
 const LLM_NS = "llm-pi-ai";
@@ -151,9 +151,9 @@ const s = {
   },
 };
 
-function Field({ label, children, hint }) {
+function Field({ label, children, hint, style }) {
   return (
-    <label style={s.field}>
+    <label style={style === undefined ? s.field : { ...s.field, ...style }}>
       <span style={s.label}>{label}</span>
       {children}
       <div style={s.hintLine}>
@@ -249,7 +249,7 @@ function TokenCountField({ label, value, candidates, error, placeholder, onChang
 }
 
 /** 工作台界面。 */
-function Workbench({ configForms }) {
+function Workbench({ configForms, discoverModels }) {
   const scope = configForms.get(LLM_NS);
   const [snap, setSnap] = React.useState(() => scope.getSnapshot());
   React.useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope]);
@@ -274,6 +274,13 @@ function Workbench({ configForms }) {
   const [ackReplace, setAckReplace] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [toast, setToast] = React.useState(null);
+
+  // 已拉取的远端候选；只在下拉里作为额外分组展示，不自动填充模型 ID。
+  const [remoteModels, setRemoteModels] = React.useState([]);
+  const [fetchState, setFetchState] = React.useState("idle"); // idle | loading | done | failed
+  const [fetchError, setFetchError] = React.useState("");
+  // 切换路由后清掉上一条路由的结果；用序号作废未完成的请求。
+  const fetchGeneration = React.useRef(0);
 
   // localStorage 在隐私模式 / 被禁用时会抛异常；用一个惰性 getter 包住，
   // 拿不到就当作没有存储，全部走「无模板」分支。
@@ -312,6 +319,14 @@ function Workbench({ configForms }) {
   const routeModels = Array.isArray(route?.models) ? route.models : [];
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const catalogIds = React.useMemo(() => catalogIdsOf(route), [route]);
+
+  // 切换路由后清掉上一条路由的候选与状态；未完成的请求由 generation 作废。
+  React.useEffect(() => {
+    fetchGeneration.current += 1;
+    setRemoteModels([]);
+    setFetchState("idle");
+    setFetchError("");
+  }, [routeId]);
 
   // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
   const draft = React.useMemo(() => {
@@ -358,6 +373,58 @@ function Workbench({ configForms }) {
     }
     setError(true);
     event.target.value = current;
+  }
+
+  /**
+   * 从当前路由的端点拉取模型列表。
+   *
+   * 走宿主的 remote.llm.discoverModels：凭据（apiKeyEnv 指向的条目）由宿主
+   * 自己解析，前端既不持有明文 key，也不需要传 apiKey。
+   * 只传 provider 和 baseURL；api 用路由上声明的协议。
+   */
+  async function fetchModels() {
+    if (fetchState === "loading") return;
+    const latestProviders = providersOf(scope.getSnapshot());
+    const latestRoute = routeId ? latestProviders[routeId] : undefined;
+    const baseURL = typeof latestRoute?.baseURL === "string" ? latestRoute.baseURL.trim() : "";
+    const api = typeof latestRoute?.api === "string" && latestRoute.api !== "" ? latestRoute.api : undefined;
+    if (baseURL === "") {
+      setFetchState("failed");
+      setFetchError("当前路由未配置 baseURL");
+      return;
+    }
+    const generation = ++fetchGeneration.current;
+    setFetchState("loading");
+    setFetchError("");
+    try {
+      const response = await discoverModels(LLM_NS, {
+        provider: routeId,
+        baseURL,
+        ...(api === undefined ? {} : { api }),
+      });
+      if (generation !== fetchGeneration.current) return;
+      if (!response.ok) {
+        setFetchState("failed");
+        setFetchError(response.error?.message ?? "宿主拒绝了模型发现请求");
+        return;
+      }
+      const ids = [...new Set(
+        (response.value ?? [])
+          .map((entry) => (typeof entry?.id === "string" ? entry.id.trim() : ""))
+          .filter((id) => id !== ""),
+      )];
+      if (ids.length === 0) {
+        setFetchState("failed");
+        setFetchError("端点返回了空的模型列表");
+        return;
+      }
+      setRemoteModels(ids);
+      setFetchState("done");
+    } catch (error) {
+      if (generation !== fetchGeneration.current) return;
+      setFetchState("failed");
+      setFetchError(String(error?.message ?? error));
+    }
   }
 
   async function apply() {
@@ -421,17 +488,37 @@ function Workbench({ configForms }) {
             ))}
           </select>
         </Field>
-        <Field label="模型 ID（原样写入）" hint="">
-          <input
-            style={s.input}
-            value={modelId}
-            onChange={(e) => {
-              const next = e.target.value;
-              setModelId(next);
-              if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(next));
-            }}
-            placeholder="如 tflow/alpha-32b"
-          />
+        <Field label="模型 ID（原样写入）" hint="" style={{ flex: "0 1 190px" }}>
+          <div style={s.comboBox}>
+            <input
+              id="modelpilot-model-id"
+              style={{ ...s.input, flex: "1 1 0", width: 0 }}
+              value={modelId}
+              onChange={(e) => {
+                const next = e.target.value;
+                setModelId(next);
+                if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(next));
+              }}
+              placeholder="如 tflow/alpha-32b"
+              list={remoteModels.length > 0 ? "modelpilot-remote-models" : undefined}
+            />
+            <button
+              type="button"
+              style={fetchState === "loading" ? { ...s.comboToggle, opacity: 0.55, cursor: "not-allowed" } : s.comboToggle}
+              disabled={fetchState === "loading"}
+              onClick={fetchModels}
+              title="从当前路由的端点拉取模型列表"
+            >
+              {fetchState === "loading" ? "…" : "拉取"}
+            </button>
+          </div>
+          {remoteModels.length > 0 ? (
+            <datalist id="modelpilot-remote-models">
+              {remoteModels.map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+          ) : null}
         </Field>
         <Field label="显示名（可选）" hint="">
           <input
@@ -445,6 +532,15 @@ function Workbench({ configForms }) {
           />
         </Field>
       </div>
+
+      {fetchState === "failed" ? (
+        <div style={s.err}>拉取失败：{fetchError}</div>
+      ) : fetchState === "done" ? (
+        <div style={s.sub}>
+          已拉取 {remoteModels.length} 个模型：{remoteModels.slice(0, 8).join("、")}
+          {remoteModels.length > 8 ? ` 等 ${remoteModels.length} 个` : ""}
+        </div>
+      ) : null}
 
       <div style={s.row}>
         <TokenCountField
@@ -621,6 +717,8 @@ function Workbench({ configForms }) {
 
 export function apply(ctx) {
   const configForms = ctx.configForms;
+  // 在 apply 作用域里绑定宿主操作：组件只拿到回调，不直接持有服务代理。
+  const discoverModels = (namespace, request) => ctx.remote.llm.discoverModels(namespace, request);
   ctx.effect(
     () =>
       configForms.whileServed([LLM_NS], () =>
@@ -631,7 +729,7 @@ export function apply(ctx) {
               id: SECTION_ID,
               order: 12,
               label: () => "ModelPilot",
-              inject: () => ({ configForms }),
+              inject: () => ({ configForms, discoverModels }),
             },
             Workbench,
           ),
