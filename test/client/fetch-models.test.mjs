@@ -263,7 +263,7 @@ test("成功：走 remote.llm.discoverModels，请求不含 apiKey", async () =>
   assert.equal(request.api, "openai-completions");
   assert.equal("apiKey" in request, false);
   assert.deepEqual(harness.datalistOptions(), ["jxf/dsv4.1-flash", "other"]);
-  assert.match(harness.text(), /已拉取 2 个模型：jxf\/dsv4\.1-flash、other/);
+  assert.match(harness.text(), /已拉取 2 个 · 选择/);
   assert.equal(harness.button().props.children, "拉取");
 });
 
@@ -354,7 +354,7 @@ test("加载中：按钮变 … 且 disabled，完成后恢复", async () => {
 
   assert.equal(harness.button().props.children, "拉取");
   assert.equal(harness.button().props.disabled, false);
-  assert.match(harness.text(), /已拉取 1 个模型：a/);
+  assert.match(harness.text(), /已拉取 1 个 · 选择/);
 });
 
 test("路由切换：清空上一次的候选与提示", async () => {
@@ -368,7 +368,7 @@ test("路由切换：清空上一次的候选与提示", async () => {
   await harness.flush();
   harness.render();
   assert.deepEqual(harness.datalistOptions(), ["a"]);
-  assert.match(harness.text(), /已拉取 1 个模型：a/);
+  assert.match(harness.text(), /已拉取 1 个 · 选择/);
 
   harness.switchRoute("second");
   harness.render();
