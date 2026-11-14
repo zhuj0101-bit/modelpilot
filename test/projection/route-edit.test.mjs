@@ -14,16 +14,24 @@ const root = join(here, "..", "..");
 const {
   CACHE_RETENTION_CHOICES,
   FALLBACK_API_PROTOCOLS,
+  HOST_ROUTE_DEFAULT_FALLBACKS,
+  ROUTE_DEFAULT_FIELDS,
   ROUTE_FIELD_DEFINITIONS,
   ROUTE_FIELD_KEYS,
   TRANSPORT_CHOICES,
   apiChoicesFromSchema,
   buildRouteDeleteOps,
   buildRouteEditOps,
+  countRouteDefaultUsers,
+  describeHostDefaultFallback,
+  describeRouteDefaultCount,
+  describeRouteDefaultUsage,
   describeRouteSummary,
+  routeDefaultCountParts,
   routeDeleteBlockReason,
   routeFieldLabels,
   routeFormFromProvider,
+  usesRouteDefault,
   validateRouteForm,
 } = await import(pathToFileURL(join(root, "src", "core", "route-edit.js")).href);
 
@@ -107,6 +115,129 @@ test("describeRouteSummary：输出上限 / 上下文 / 模型数", () => {
     "输出上限 未设置 · 上下文 未设置 · 1 个模型",
   );
   assert.equal(describeRouteSummary(undefined), "输出上限 未设置 · 上下文 未设置 · 0 个模型");
+});
+
+// ── 路由默认值与模型声明的关系（工单 #34）────────────────────────────
+
+test("usesRouteDefault：模型自己声明了字段 → 不受影响，另一个字段仍按各自声明判断", () => {
+  assert.equal(usesRouteDefault({ id: "a", maxTokens: 8192 }), false);
+  assert.equal(usesRouteDefault({ id: "a", contextWindow: 128000 }, undefined, "contextWindow"), false);
+  // 只声明 contextWindow：窗口不受影响，输出上限仍受路由默认值影响。
+  assert.equal(usesRouteDefault({ id: "a", contextWindow: 128000 }), true);
+  assert.equal(usesRouteDefault({ id: "a", contextWindow: 128000 }, undefined, "contextWindow"), false);
+});
+
+test("usesRouteDefault：内置目录优先于路由默认值（Set 与宿主 Map 都支持）", () => {
+  const catalog = new Set(["jxf/dsv4.1-flash"]);
+  const undeclared = { id: "jxf/dsv4.1-flash" };
+  assert.equal(usesRouteDefault(undeclared, catalog), false);
+  assert.equal(usesRouteDefault(undeclared, catalog, "contextWindow"), false);
+  assert.equal(usesRouteDefault(undeclared, new Map([["jxf/dsv4.1-flash", { maxTokens: 1 }]])), false);
+  // 目录里没有的 id 仍然受路由默认值影响。
+  assert.equal(usesRouteDefault({ id: "other/model" }, catalog), true);
+  // 传 undefined / 非对象时按「没有目录事实」处理，不抛错。
+  assert.equal(usesRouteDefault({ id: "other/model" }, undefined), true);
+  assert.equal(usesRouteDefault(null, catalog), false);
+});
+
+test("countRouteDefaultUsers：两个字段各自统计，不合并成「是否完全声明」", () => {
+  const models = [
+    { id: "none-declared" },
+    { id: "window-only", contextWindow: 128000 },
+    { id: "both-declared", contextWindow: 200000, maxTokens: 8192 },
+  ];
+  const usage = countRouteDefaultUsers(models);
+  assert.equal(usage.total, 3);
+  assert.equal(usage.contextWindow.count, 1);
+  assert.deepEqual(usage.contextWindow.models.map((model) => model.id), ["none-declared"]);
+  assert.equal(usage.maxTokens.count, 2);
+  assert.deepEqual(usage.maxTokens.models.map((model) => model.id), ["none-declared", "window-only"]);
+});
+
+test("countRouteDefaultUsers：内置目录里的 id 按字段排除，不影响另一个字段", () => {
+  const models = [
+    { id: "catalog-both" }, // 两个字段都由目录给
+    { id: "custom-window-only", contextWindow: 128000 }, // 窗口自己声明，输出上限还没有
+    { id: "custom" }, // 两个字段都没有声明
+  ];
+  const usage = countRouteDefaultUsers(models, new Set(["catalog-both"]));
+  assert.equal(usage.contextWindow.count, 1);
+  assert.deepEqual(usage.contextWindow.models.map((model) => model.id), ["custom"]);
+  assert.equal(usage.maxTokens.count, 2);
+  assert.deepEqual(usage.maxTokens.models.map((model) => model.id), ["custom-window-only", "custom"]);
+});
+
+test("countRouteDefaultUsers：没有模型时两个字段都没有受影响条目", () => {
+  for (const models of [undefined, null, [], "not-an-array"]) {
+    const usage = countRouteDefaultUsers(models);
+    assert.equal(usage.total, 0);
+    assert.deepEqual(usage.contextWindow, { count: 0, models: [] });
+    assert.deepEqual(usage.maxTokens, { count: 0, models: [] });
+  }
+  // 总数与界面上「N 个模型」一致；非对象条目不参与计数，也不会抛错。
+  const mixed = countRouteDefaultUsers([null, { id: "ok" }, "not-a-model"]);
+  assert.equal(mixed.total, 3);
+  assert.equal(mixed.maxTokens.count, 1);
+  assert.deepEqual(mixed.maxTokens.models.map((model) => model.id), ["ok"]);
+});
+
+test("describeRouteDefaultUsage：每条写清未声明什么，并标注另一个字段已声明", () => {
+  assert.equal(describeRouteDefaultUsage({ id: "a" }), "未声明 contextWindow / maxTokens");
+  assert.equal(
+    describeRouteDefaultUsage({ id: "a", contextWindow: 128000 }),
+    "未声明 maxTokens（已声明 contextWindow）",
+  );
+  assert.equal(
+    describeRouteDefaultUsage({ id: "a", maxTokens: 8192 }),
+    "未声明 contextWindow（已声明 maxTokens）",
+  );
+  assert.equal(
+    describeRouteDefaultUsage({ id: "a", contextWindow: 128000, maxTokens: 8192 }),
+    "已声明 contextWindow / maxTokens",
+  );
+});
+
+test("describeRouteDefaultCount：全部 / 部分 / 全部不受影响 / 没有模型 四种状态", () => {
+  assert.equal(describeRouteDefaultCount("defaultContextWindow", 0, 0), null);
+  assert.equal(describeRouteDefaultCount("defaultMaxTokens", 0, 0), null);
+  assert.equal(
+    describeRouteDefaultCount("defaultContextWindow", 3, 3),
+    "默认上下文：当前路由 3 个模型全部使用这两个值。",
+  );
+  assert.equal(
+    describeRouteDefaultCount("defaultMaxTokens", 3, 2),
+    "默认输出上限：当前路由 3 个模型中有 2 个会使用这两个值。",
+  );
+  assert.equal(
+    describeRouteDefaultCount("defaultMaxTokens", 3, 0),
+    "默认输出上限：当前路由 3 个模型都已声明自己的值，这两个输入框不影响它们。",
+  );
+  // 部分状态拆成三段：界面把中间那段「2 个」做成就地展开按钮。
+  assert.deepEqual(routeDefaultCountParts("defaultMaxTokens", 3, 2), {
+    prefix: "默认输出上限：当前路由 3 个模型中有 ",
+    countText: "2 个",
+    suffix: "会使用这两个值。",
+  });
+  assert.equal(routeDefaultCountParts("defaultMaxTokens", 3, 3).countText, null);
+  assert.equal(routeDefaultCountParts("defaultMaxTokens", 0, 0), null);
+});
+
+test("routeDefaultCountParts：未知字段直接报错，不拼出没有标签的句子", () => {
+  assert.throws(() => routeDefaultCountParts("defaultTopK", 3, 1), /未知的路由默认值字段/);
+});
+
+test("describeHostDefaultFallback：留空回落到内置 1,000,000 / 128,000，而不是「不限制」", () => {
+  assert.equal(
+    describeHostDefaultFallback("defaultContextWindow"),
+    "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）",
+  );
+  assert.equal(
+    describeHostDefaultFallback("defaultMaxTokens"),
+    "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）",
+  );
+  assert.equal(describeHostDefaultFallback("defaultTopK"), null);
+  assert.deepEqual(HOST_ROUTE_DEFAULT_FALLBACKS, { defaultContextWindow: 1_000_000, defaultMaxTokens: 128_000 });
+  assert.deepEqual(ROUTE_DEFAULT_FIELDS.map((field) => field.key), ["defaultContextWindow", "defaultMaxTokens"]);
 });
 
 test("字段定义固定为九个，顺序与 labels 一致", () => {

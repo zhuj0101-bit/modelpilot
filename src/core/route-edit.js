@@ -234,6 +234,153 @@ export function describeRouteSummary(provider) {
   return `输出上限 ${token(provider?.defaultMaxTokens)} · 上下文 ${token(provider?.defaultContextWindow)} · ${models} 个模型`;
 }
 
+// ── 路由默认值与模型声明的关系（工单 #34） ─────────────────────────────
+//
+// 宿主的真实回落链是单向三级（llm-pi-ai resolveRouteModels）：
+//   entry[field] ?? base?.[field] ?? request[default*]
+// 也就是「模型自己 → 内置目录 → 路由级默认值」。这里只解释这条链，
+// 不改写它的任何一环；目录给了值就是给了，不覆盖。
+
+/** 路由默认值覆盖的两个 token 字段：路由字段 → 模型条目字段 / 展示标签。 */
+export const ROUTE_DEFAULT_FIELDS = Object.freeze([
+  Object.freeze({ key: "defaultContextWindow", modelField: "contextWindow", label: "默认上下文" }),
+  Object.freeze({ key: "defaultMaxTokens", modelField: "maxTokens", label: "默认输出上限" }),
+]);
+
+/**
+ * 路由默认值留空时宿主回落到的那两个内置常量（不是「不限制」）。
+ * 对齐 llm-pi-ai 的 DEFAULT_CONTEXT_WINDOW / DEFAULT_MAX_TOKENS。
+ */
+export const HOST_ROUTE_DEFAULT_FALLBACKS = Object.freeze({
+  defaultContextWindow: 1_000_000,
+  defaultMaxTokens: 128_000,
+});
+
+function routeDefaultField(routeKey) {
+  return ROUTE_DEFAULT_FIELDS.find((candidate) => candidate.key === routeKey);
+}
+
+/**
+ * 该模型在某个 token 字段上是否会用到路由级默认值 —— 与宿主的单向三级
+ * 回落逐环一致：模型自己声明了 → 不受影响；内置目录描述了这个模型 id →
+ * 目录优先，也不受影响；两者都没有 → 才轮到路由级默认值。
+ *
+ * 两个字段必须分开判断：只声明了 `contextWindow` 的模型对窗口不受影响，
+ * 但对输出上限仍然受路由默认值影响。
+ *
+ * @param {object} model 路由 models 数组里的一条模型条目
+ * @param {Set<string>|Map<string,*>|undefined} catalogIds 宿主内置目录描述的模型 id
+ * @param {"contextWindow"|"maxTokens"} modelField 要判断的模型字段（默认输出上限）
+ * @returns {boolean} true 表示该字段最终会取路由级默认值
+ */
+export function usesRouteDefault(model, catalogIds, modelField = "maxTokens") {
+  if (model === null || typeof model !== "object") return false;
+  if (model[modelField] !== undefined) return false;
+  if (typeof catalogIds?.has === "function" && catalogIds.has(model.id)) return false;
+  return true;
+}
+
+/**
+ * 按字段分别统计本路由有多少模型会用到路由级默认值。
+ * 两个字段的受影响集合可能不同，绝不合并成一个「是否完全声明」。
+ *
+ * @param {object[]|undefined} models 路由的 models 数组
+ * @param {Set<string>|Map<string,*>|undefined} catalogIds 宿主内置目录描述的模型 id
+ * @returns {{total: number, contextWindow: {count: number, models: object[]}, maxTokens: {count: number, models: object[]}}}
+ */
+export function countRouteDefaultUsers(models, catalogIds) {
+  const entries = Array.isArray(models) ? models : [];
+  const result = {
+    total: entries.length,
+    contextWindow: { count: 0, models: [] },
+    maxTokens: { count: 0, models: [] },
+  };
+  for (const model of entries) {
+    if (model === null || typeof model !== "object") continue;
+    for (const modelField of ["contextWindow", "maxTokens"]) {
+      if (!usesRouteDefault(model, catalogIds, modelField)) continue;
+      result[modelField].count += 1;
+      result[modelField].models.push(model);
+    }
+  }
+  return result;
+}
+
+/**
+ * 展开清单里的一行：写清这个模型未声明什么，以及另一个字段是否已声明。
+ * @param {object} model 路由 models 数组里的一条模型条目
+ * @returns {string} 如「未声明 contextWindow / maxTokens」
+ */
+export function describeRouteDefaultUsage(model) {
+  const missingContext = model?.contextWindow === undefined;
+  const missingMaxTokens = model?.maxTokens === undefined;
+  if (missingContext && missingMaxTokens) return "未声明 contextWindow / maxTokens";
+  if (missingContext) return "未声明 contextWindow（已声明 maxTokens）";
+  if (missingMaxTokens) return "未声明 maxTokens（已声明 contextWindow）";
+  return "已声明 contextWindow / maxTokens";
+}
+
+/**
+ * 单个字段的计数文案，拆成「前缀 / 可点击的数量 / 后缀」三段 —— 界面把
+ * 中间那段做成就地展开的按钮，纯文本调用方（测试、日志）用
+ * {@link describeRouteDefaultCount} 拼回完整句子。
+ *
+ * 四种状态：全部受影响 / 部分受影响 / 全部不受影响 / 没有模型（null）。
+ *
+ * @param {string} routeKey defaultContextWindow | defaultMaxTokens
+ * @param {number} total 路由模型条数
+ * @param {number} affected 会用到该路由默认值的模型条数
+ * @returns {{prefix: string, countText: string|null, suffix: string}|null}
+ */
+export function routeDefaultCountParts(routeKey, total, affected) {
+  const field = routeDefaultField(routeKey);
+  if (field === undefined) throw new TypeError(`未知的路由默认值字段：${String(routeKey)}`);
+  if (!Number.isInteger(total) || total <= 0) return null;
+  const count = Number.isInteger(affected) ? Math.min(Math.max(affected, 0), total) : 0;
+  if (count === 0) {
+    return {
+      prefix: `${field.label}：当前路由 ${total} 个模型都已声明自己的值，这两个输入框不影响它们。`,
+      countText: null,
+      suffix: "",
+    };
+  }
+  if (count === total) {
+    return { prefix: `${field.label}：当前路由 ${total} 个模型全部使用这两个值。`, countText: null, suffix: "" };
+  }
+  return {
+    prefix: `${field.label}：当前路由 ${total} 个模型中有 `,
+    countText: `${count} 个`,
+    suffix: "会使用这两个值。",
+  };
+}
+
+/**
+ * {@link routeDefaultCountParts} 的纯文本版本：返回完整的一句话；路由没有
+ * 模型时返回 null（那一行不显示）。
+ * @param {string} routeKey defaultContextWindow | defaultMaxTokens
+ * @param {number} total 路由模型条数
+ * @param {number} affected 会用到该路由默认值的模型条数
+ * @returns {string|null}
+ */
+export function describeRouteDefaultCount(routeKey, total, affected) {
+  const parts = routeDefaultCountParts(routeKey, total, affected);
+  return parts === null ? null : `${parts.prefix}${parts.countText ?? ""}${parts.suffix}`;
+}
+
+/**
+ * 路由默认值留空时宿主的真实后果：回落到内置常量，而不是「不限制」。
+ * @param {string} routeKey defaultContextWindow | defaultMaxTokens
+ * @returns {string|null} 如「默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）」
+ */
+export function describeHostDefaultFallback(routeKey) {
+  const field = routeDefaultField(routeKey);
+  const value = HOST_ROUTE_DEFAULT_FALLBACKS[routeKey];
+  if (field === undefined || !Number.isFinite(value)) return null;
+  const exact = value.toLocaleString("en-US");
+  const short = humanizeTokenCount(value) || String(value);
+  return `${field.label}：留空 → 宿主使用内置默认值 ${exact}（${short}）`;
+}
+
 /**
  * 从宿主命名空间 schema 里读 `providers.<任意>.api` 的 union 成员。
  *

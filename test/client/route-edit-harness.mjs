@@ -62,6 +62,44 @@ function fixtureSource(routeMode) {
     writable: true,
   };`;
   }
+  if (routeMode === "usage") {
+    return String.raw`
+  const providers = {
+    "sparse-chat": {
+      id: "sparse-chat",
+      displayName: "Sparse Chat",
+      baseURL: "https://sparse.invalid/v1",
+      api: "openai-completions",
+      models: [
+        { id: "jxf/dsv4.1-flash", input: ["text"] },
+        { id: "tx/deepseek-v4.1-chat", contextWindow: 128000, input: ["text"] },
+        { id: "qwen/complete", contextWindow: 262144, maxTokens: 8192, input: ["text"] },
+      ],
+    },
+    "all-sparse": {
+      id: "all-sparse",
+      baseURL: "https://all-sparse.invalid/v1",
+      models: [{ id: "a/one" }, { id: "a/two" }],
+    },
+    "declared-route": {
+      id: "declared-route",
+      baseURL: "https://declared.invalid/v1",
+      models: [{ id: "d/one", contextWindow: 128000, maxTokens: 4096 }],
+    },
+    "empty-route": {
+      id: "empty-route",
+      baseURL: "https://empty.invalid/v1",
+      models: [],
+    },
+  };
+  const snapshot = {
+    status: "ready",
+    value: { providers },
+    user: { providers },
+    revision: 1,
+    writable: true,
+  };`;
+  }
   return `${PROVIDER_SOURCE}
   const providers = { "preview-chat": previewChat, "backup-route": backupRoute, "spare-route": spareRoute };
   const snapshot = {
@@ -364,6 +402,161 @@ ${HELPERS}
 `;
 }
 
+function usageProbe() {
+  return String.raw`
+(async () => {
+  try {
+  const client = window.__CLIENT__;
+  if (!client) throw new Error("client bundle did not register");
+${fixtureSource("usage")}
+  const mutations = [];
+  const scope = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    mutate: async (ops) => { mutations.push(JSON.parse(JSON.stringify(ops))); return true; },
+  };
+${configFormsSource("schema")}
+  let Workbench;
+  let spec;
+  const ctx = {
+    effect: (fn) => {
+      const dispose = fn();
+      return typeof dispose === "function" ? dispose : () => {};
+    },
+    configForms,
+    slots: {
+      inject: (name, register) => register(),
+      register: (registeredSpec, component) => {
+        spec = registeredSpec;
+        Workbench = component;
+        return () => {};
+      },
+    },
+    remote: { llm: { discoverModels: async () => ({ ok: true, value: [] }) } },
+  };
+  client.apply(ctx);
+  if (typeof Workbench !== "function") throw new Error("workbench component not registered");
+  window.__renderComponent(Workbench, spec.inject());
+${HELPERS}
+
+  const defaultsBlock = () => document.querySelector('[aria-label="路由默认值说明"]');
+  const blockText = () => defaultsBlock()?.innerText ?? "";
+  // 计数行的「1 个」是按钮：按块内直接子元素的 textContent 取整句话
+  // （innerText 在 flex/inline 边界上会吞掉空格或拆行）。
+  const lineOf = (label) => {
+    const block = defaultsBlock();
+    if (block === null) return "";
+    for (const child of [...block.children]) {
+      const text = child.textContent.trim();
+      if (text.startsWith(label + "：")) return text;
+    }
+    return "";
+  };
+  const usageButton = (prefix) => buttons()
+    .find((element) => (element.getAttribute("aria-label") ?? "").startsWith(prefix));
+  const clickUsage = (prefix) => {
+    const button = usageButton(prefix);
+    if (button === undefined) throw new Error("未找到计数按钮：" + prefix);
+    button.click();
+  };
+  const listOf = (label) => document.querySelector('[aria-label="使用' + label + '的模型清单"]')?.innerText ?? "";
+  const switchRoute = (value) => setSelect(routeSelect(), value);
+
+  const result = { scheme: styleOf(document.documentElement).colorScheme };
+
+  // ── 1. 两个默认值都留空：显示宿主内置回落常量，不显示计数 ──
+  routeSummary().click();
+  result.blank = {
+    block: blockText(),
+    windowLine: lineOf("默认上下文"),
+    outputLine: lineOf("默认输出上限"),
+    countButtons: buttons().filter((element) => (element.getAttribute("aria-label") ?? "").startsWith("展开使用")).length,
+    mutations: mutations.length,
+  };
+
+  // ── 2. 只填窗口：窗口计数 1 个，输出上限仍是留空回落 ──
+  setValue(byAria("路由默认上下文"), "1000000");
+  result.windowTyped = {
+    windowLine: lineOf("默认上下文"),
+    outputLine: lineOf("默认输出上限"),
+    block: blockText(),
+    mutations: mutations.length,
+  };
+
+  // ── 3. 点「1 个」就地展开：写清那个模型未声明什么 ──
+  clickUsage("展开使用默认上下文");
+  result.windowExpanded = {
+    list: listOf("默认上下文"),
+    expanded: usageButton("收起使用默认上下文") !== undefined,
+  };
+  clickUsage("收起使用默认上下文");
+  result.windowCollapsed = { list: listOf("默认上下文"), collapsed: listOf("默认上下文") === "" };
+
+  // ── 4. 再填输出上限：两个计数各自算，输出上限 2 个受影响的模型 ──
+  setValue(byAria("路由默认输出上限"), "32768");
+  result.bothTyped = {
+    windowLine: lineOf("默认上下文"),
+    outputLine: lineOf("默认输出上限"),
+    block: blockText(),
+    mutations: mutations.length,
+  };
+  clickUsage("展开使用默认输出上限");
+  result.outputExpanded = { list: listOf("默认输出上限") };
+
+  // ── 5. 清空窗口默认值：实时回到留空回落，不需要保存 ──
+  setValue(byAria("路由默认上下文"), "");
+  result.windowCleared = {
+    windowLine: lineOf("默认上下文"),
+    outputLine: lineOf("默认输出上限"),
+    windowListGone: listOf("默认上下文") === "",
+    mutations: mutations.length,
+  };
+  setValue(byAria("路由默认上下文"), "1000000");
+
+  // ── 6. 全部模型都会受影响 ──
+  switchRoute("all-sparse");
+  routeSummary().click();
+  setValue(byAria("路由默认上下文"), "1000000");
+  setValue(byAria("路由默认输出上限"), "32768");
+  result.allAffected = {
+    block: blockText(),
+    windowLine: lineOf("默认上下文"),
+    outputLine: lineOf("默认输出上限"),
+  };
+
+  // ── 7. 全部模型都声明了自己的值 ──
+  switchRoute("declared-route");
+  routeSummary().click();
+  setValue(byAria("路由默认上下文"), "1000000");
+  setValue(byAria("路由默认输出上限"), "32768");
+  result.noneAffected = {
+    block: blockText(),
+    windowLine: lineOf("默认上下文"),
+    outputLine: lineOf("默认输出上限"),
+  };
+
+  // ── 8. 路由没有模型：不显示计数行（留空回落仍要说） ──
+  switchRoute("empty-route");
+  routeSummary().click();
+  setValue(byAria("路由默认上下文"), "1000000");
+  setValue(byAria("路由默认输出上限"), "32768");
+  result.empty = {
+    block: blockText(),
+    windowLine: lineOf("默认上下文"),
+    outputLine: lineOf("默认输出上限"),
+    hasCountText: blockText().includes("当前路由"),
+    emptyListHint: document.body.innerText.includes("该路由没有模型"),
+    mutations: mutations.length,
+  };
+
+  document.getElementById("result").textContent = JSON.stringify(result);
+  } catch (error) {
+    document.getElementById("result").textContent = JSON.stringify({ __error: String(error), stack: error.stack });
+  }
+})();
+`;
+}
+
 function oneRouteProbe() {
   return String.raw`
 (async () => {
@@ -423,7 +616,11 @@ ${HELPERS}
 /** 以指定主题 / 夹具变体组装路由设置页。 */
 export function buildRouteEditHtml(bundleSource, scheme, { routeMode = "multi", schemaMode = "schema" } = {}) {
   if (scheme !== "light" && scheme !== "dark") throw new TypeError(`未知主题：${scheme}`);
-  const probe = routeMode === "one" ? oneRouteProbe() : multiProbe(schemaMode);
+  const probe = routeMode === "one"
+    ? oneRouteProbe()
+    : routeMode === "usage"
+      ? usageProbe()
+      : multiProbe(schemaMode);
   return [
     "<!doctype html>",
     `<html lang="en" data-scheme="${scheme}" style="color-scheme: ${scheme}">`,

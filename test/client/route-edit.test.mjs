@@ -191,4 +191,59 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.deleteDialog.color, token(scheme, "--dsw-alias-label-primary"));
     assert.ok(result.deleteDialog.danger.ratio >= 4.5, `确认删除按钮对比度 ${result.deleteDialog.danger.ratio}`);
   });
+
+  test(`${scheme} 主题：三行语义提示 + 两个默认值留空时显示宿主内置回落常量`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "usage");
+    assert.match(result.blank.block, /未声明窗口 \/ 输出上限的模型回落到这两个值；已声明自己的模型不受影响。/);
+    assert.match(result.blank.block, /回落顺序：模型自己 → 内置目录 → 这里。/);
+    assert.match(result.blank.block, /注意：这里只影响请求参数，不影响 DSH 压缩阈值 —— 后者只认模型自己声明的那一项。/);
+    assert.equal(result.blank.windowLine, "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）");
+    assert.equal(result.blank.outputLine, "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）");
+    assert.equal(result.blank.countButtons, 0, "留空时没有可展开的计数");
+    assert.equal(result.blank.mutations, 0);
+  });
+
+  test(`${scheme} 主题：计数随表单值实时变化，窗口与输出上限分别统计`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "usage");
+    assert.equal(result.windowTyped.windowLine, "默认上下文：当前路由 3 个模型中有 1 个会使用这两个值。");
+    assert.equal(result.windowTyped.outputLine, "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）");
+    assert.equal(result.blank.mutations, 0);
+    assert.equal(result.windowTyped.mutations, 0, "计数不需要保存就更新");
+    assert.equal(result.bothTyped.windowLine, "默认上下文：当前路由 3 个模型中有 1 个会使用这两个值。");
+    assert.equal(result.bothTyped.outputLine, "默认输出上限：当前路由 3 个模型中有 2 个会使用这两个值。");
+    assert.equal(result.bothTyped.mutations, 0);
+    assert.equal(result.windowCleared.windowLine, "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）");
+    assert.equal(result.windowCleared.outputLine, "默认输出上限：当前路由 3 个模型中有 2 个会使用这两个值。");
+    assert.equal(result.windowCleared.windowListGone, true);
+    assert.equal(result.windowCleared.mutations, 0);
+  });
+
+  test(`${scheme} 主题：点「N 个」就地展开 / 收起清单，每条写清未声明什么`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "usage");
+    assert.equal(result.windowExpanded.expanded, true);
+    assert.equal(result.windowExpanded.list, "jxf/dsv4.1-flash —— 未声明 contextWindow / maxTokens");
+    assert.equal(result.windowCollapsed.collapsed, true);
+    assert.equal(
+      result.outputExpanded.list,
+      [
+        "jxf/dsv4.1-flash —— 未声明 contextWindow / maxTokens",
+        "tx/deepseek-v4.1-chat —— 未声明 maxTokens（已声明 contextWindow）",
+      ].join("\n"),
+    );
+  });
+
+  test(`${scheme} 主题：全部受影响 / 全部不受影响 / 没有模型 三种边界`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "usage");
+    assert.equal(result.allAffected.windowLine, "默认上下文：当前路由 2 个模型全部使用这两个值。");
+    assert.equal(result.allAffected.outputLine, "默认输出上限：当前路由 2 个模型全部使用这两个值。");
+    assert.equal(result.noneAffected.windowLine, "默认上下文：当前路由 1 个模型都已声明自己的值，这两个输入框不影响它们。");
+    assert.equal(result.noneAffected.outputLine, "默认输出上限：当前路由 1 个模型都已声明自己的值，这两个输入框不影响它们。");
+    assert.equal(result.empty.hasCountText, false, "路由没有模型时不显示计数行");
+    assert.equal(result.empty.emptyListHint, true);
+    assert.equal(result.empty.mutations, 0);
+  });
 }
