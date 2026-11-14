@@ -442,6 +442,7 @@ export const THEME_TOKENS = Object.freeze({
     "--dsw-alias-border-l2": "#0000001a",
     "--dsw-alias-border-l4": "#00000026",
     "--dsw-alias-label-primary": "#1a1a1a",
+    "--dsw-alias-label-primary-foreground": "#ffffff",
     "--dsw-alias-label-tertiary": "#8a8a8a",
     "--dsw-alias-state-error-primary": "#d93026",
     "--dsw-alias-state-error-secondary": "#d9302620",
@@ -451,7 +452,7 @@ export const THEME_TOKENS = Object.freeze({
     "--dsw-alias-state-success-secondary": "#2f855a1f",
     "--dsw-alias-markdown-code-block": "#f2f3f5",
     "--dsw-alias-interactive-bg-hover": "#0000000d",
-    "--dsw-alias-button-primary-fill": "#3b6fd41f",
+    "--dsw-alias-button-primary-fill": "#0f1115",
     "--dsw-alias-state-business-primary": "#3b6fd4",
   }),
   dark: Object.freeze({
@@ -460,6 +461,7 @@ export const THEME_TOKENS = Object.freeze({
     "--dsw-alias-border-l2": "#ffffff1f",
     "--dsw-alias-border-l4": "#ffffff29",
     "--dsw-alias-label-primary": "#ececf0",
+    "--dsw-alias-label-primary-foreground": "#0f1115",
     "--dsw-alias-label-tertiary": "#9a9ba0",
     "--dsw-alias-state-error-primary": "#f0736a",
     "--dsw-alias-state-error-secondary": "#f0736a26",
@@ -469,7 +471,7 @@ export const THEME_TOKENS = Object.freeze({
     "--dsw-alias-state-success-secondary": "#6cc48d24",
     "--dsw-alias-markdown-code-block": "#1f2125",
     "--dsw-alias-interactive-bg-hover": "#ffffff12",
-    "--dsw-alias-button-primary-fill": "#5a8ce63d",
+    "--dsw-alias-button-primary-fill": "#f9fafb",
     "--dsw-alias-state-business-primary": "#7aa4ee",
   }),
 });
@@ -490,13 +492,15 @@ export const THEME_TOKEN_FIXTURE = [
 
 /** 深色场景：填模型 ID、触发非法 token 输入、展开候选面板，然后读回计算样式。 */
 export const THEME_PROBE_SOURCE = String.raw`
-(() => {
+(async () => {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
 
   const route = {
     id: "preview-model-existing",
     name: "preview-model-existing",
+    baseURL: "https://preview.invalid/v1",
+    models: [],
     contextWindow: 131072,
     maxTokens: 8192,
     input: ["text"],
@@ -513,6 +517,7 @@ export const THEME_PROBE_SOURCE = String.raw`
   const scope = { getSnapshot: () => snapshot, subscribe: () => () => {}, mutate: async () => true };
   const configForms = { get: () => scope };
   let Workbench;
+  let spec;
   const ctx = {
     effect: (fn) => {
       const dispose = fn();
@@ -521,15 +526,24 @@ export const THEME_PROBE_SOURCE = String.raw`
     configForms: { get: () => scope, whileServed: (namespaces, register) => register(new Set(namespaces)) },
     slots: {
       inject: (name, register) => register(),
-      register: (spec, component) => {
+      register: (registeredSpec, component) => {
+        spec = registeredSpec;
         Workbench = component;
         return () => {};
+      },
+    },
+    remote: {
+      llm: {
+        discoverModels: async () => ({
+          ok: true,
+          value: [{ id: "alpha/one" }, { id: "beta/two" }, { id: "gamma/three" }],
+        }),
       },
     },
   };
   client.apply(ctx);
   if (typeof Workbench !== "function") throw new Error("workbench component not registered");
-  window.__renderComponent(Workbench, { configForms });
+  window.__renderComponent(Workbench, spec.inject());
 
   const byPlaceholder = (placeholder) => [...document.querySelectorAll("input")].find((el) => el.placeholder === placeholder);
   const cwInput = () => byPlaceholder("如 131072");
@@ -592,6 +606,45 @@ export const THEME_PROBE_SOURCE = String.raw`
     return background;
   };
 
+  const style = (element) => getComputedStyle(element);
+
+  // 所有使用 s.btnPrimary 的按钮都带 --dsw-alias-button-primary-fill 内联样式；
+  // 逐个算真实前景/背景对比度，未来新增的 primary 按钮自动纳入。
+  const primaryButtons = () =>
+    [...document.querySelectorAll("button")].filter((element) =>
+      (element.getAttribute("style") ?? "").includes("--dsw-alias-button-primary-fill"));
+  const primaryInfo = (element) => {
+    const color = style(element).color;
+    return {
+      text: (element.textContent || "").trim(),
+      color,
+      background: style(element).backgroundColor,
+      ratio: Number(contrast(parseColor(color), effectiveBackground(element)).toFixed(2)),
+    };
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const buttonByText = (text) =>
+    [...document.querySelectorAll("button")].find((element) => element.textContent.trim() === text);
+
+  const primary = {};
+  primary.main = primaryButtons().map(primaryInfo);
+
+  // 打开选择器（拉取 3 个候选），勾 2 个后读取「确定（2）」按钮的对比度。
+  buttonByText("拉取").click();
+  await sleep(30);
+  document.querySelector('input[aria-label="alpha/one"]').click();
+  document.querySelector('input[aria-label="beta/two"]').click();
+  primary.picker = primaryButtons().map(primaryInfo);
+
+  // 确认只生成待写入区块；读取区块里的「写入」按钮与主按钮的对比度。
+  const confirm = [...document.querySelectorAll("button")].find((element) => element.textContent.trim().startsWith("确定（"));
+  confirm.click();
+  primary.pending = primaryButtons().map(primaryInfo);
+
+  // 异步操作（拉取 / 勾选 / 确认）会让最小渲染器重建 DOM，元素必须在最终
+  // 状态之后再取，否则拿到的是已脱离文档的旧节点。勾选时的点击会冒泡到
+  // document，关闭 token 候选面板 —— 重新打开后再量它的 token 底色。
+  fieldOf(cwInput()).querySelector('button[aria-label="展开候选"]').click();
   const select = document.querySelector("select");
   const input = cwInput();
   const checkbox = document.querySelector('input[type="checkbox"]');
@@ -599,7 +652,6 @@ export const THEME_PROBE_SOURCE = String.raw`
   const panel = document.querySelector('[role="listbox"]');
   const pre = document.querySelector("pre");
   const error = [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "请输入正整数");
-  const style = (element) => getComputedStyle(element);
 
   let worst = { ratio: Infinity, where: "" };
   for (const element of document.querySelectorAll("span, label, button, p, option")) {
@@ -630,6 +682,7 @@ export const THEME_PROBE_SOURCE = String.raw`
     },
     pre: { background: style(pre).backgroundColor },
     error: { color: style(error).color },
+    primary,
     contrast: worst,
     rects: {
       selectH: rect(select).height,

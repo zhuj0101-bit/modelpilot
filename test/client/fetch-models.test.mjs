@@ -387,5 +387,5 @@ test("成功后手动改模型 ID：显示名继续联动", async () => {
 
   harness.setModelId("jxf/dsv4.1-flash");
   assert.equal(harness.modelInput().props.value, "jxf/dsv4.1-flash");
-  assert.equal(harness.displayNameInput().props.value, "dsv4.1-flash");
+  assert.equal(harness.displayNameInput().props.value, "jxf/dsv4.1-flash");
 });

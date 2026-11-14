@@ -63,7 +63,8 @@ function orderedLevels(levels) {
 /** 模板 → projectPiAi 需要的 draft；模板缺失时用内置默认值。 */
 function draftFromTemplate(template, id) {
   const source = template && typeof template === "object" ? template : BUILTIN_TEMPLATE;
-  const draft = { id };
+  // 显式写入 name：宿主回落链的中间一级是目录基准的 name，会抢在 id 前面。
+  const draft = { id, name: id };
 
   const contextWindow = Number(source.contextWindow);
   if (typeof source.contextWindow === "string" && source.contextWindow.trim() !== "" && Number.isFinite(contextWindow) && contextWindow > 0) {

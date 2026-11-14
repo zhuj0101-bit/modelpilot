@@ -64,6 +64,28 @@ function catalogIdsOf(route) {
   return new Set(models.map((m) => m?.id).filter((id) => typeof id === "string"));
 }
 
+const PENDING_UNSET = "未设置";
+
+/** 待写入区块展示的是投影后的实际字段值，不是 ops 的 JSON。 */
+function describePendingFields(row) {
+  const valueText = (value) =>
+    value === undefined || value === null || value === "" ? PENDING_UNSET : String(value);
+  const input = Array.isArray(row?.input) && row.input.length > 0 ? row.input.join(" / ") : PENDING_UNSET;
+  let reasoning = PENDING_UNSET;
+  if (row?.reasoningEfforts === false) {
+    reasoning = "false（非推理模型）";
+  } else if (row?.reasoningEfforts && typeof row.reasoningEfforts === "object") {
+    const levels = Object.keys(row.reasoningEfforts);
+    if (levels.length > 0) reasoning = levels.join(" / ");
+  }
+  return [
+    `contextWindow ${valueText(row?.contextWindow)}`,
+    `maxTokens ${valueText(row?.maxTokens)}`,
+    `input ${input}`,
+    `reasoningEfforts ${reasoning}`,
+  ];
+}
+
 /** 路由自带的 models 是打包引擎唯一可以当作替换对象的目录事实。下面用
  * useMemo 计算，好让 Set 的身份按路由文档保持稳定 —— 每次渲染都新建 Set
  * 会导致每敲一个键就重跑一次投影。 */
@@ -120,6 +142,32 @@ const s = {
     overflowX: "auto",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   },
+  // 原始 JSON 只给需要核对的人看：原生 <details> 默认关闭，不占半屏。
+  details: {
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    borderRadius: 8, padding: "6px 10px",
+  },
+  summary: {
+    cursor: "pointer", fontSize: 12, opacity: 0.8, userSelect: "none",
+  },
+  // 多选确认后的「待写入」区块：先让人核对，再决定清空还是写入。
+  pending: {
+    display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
+  },
+  pendingHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
+  pendingTitle: { fontSize: 13, fontWeight: 600 },
+  pendingActions: { display: "flex", alignItems: "center", gap: 8 },
+  pendingList: { display: "flex", flexDirection: "column", gap: 6 },
+  pendingModel: { display: "flex", flexDirection: "column", gap: 2 },
+  pendingName: {
+    fontSize: 12, fontWeight: 600,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    overflowWrap: "anywhere",
+  },
+  pendingFields: { fontSize: 11, lineHeight: 1.55, opacity: 0.78, overflowWrap: "anywhere" },
   warn: {
     padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
     background: "var(--dsw-alias-state-warn-tertiary, rgba(220,150,40,0.12))",
@@ -157,7 +205,10 @@ const s = {
     padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
     border: "1px solid var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55))",
     background: "var(--dsw-alias-button-primary-fill, rgba(90,140,230,0.22))",
-    color: "inherit", fontFamily: "inherit", fontWeight: 600,
+    // 铺在 brand 底色上的前景色与「页面正文色」互为正反 —— 用 label-primary
+    // 会在深浅两个主题下都得到 1.00 对比度（工单 #24 问题 1）。
+    color: "var(--dsw-alias-label-primary-foreground, #fff)",
+    fontFamily: "inherit", fontWeight: 600,
   },
   chip: {
     display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px",
@@ -603,8 +654,12 @@ function Workbench({ configForms, discoverModels }) {
 
   // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
   const draft = React.useMemo(() => {
-    const d = { id: modelId.trim() };
-    if (displayName.trim() !== "") d.name = displayName.trim();
+    const id = modelId.trim();
+    const d = { id };
+    // 显示名留空时显式写入模型 ID：宿主虽然会回落到 id，但回落链中间一级是
+    // 目录基准的 name，显式写才能保证别名严格等于 ID（工单 #24 问题 3）。
+    const name = displayName.trim() !== "" ? displayName.trim() : id;
+    if (name !== "") d.name = name;
     const cw = Number(contextWindow);
     if (contextWindow.trim() !== "" && Number.isFinite(cw) && cw > 0) d.contextWindow = cw;
     const mt = Number(maxTokens);
@@ -693,7 +748,6 @@ function Workbench({ configForms, discoverModels }) {
       }
       setRemoteModels(ids);
       setFetchState("done");
-      setBatchProjection(null);
       // 拉取成功自动打开选择器；空列表 / 失败在上面已经返回，不会开窗。
       setPickerQuery("");
       setPickerSelected(new Set());
@@ -752,7 +806,7 @@ function Workbench({ configForms, discoverModels }) {
     );
   }
 
-  /** 批量写入：所有 op 合成一个数组，只调用一次 scope.mutate。 */
+  /** 批量写入：所有 op 合成一个数组，只调用一次 scope.mutate。返回是否成功。 */
   async function applyBatchPlan(plan) {
     setBusy(true);
     setToast(null);
@@ -764,14 +818,16 @@ function Workbench({ configForms, discoverModels }) {
           : { tone: "bad", text: "写入被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" },
       );
       if (ok) setAckReplace(false);
+      return ok;
     } catch (error) {
       setToast({ tone: "bad", text: `写入异常：${error?.message ?? error}` });
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
-  /** 确定：1 个回填单条表单；≥2 个走默认模板批量投影 + 一次写入。 */
+  /** 确定：1 个回填单条表单；≥2 个只生成待写入计划并关窗，由用户再点「写入」。 */
   function confirmPicker() {
     if (overridesInUse) return;
     const selectedIds = remoteModels.filter((id) => pickerSelected.has(id));
@@ -785,14 +841,13 @@ function Workbench({ configForms, discoverModels }) {
       return;
     }
     const plan = buildBatchPlan(selectedIds, pickerAckReplace);
-    setBatchProjection(plan);
+    // 新的一批替换旧的一批，不累加 —— 避免把两批混在一起误写。
+    setBatchProjection(plan.ops.length > 0 ? plan : null);
+    setToast(null);
+    closePicker();
     if (plan.ops.length === 0) {
       setToast({ tone: "bad", text: "没有可写入的模型（全部被跳过或投影被拒绝）" });
-      closePicker();
-      return;
     }
-    closePicker();
-    void applyBatchPlan(plan);
   }
 
   async function apply() {
@@ -866,7 +921,6 @@ function Workbench({ configForms, discoverModels }) {
               onChange={(e) => {
                 const next = e.target.value;
                 setModelId(next);
-                setBatchProjection(null);
                 if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(next));
               }}
               placeholder="如 tflow/alpha-32b"
@@ -969,21 +1023,64 @@ function Workbench({ configForms, discoverModels }) {
 
       {batchProjection ? (
         <>
+          <div style={s.pending}>
+            <div style={s.pendingHeader}>
+              <span style={s.pendingTitle}>待写入 {batchProjection.written.length} 条模型</span>
+              <span style={s.pendingActions}>
+                <button
+                  type="button"
+                  style={busy ? { ...s.btnSmall, opacity: 0.55, cursor: "not-allowed" } : s.btnSmall}
+                  disabled={busy}
+                  onClick={() => setBatchProjection(null)}
+                >
+                  清空
+                </button>
+                <button
+                  type="button"
+                  style={busy ? { ...s.btn, opacity: 0.55, cursor: "not-allowed" } : s.btnPrimary}
+                  disabled={busy}
+                  onClick={async () => {
+                    const ok = await applyBatchPlan(batchProjection);
+                    // 失败时保留区块，让用户核对后重试（mutate 有修订号围栏，重试安全）。
+                    if (ok) setBatchProjection(null);
+                  }}
+                >
+                  {busy ? "写入中…" : "写入"}
+                </button>
+              </span>
+            </div>
+            <div style={s.pendingList}>
+              {batchProjection.ops.map((op) => {
+                const row = op.value ?? {};
+                return (
+                  <div key={`${op.path.join(".")}:${row.id ?? ""}`} style={s.pendingModel}>
+                    <span style={s.pendingName}>{row.id ?? "（无 id）"}</span>
+                    <span style={s.pendingFields}>{describePendingFields(row).join(" · ")}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={s.sub}>
+              已跳过 {classifyModels(remoteModels, existingModelIds).filter((entry) => entry.status === "exists").length} 条已存在、
+              {classifyModels(remoteModels, existingModelIds).filter((entry) => entry.status === "casefold").length} 条仅大小写不同
+            </div>
+            {batchProjection.warnings.map((w, i) => (
+              <div key={`bw${i}`} style={s.warn}>
+                <strong>{w.code}</strong>：{w.message}
+                {w.removedCatalogIds?.length ? `（将从该路由消失：${w.removedCatalogIds.join("、")}）` : ""}
+              </div>
+            ))}
+          </div>
           <div style={s.label}>批量投影结果（写出 {batchProjection.written.length} 条）</div>
           <div style={s.sub}>
             {batchProjection.ops.map((op) => `${op.path.join(".")} ← ${op.value?.id ?? ""}`).join(" · ")}
           </div>
-          <pre style={s.pre}>{JSON.stringify(batchProjection.ops, null, 2)}</pre>
-          {batchProjection.warnings.map((w, i) => (
-            <div key={`bw${i}`} style={s.warn}>
-              <strong>{w.code}</strong>：{w.message}
-              {w.removedCatalogIds?.length ? `（将从该路由消失：${w.removedCatalogIds.join("、")}）` : ""}
-            </div>
-          ))}
-          <div style={s.sub}>
-            已跳过 {classifyModels(remoteModels, existingModelIds).filter((entry) => entry.status === "exists").length} 条已存在、
-            {classifyModels(remoteModels, existingModelIds).filter((entry) => entry.status === "casefold").length} 条仅大小写不同
-          </div>
+          <details style={s.details}>
+            <summary style={s.summary}>
+              settingsOps（{batchProjection.ops.length} 条）· 点击展开
+            </summary>
+            <pre style={s.pre}>{JSON.stringify(batchProjection.ops, null, 2)}</pre>
+          </details>
         </>
       ) : null}
 
@@ -992,7 +1089,12 @@ function Workbench({ configForms, discoverModels }) {
       ) : (
         <>
           <div style={s.label}>投影结果（写出的只有这些字段）</div>
-          <pre style={s.pre}>{JSON.stringify(projection?.settingsOps ?? [], null, 2)}</pre>
+          <details style={s.details}>
+            <summary style={s.summary}>
+              settingsOps（{projection?.settingsOps?.length ?? 0} 条）· 点击展开
+            </summary>
+            <pre style={s.pre}>{JSON.stringify(projection?.settingsOps ?? [], null, 2)}</pre>
+          </details>
 
           {(projection?.warnings ?? []).map((w, i) => (
             <div key={`w${i}`} style={s.warn}>

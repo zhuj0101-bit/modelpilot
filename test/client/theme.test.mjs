@@ -77,6 +77,26 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.error.color, token(scheme, "--dsw-alias-state-error-primary"));
   });
 
+  test(`${scheme} 主题：所有 primary 按钮文字对比度 ≥ 4.5`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实主题测量");
+    const result = await probe(scheme);
+    const expected = token(scheme, "--dsw-alias-label-primary-foreground");
+
+    assert.equal(result.primary.main.length, 1, "主工作台「写入 DSH 设置」应使用 btnPrimary");
+    assert.equal(result.primary.picker.length, 2, "选择器「确定（N）」与主按钮应同时使用 btnPrimary");
+    assert.equal(result.primary.pending.length, 2, "待写入区块「写入」与主按钮应同时使用 btnPrimary");
+
+    for (const stage of ["main", "picker", "pending"]) {
+      for (const button of result.primary[stage]) {
+        assert.equal(button.color, expected, `${stage} 的「${button.text}」应使用 label-primary-foreground`);
+        assert.ok(
+          button.ratio >= 4.5,
+          `${stage} 的「${button.text}」对比度 ${button.ratio} 不达标（color ${button.color} / background ${button.background}）`,
+        );
+      }
+    }
+  });
+
   test(`${scheme} 主题：comboPanel / pre / chip 使用主题 token`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实主题测量");
     const result = await probe(scheme);
