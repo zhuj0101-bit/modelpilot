@@ -1,4 +1,5 @@
 // 工单 #32 第一批：路由（provider）级字段编辑与删除路由的纯逻辑。
+// 工单 #22（平替收口）：追加第 10 个路由字段 defaultInput（多选模态）。
 //
 // 与模型级写入的关键差异：一条路由里装着 models 数组、modelOverrides、compat
 // 以及宿主未来新增的字段。重建整个 route 对象会瞬间覆盖别处（或宿主）
@@ -9,11 +10,12 @@
 //
 // 表单值统一用字符串表示：空串 = 该字段在目标文档里不存在。数字字段的
 // 空串同样表示清空（unset），而不是写 0 —— profile schema 的 .default(…)
-// 说明「回到回落」只能用 unset 表达。
+// 说明「回到回落」只能用 unset 表达。唯一的例外是 defaultInput：多选 chip
+// 用字符串数组表示，空数组 = 全部不选 = unset（宿主拒绝 defaultInput: []）。
 
-import { humanizeTokenCount } from "./domain.js";
+import { MODALITIES, humanizeTokenCount } from "./domain.js";
 
-/** 九个可编辑字段；顺序同时决定 ops 与「改动字段」的展示顺序。 */
+/** 十个可编辑字段；顺序同时决定 ops 与「改动字段」的展示顺序。 */
 export const ROUTE_FIELD_DEFINITIONS = Object.freeze([
   Object.freeze({ key: "displayName", label: "显示名", kind: "text" }),
   Object.freeze({ key: "baseURL", label: "接口地址", kind: "url" }),
@@ -24,6 +26,7 @@ export const ROUTE_FIELD_DEFINITIONS = Object.freeze([
   Object.freeze({ key: "cacheRetention", label: "缓存", kind: "select" }),
   Object.freeze({ key: "transport", label: "传输", kind: "select" }),
   Object.freeze({ key: "timeoutMs", label: "超时(ms)", kind: "integer" }),
+  Object.freeze({ key: "defaultInput", label: "默认输入模态", kind: "modalities" }),
 ]);
 
 export const ROUTE_FIELD_KEYS = Object.freeze(ROUTE_FIELD_DEFINITIONS.map((field) => field.key));
@@ -33,6 +36,12 @@ export const CACHE_RETENTION_CHOICES = Object.freeze(["none", "short", "long"]);
 
 /** transport 的四个取值（宿主 schema）。 */
 export const TRANSPORT_CHOICES = Object.freeze(["sse", "websocket", "websocket-cached", "auto"]);
+
+/**
+ * schema 读不到模态清单时的内置候选（当前宿主 MODALITIES 是 text / image）。
+ * 与协议清单同一策略：schema 是唯一事实来源，读不到才用这份会过期的副本。
+ */
+export const FALLBACK_MODALITIES = Object.freeze([...MODALITIES]);
 
 /** schema 读不到协议清单时的内置白名单（当前宿主支持的七种协议）。 */
 export const FALLBACK_API_PROTOCOLS = Object.freeze([
@@ -52,6 +61,7 @@ export const PROBE_ROUTE = "\u0000probe";
 export const ROUTE_ERRORS = Object.freeze({
   baseURL: "接口地址必须以 http:// 或 https:// 开头",
   integer: "请输入正整数",
+  modality: "存在未知的输入模态",
 });
 
 function isPlainObject(value) {
@@ -71,19 +81,61 @@ function declaredInteger(value) {
 }
 
 /**
- * 现有路由 → 九个字段的表单初值。
+ * 模态多选值 → 稳定顺序的字符串数组。
+ *
+ * 顺序始终按候选清单（schema 给的顺序，读不到时用内置清单）排，不按用户点击
+ * 顺序 —— 否则同样的配置会写出不同的数组，canonicalJson 比较时会误判为改动。
+ * 候选清单之外的现有值（例如旧 schema 认识的未来模态）按原顺序追加在尾部：
+ * 既不会被静默丢掉，也不会把未知值排到已知值前面。
+ *
+ * 非字符串 / 空白值直接丢弃；重复值只保留第一次出现。
+ *
+ * @param {unknown} values 表单值或路由上声明的值
+ * @param {string[]|undefined} choices 候选清单（顺序即产出顺序）
+ * @returns {string[]} 归一化后的模态数组；空数组表示「没有选择」
+ */
+export function normalizeModalities(values, choices = FALLBACK_MODALITIES) {
+  const pool = (Array.isArray(values) ? values : [])
+    .filter((value) => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value !== "");
+  const order = [];
+  for (const choice of Array.isArray(choices) ? choices : FALLBACK_MODALITIES) {
+    if (typeof choice !== "string") continue;
+    const text = choice.trim();
+    if (text !== "" && !order.includes(text)) order.push(text);
+  }
+  const wanted = new Set(pool);
+  const result = [];
+  for (const choice of order) {
+    if (wanted.has(choice)) result.push(choice);
+  }
+  const seen = new Set(result);
+  for (const value of pool) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+/**
+ * 现有路由 → 十个字段的表单初值。
  *
  * 只预填路由上真正声明过的值：未声明就留空，绝不把宿主 schema 的默认值
- * （例如 defaultContextWindow 的 1e6）当成用户设过的值。
+ * （例如 defaultContextWindow 的 1e6）当成用户设过的值。defaultInput 用
+ * 数组表示：路由没声明就是空数组（全部 chip 不选）。
  *
  * @param {object|undefined} provider 当前 providers 里的那条路由
- * @returns {Record<string, string>} 九个字段的字符串表单值
+ * @returns {Record<string, string|string[]>} 十个字段的表单值
  */
 export function routeFormFromProvider(provider) {
   const source = isPlainObject(provider) ? provider : {};
   const form = {};
   for (const field of ROUTE_FIELD_DEFINITIONS) {
-    if (field.kind === "integer") {
+    if (field.kind === "modalities") {
+      form[field.key] = normalizeModalities(source[field.key]);
+    } else if (field.kind === "integer") {
       const value = declaredInteger(source[field.key]);
       form[field.key] = value === undefined ? "" : String(value);
     } else {
@@ -100,7 +152,7 @@ export function routeFieldLabel(key) {
   return field === undefined ? key : field.label;
 }
 
-/** 九个字段的中文标签列表（「改动字段」一行使用）。 */
+/** 十个字段的中文标签列表（「改动字段」一行使用）。 */
 export function routeFieldLabels(keys) {
   return keys.map(routeFieldLabel);
 }
@@ -111,10 +163,12 @@ export function routeFieldLabels(keys) {
  * - baseURL：空 = 清空；非空必须以 http:// 或 https:// 开头
  * - 三个数字字段：空 = 清空；非空必须是正整数
  * - 文本 / 下拉字段不做额外校验（api 的合法值由宿主 schema 决定）
+ * - defaultInput 的模态值另由 {@link validateModalityForm} 校验（需要候选清单）
  */
 export function validateRouteForm(form) {
   const errors = {};
   for (const field of ROUTE_FIELD_DEFINITIONS) {
+    if (field.kind === "modalities") continue;
     const raw = form?.[field.key];
     const text = raw === undefined || raw === null ? "" : String(raw).trim();
     if (text === "") continue;
@@ -130,34 +184,94 @@ export function validateRouteForm(form) {
 }
 
 /**
- * 表单值 → 要写入的值；空串 = undefined（目标文档里不存在该字段）。
+ * 校验输入模态都是宿主 schema 认识的取值。
+ *
+ * chip 只能选出候选清单里的值，所以这条校验是给程序化调用兜底的：真正会
+ * 出现的未知值只有一种 —— 路由上早就声明过、但当前 schema 没读出来的未来
+ * 模态（读失败时用的是内置清单）。这类值原样保留不算用户的新选择，故不报错；
+ * 只有候选清单和路由现值都不认识的模态才拒绝，避免把宿主必拒的值写进去。
+ *
+ * @param {Record<string, unknown>} form 路由表单值
+ * @param {object|undefined} provider 当前路由对象
+ * @param {string[]|undefined} choices 候选清单
+ * @returns {Record<string,string>} 空对象表示全部合法
  */
-function desiredValue(field, form) {
+export function validateModalityForm(form, provider, choices = FALLBACK_MODALITIES) {
+  const listed = Array.isArray(choices) && choices.length > 0 ? choices : FALLBACK_MODALITIES;
+  const allowed = new Set(normalizeModalities(listed, listed));
+  const declared = new Set(normalizeModalities(provider?.defaultInput, listed));
+  const unknown = normalizeModalities(form?.defaultInput, listed)
+    .filter((value) => !allowed.has(value) && !declared.has(value));
+  return unknown.length === 0
+    ? {}
+    : { defaultInput: `${ROUTE_ERRORS.modality}：${unknown.join(" / ")}` };
+}
+
+/** 候选清单（schema 顺序）→ 去重后的字符串数组；空清单退回内置模态。 */
+function modalityChoicesOf(options) {
+  const listed = Array.isArray(options?.modalities) ? options.modalities : FALLBACK_MODALITIES;
+  const choices = [];
+  for (const value of listed) {
+    if (typeof value !== "string") continue;
+    const text = value.trim();
+    if (text !== "" && !choices.includes(text)) choices.push(text);
+  }
+  return choices.length > 0 ? choices : [...FALLBACK_MODALITIES];
+}
+
+/**
+ * 表单值 → 要写入的值；空串 = undefined（目标文档里不存在该字段）。
+ * defaultInput：空数组（全部不选）= undefined → unset，绝不写 [] —— 宿主
+ * 会在解析路由时以 “defaultInput must name at least one modality” 拒绝。
+ */
+function desiredValue(field, form, choices) {
+  if (field.kind === "modalities") {
+    const values = normalizeModalities(form?.[field.key], choices);
+    return values.length === 0 ? undefined : values;
+  }
   const raw = form?.[field.key];
   const text = raw === undefined || raw === null ? "" : String(raw).trim();
   if (text === "") return undefined;
   return field.kind === "integer" ? Number(text) : text;
 }
 
-/** 路由上当前声明的值（用于判断是否真的变化）。 */
-function currentValue(field, provider) {
+/** 路由上当前声明的值（用于判断是否真的变化）；模态按同一规则归一化后比较。 */
+function currentValue(field, provider, choices) {
+  if (field.kind === "modalities") {
+    return Array.isArray(provider?.[field.key])
+      ? normalizeModalities(provider[field.key], choices)
+      : undefined;
+  }
   return field.kind === "integer"
     ? declaredInteger(provider?.[field.key])
     : declaredText(provider?.[field.key]);
+}
+
+/** 结构化相等：数组逐元素比较（不是引用比较），标量用 ===。 */
+function sameFieldValue(left, right) {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => value === right[index]);
+  }
+  return left === right;
 }
 
 /**
  * 生成路由级编辑操作。
  *
  * @param {string} routeId 路由 id（必须是 providers 的键）
- * @param {Record<string,string>} form 九个字段的表单值
+ * @param {Record<string, string|string[]>} form 十个字段的表单值
  * @param {object|undefined} provider 当前路由对象；缺失即 stale-route
+ * @param {{modalities?: string[]}} [options] 模态候选清单（顺序即写入顺序）；
+ *   省略时用内置清单 —— 界面传入从 schema 现读的清单
  * @returns {{ops: object[], changed: string[], errors: Record<string,string>, warnings: object[]}}
  *   - 任一字段校验失败 → ops 为空（整体拒绝，避免半套写入）
  *   - 什么都没改 → ops 为空
  *   - 每个 op 的 path 都以 ["providers", routeId] 为前缀，且 set 只写叶子字段
  */
-export function buildRouteEditOps(routeId, form, provider) {
+export function buildRouteEditOps(routeId, form, provider, options = {}) {
   const result = { ops: [], changed: [], errors: {}, warnings: [] };
   if (typeof routeId !== "string" || routeId === "" || !isPlainObject(provider)) {
     result.warnings.push({
@@ -167,16 +281,20 @@ export function buildRouteEditOps(routeId, form, provider) {
     return result;
   }
 
-  const errors = validateRouteForm(form);
+  const choices = modalityChoicesOf(options);
+  const errors = {
+    ...validateRouteForm(form),
+    ...validateModalityForm(form, provider, choices),
+  };
   if (Object.keys(errors).length > 0) {
     result.errors = errors;
     return result;
   }
 
   for (const field of ROUTE_FIELD_DEFINITIONS) {
-    const desired = desiredValue(field, form);
-    const current = currentValue(field, provider);
-    if (desired === current) continue;
+    const desired = desiredValue(field, form, choices);
+    const current = currentValue(field, provider, choices);
+    if (sameFieldValue(desired, current)) continue;
     if (desired === undefined) {
       result.ops.push({ op: "unset", path: ["providers", routeId, field.key] });
     } else {
@@ -306,19 +424,21 @@ export function describeRouteSummary(provider) {
 // 也就是「模型自己 → 内置目录 → 路由级默认值」。这里只解释这条链，
 // 不改写它的任何一环；目录给了值就是给了，不覆盖。
 
-/** 路由默认值覆盖的两个 token 字段：路由字段 → 模型条目字段 / 展示标签。 */
+/** 路由默认值覆盖的字段：路由字段 → 模型条目字段 / 展示标签 / 值的形态。 */
 export const ROUTE_DEFAULT_FIELDS = Object.freeze([
-  Object.freeze({ key: "defaultContextWindow", modelField: "contextWindow", label: "默认上下文" }),
-  Object.freeze({ key: "defaultMaxTokens", modelField: "maxTokens", label: "默认输出上限" }),
+  Object.freeze({ key: "defaultContextWindow", modelField: "contextWindow", label: "默认上下文", kind: "token" }),
+  Object.freeze({ key: "defaultMaxTokens", modelField: "maxTokens", label: "默认输出上限", kind: "token" }),
+  Object.freeze({ key: "defaultInput", modelField: "input", label: "默认输入模态", kind: "modalities" }),
 ]);
 
 /**
  * 路由默认值留空时宿主回落到的那两个内置常量（不是「不限制」）。
- * 对齐 llm-pi-ai 的 DEFAULT_CONTEXT_WINDOW / DEFAULT_MAX_TOKENS。
+ * 对齐 llm-pi-ai 的 DEFAULT_CONTEXT_WINDOW / DEFAULT_MAX_TOKENS / DEFAULT_INPUT。
  */
 export const HOST_ROUTE_DEFAULT_FALLBACKS = Object.freeze({
   defaultContextWindow: 1_000_000,
   defaultMaxTokens: 128_000,
+  defaultInput: Object.freeze(["text"]),
 });
 
 function routeDefaultField(routeKey) {
@@ -346,12 +466,31 @@ export function usesRouteDefault(model, catalogIds, modelField = "maxTokens") {
 }
 
 /**
+ * 该模型的输入模态是否会用到路由级 defaultInput。
+ *
+ * 宿主的回落链同样是三级：`declaredInput(entry.input) ?? base?.input ??
+ * [...request.defaultInput]`，且 `declaredInput` 把空数组视为「没声明」以便
+ * 回落到目录。但对用户而言 `input: []` 是明确选择（一个模态都不开），界面
+ * 计数按「声明了空数组也算声明」处理 —— 与 maxTokens 的 `!== undefined` 一致。
+ *
+ * @param {object} model 路由 models 数组里的一条模型条目
+ * @param {Set<string>|Map<string,*>|undefined} catalogIds 宿主内置目录描述的模型 id
+ * @returns {boolean} true 表示该模型的输入模态最终取路由级 defaultInput
+ */
+export function usesRouteDefaultInput(model, catalogIds) {
+  if (model === null || typeof model !== "object") return false;
+  if (Array.isArray(model.input)) return false;
+  if (typeof catalogIds?.has === "function" && catalogIds.has(model.id)) return false;
+  return true;
+}
+
+/**
  * 按字段分别统计本路由有多少模型会用到路由级默认值。
- * 两个字段的受影响集合可能不同，绝不合并成一个「是否完全声明」。
+ * 三个字段的受影响集合可能不同，绝不合并成一个「是否完全声明」。
  *
  * @param {object[]|undefined} models 路由的 models 数组
  * @param {Set<string>|Map<string,*>|undefined} catalogIds 宿主内置目录描述的模型 id
- * @returns {{total: number, contextWindow: {count: number, models: object[]}, maxTokens: {count: number, models: object[]}}}
+ * @returns {{total: number, contextWindow: {count: number, models: object[]}, maxTokens: {count: number, models: object[]}, input: {count: number, models: object[]}}}
  */
 export function countRouteDefaultUsers(models, catalogIds) {
   const entries = Array.isArray(models) ? models : [];
@@ -359,6 +498,7 @@ export function countRouteDefaultUsers(models, catalogIds) {
     total: entries.length,
     contextWindow: { count: 0, models: [] },
     maxTokens: { count: 0, models: [] },
+    input: { count: 0, models: [] },
   };
   for (const model of entries) {
     if (model === null || typeof model !== "object") continue;
@@ -367,6 +507,9 @@ export function countRouteDefaultUsers(models, catalogIds) {
       result[modelField].count += 1;
       result[modelField].models.push(model);
     }
+    if (!usesRouteDefaultInput(model, catalogIds)) continue;
+    result.input.count += 1;
+    result.input.models.push(model);
   }
   return result;
 }
@@ -386,13 +529,27 @@ export function describeRouteDefaultUsage(model) {
 }
 
 /**
+ * 输入模态清单里的一行：写清这个模型的 input 是怎么来的。
+ * @param {object} model 路由 models 数组里的一条模型条目
+ * @returns {string} 如「未声明 input（路由默认值生效）」
+ */
+export function describeRouteDefaultInputUsage(model) {
+  const declared = model?.input;
+  if (!Array.isArray(declared)) return "未声明 input（路由默认值生效）";
+  if (declared.length === 0) return "已声明 input（空数组：一个模态都不开）";
+  return `已声明 input（${declared.join(" / ")}）`;
+}
+
+/**
  * 单个字段的计数文案，拆成「前缀 / 可点击的数量 / 后缀」三段 —— 界面把
  * 中间那段做成就地展开的按钮，纯文本调用方（测试、日志）用
  * {@link describeRouteDefaultCount} 拼回完整句子。
  *
  * 四种状态：全部受影响 / 部分受影响 / 全部不受影响 / 没有模型（null）。
+ * token 字段说「这两个值 / 这两个输入框」；模态字段是多选 chip，说
+ * 「这个默认值 / 这个多选项」。
  *
- * @param {string} routeKey defaultContextWindow | defaultMaxTokens
+ * @param {string} routeKey defaultContextWindow | defaultMaxTokens | defaultInput
  * @param {number} total 路由模型条数
  * @param {number} affected 会用到该路由默认值的模型条数
  * @returns {{prefix: string, countText: string|null, suffix: string}|null}
@@ -402,27 +559,31 @@ export function routeDefaultCountParts(routeKey, total, affected) {
   if (field === undefined) throw new TypeError(`未知的路由默认值字段：${String(routeKey)}`);
   if (!Number.isInteger(total) || total <= 0) return null;
   const count = Number.isInteger(affected) ? Math.min(Math.max(affected, 0), total) : 0;
+  const modalities = field.kind === "modalities";
+  const declaredText = modalities ? "都已声明自己的模态，这个多选项不影响它们。" : "都已声明自己的值，这两个输入框不影响它们。";
+  const allText = modalities ? "全部使用这个默认值。" : "全部使用这两个值。";
+  const useText = modalities ? "会使用这个默认值。" : "会使用这两个值。";
   if (count === 0) {
     return {
-      prefix: `${field.label}：当前路由 ${total} 个模型都已声明自己的值，这两个输入框不影响它们。`,
+      prefix: `${field.label}：当前路由 ${total} 个模型${declaredText}`,
       countText: null,
       suffix: "",
     };
   }
   if (count === total) {
-    return { prefix: `${field.label}：当前路由 ${total} 个模型全部使用这两个值。`, countText: null, suffix: "" };
+    return { prefix: `${field.label}：当前路由 ${total} 个模型${allText}`, countText: null, suffix: "" };
   }
   return {
     prefix: `${field.label}：当前路由 ${total} 个模型中有 `,
     countText: `${count} 个`,
-    suffix: "会使用这两个值。",
+    suffix: useText,
   };
 }
 
 /**
  * {@link routeDefaultCountParts} 的纯文本版本：返回完整的一句话；路由没有
  * 模型时返回 null（那一行不显示）。
- * @param {string} routeKey defaultContextWindow | defaultMaxTokens
+ * @param {string} routeKey defaultContextWindow | defaultMaxTokens | defaultInput
  * @param {number} total 路由模型条数
  * @param {number} affected 会用到该路由默认值的模型条数
  * @returns {string|null}
@@ -434,13 +595,17 @@ export function describeRouteDefaultCount(routeKey, total, affected) {
 
 /**
  * 路由默认值留空时宿主的真实后果：回落到内置常量，而不是「不限制」。
- * @param {string} routeKey defaultContextWindow | defaultMaxTokens
+ * @param {string} routeKey defaultContextWindow | defaultMaxTokens | defaultInput
  * @returns {string|null} 如「默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）」
  */
 export function describeHostDefaultFallback(routeKey) {
   const field = routeDefaultField(routeKey);
   const value = HOST_ROUTE_DEFAULT_FALLBACKS[routeKey];
-  if (field === undefined || !Number.isFinite(value)) return null;
+  if (field === undefined) return null;
+  if (Array.isArray(value)) {
+    return `${field.label}：留空 → 宿主使用内置默认值 ${value.join(" / ")}（未声明 input 的模型按纯文本处理）`;
+  }
+  if (!Number.isFinite(value)) return null;
   const exact = value.toLocaleString("en-US");
   const short = humanizeTokenCount(value) || String(value);
   return `${field.label}：留空 → 宿主使用内置默认值 ${exact}（${short}）`;
@@ -472,6 +637,48 @@ export function apiChoicesFromSchema(schemaOps, namespaceSchema) {
     }
     const root = schemaOps.rehydrate(namespaceSchema);
     const node = schemaOps.nodeAtPath(root, ["providers", PROBE_ROUTE, "api"]);
+    const list = Array.isArray(node?.list) ? node.list : [];
+    const choices = [];
+    for (const entry of list) {
+      const value = entry?.value;
+      if (typeof value === "string" && value.trim() !== "" && !choices.includes(value)) choices.push(value);
+    }
+    if (choices.length === 0) return fallback;
+    return { choices, source: "schema" };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 从宿主命名空间 schema 里读 `providers.<任意>.defaultInput` 的模态 union。
+ *
+ * 与协议清单同一做法：候选值现读 schema，宿主新增模态时自动跟上；读不到
+ * （没有 schema 服务、路径不是 array、内层不是 union、schema 抛错）时退回
+ * 内置 text / image，并由调用方在界面上标注。
+ *
+ * @param {{rehydrate?:Function,nodeAtPath?:Function}|undefined} schemaOps 宿主 settingsSchema 操作
+ * @param {object|undefined} namespaceSchema 序列化的命名空间 schema
+ * @returns {{choices: string[], source: "schema"|"fallback"}}
+ */
+export function modalityChoicesFromSchema(schemaOps, namespaceSchema) {
+  const fallback = { choices: [...FALLBACK_MODALITIES], source: "fallback" };
+  try {
+    if (
+      schemaOps === undefined ||
+      schemaOps === null ||
+      typeof schemaOps.rehydrate !== "function" ||
+      typeof schemaOps.nodeAtPath !== "function" ||
+      namespaceSchema === undefined ||
+      namespaceSchema === null
+    ) {
+      return fallback;
+    }
+    const root = schemaOps.rehydrate(namespaceSchema);
+    // defaultInput: z.array(z.union(MODALITIES)) → 先取 array 节点，再取内层 union。
+    const arrayNode = schemaOps.nodeAtPath(root, ["providers", PROBE_ROUTE, "defaultInput"]);
+    if (arrayNode?.type !== "array") return fallback;
+    const node = schemaOps.nodeAtPath(arrayNode, ["0"]);
     const list = Array.isArray(node?.list) ? node.list : [];
     const choices = [];
     for (const entry of list) {

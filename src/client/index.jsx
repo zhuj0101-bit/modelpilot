@@ -36,9 +36,12 @@ import {
   buildRouteEditOps,
   countRouteDefaultUsers,
   describeHostDefaultFallback,
+  describeRouteDefaultInputUsage,
   describeRouteDefaultUsage,
   describeRouteSummary,
+  modalityChoicesFromSchema,
   moveModel,
+  normalizeModalities,
   routeDefaultCountParts,
   routeDeleteBlockReason,
   routeFieldLabels,
@@ -1706,7 +1709,7 @@ function ClearCredentialDialog({ reference, busy, onCancel, onConfirm }) {
 /**
  * 路由（provider）级字段编辑卡片。
  *
- * 默认折叠；展开后可编辑九个路由级字段。写入只产出叶子 set / unset，
+ * 默认折叠；展开后可编辑十个路由级字段。写入只产出叶子 set / unset，
  * 绝不重建整条路由；删除路由是唯一允许的整条 unset，并且带 stale-route
  * 与「至少要保留一个路由」两道守卫。
  */
@@ -1715,6 +1718,7 @@ function RouteSettingsCard({
   provider,
   routeCount,
   apiChoices,
+  modalChoices,
   writable,
   busy,
   open,
@@ -1742,7 +1746,13 @@ function RouteSettingsCard({
 }) {
   if (form === null) return null;
 
-  const plan = buildRouteEditOps(routeId, form, provider);
+  const modalChoicesList = Array.isArray(modalChoices?.choices) ? modalChoices.choices : [];
+  const modalChoicesSource = modalChoices?.source === "schema" ? "schema" : "fallback";
+  const modalitySelection = normalizeModalities(form.defaultInput, modalChoicesList);
+  // 路由上已声明、但当前候选清单没读出来的模态（旧 schema 的未来值）也要
+  // 显示成 chip，否则用户既看不见也删不掉；它们排在候选之后。
+  const declaredOnlyModalities = modalitySelection.filter((value) => !modalChoicesList.includes(value));
+  const plan = buildRouteEditOps(routeId, form, provider, { modalities: modalChoicesList });
   const errors = plan.errors;
   const changedLabels = routeFieldLabels(plan.changed);
   const stale = plan.warnings.find((warning) => warning.code === "stale-route");
@@ -1776,7 +1786,8 @@ function RouteSettingsCard({
   const credentialUi = credentialView(credential);
   const credentialErrorText = credential?.opError ? credential.opError : credentialUi.error;
 
-  // 路由默认值影响谁：按字段分别算，两个字段的受影响集合可能不同。
+  // 路由默认值影响谁：按字段分别算，三个字段的受影响集合可能不同
+  // （token 字段按值是否声明，模态字段按 input 数组是否声明）。
   // 宿主没有把「已安装目录描述了哪些模型 id」交给设置客户端，而 Workbench 的
   // catalogIds 是「路由当前对外提供的模型 id」（目录替换闸门用），把它当内置
   // 目录会把每条模型都误判成「目录已给值」。因此这里不传 catalogIds：对
@@ -1784,10 +1795,13 @@ function RouteSettingsCard({
   // models，计数行不显示。纯函数仍保留 catalogIds 入参，接上目录事实即可用。
   const defaultUsage = countRouteDefaultUsers(routeModels);
   const defaultRows = ROUTE_DEFAULT_FIELDS.map((field) => {
+    const modalities = field.kind === "modalities";
+    const selection = modalities ? normalizeModalities(form[field.key], modalChoicesList) : null;
     const raw = typeof form[field.key] === "string" ? form[field.key].trim() : "";
     const usage = defaultUsage[field.modelField];
-    const blank = raw === "";
-    const valid = raw !== "" && isPositiveTokenCount(raw);
+    // 模态字段：全部 chip 不选 = 留空（不声明），不是「空数组」。
+    const blank = modalities ? selection.length === 0 : raw === "";
+    const valid = modalities ? selection.length > 0 : raw !== "" && isPositiveTokenCount(raw);
     return {
       ...field,
       blank,
@@ -1800,6 +1814,14 @@ function RouteSettingsCard({
 
   function update(field, value) {
     onChange({ [field]: value });
+  }
+
+  /** 模态 chip：按候选清单顺序归一化后再写回表单，不按点击顺序。 */
+  function toggleModality(value) {
+    const next = modalitySelection.includes(value)
+      ? modalitySelection.filter((entry) => entry !== value)
+      : [...modalitySelection, value];
+    update("defaultInput", normalizeModalities(next, modalChoicesList));
   }
 
   async function save() {
@@ -1941,8 +1963,50 @@ function RouteSettingsCard({
           </Field>
         </div>
 
+        <div style={s.row}>
+          <div style={s.field}>
+            <span style={s.label}>默认输入模态 (defaultInput)</span>
+            <div style={s.levelChips} role="group" aria-label="路由默认输入模态">
+              {[...modalChoicesList, ...declaredOnlyModalities].map((value) => {
+                const checked = modalitySelection.includes(value);
+                const declaredOnly = !modalChoicesList.includes(value);
+                return (
+                  <label
+                    key={value}
+                    style={checked ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleModality(value)}
+                      aria-label={`路由输入模态 ${value}`}
+                    />
+                    {value}{declaredOnly ? "（当前值）" : ""}
+                  </label>
+                );
+              })}
+            </div>
+            <div style={s.hintLine}>
+              {errors.defaultInput ? (
+                <span style={s.fieldError}>{errors.defaultInput}</span>
+              ) : (
+                <span style={s.fieldHint}>
+                  {modalChoicesSource === "schema" ? "选项来自宿主 schema" : "使用内置模态清单"}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {modalChoicesSource === "fallback" ? (
+          <div style={s.warn} role="status" aria-label="模态清单来源">
+            模态清单读取失败，使用内置模态清单
+          </div>
+        ) : null}
+
         <div style={s.routeDefaults} aria-label="路由默认值说明">
-          <span>未声明窗口 / 输出上限的模型回落到这两个值；已声明自己的模型不受影响。</span>
+          <span>多选；全部不选 = 不声明该字段（宿主回落 text，不写空数组）。</span>
+          <span>未声明窗口 / 输出上限 / 输入模态的模型回落到这里的默认值；已声明自己的模型不受影响。</span>
           <span>回落顺序：模型自己 → 内置目录 → 这里。</span>
           <span>注意：这里只影响请求参数，不影响 DSH 压缩阈值 —— 后者只认模型自己声明的那一项。</span>
           {defaultRows.map((row) => (
@@ -1972,7 +2036,9 @@ function RouteSettingsCard({
                         <li key={`${typeof model?.id === "string" ? model.id : "model"}:${index}`} style={s.usageItem}>
                           <b>{typeof model?.id === "string" && model.id !== "" ? model.id : "（无 id）"}</b>
                           {" —— "}
-                          {describeRouteDefaultUsage(model)}
+                          {row.kind === "modalities"
+                            ? describeRouteDefaultInputUsage(model)
+                            : describeRouteDefaultUsage(model)}
                         </li>
                       ))}
                     </ul>
@@ -2136,6 +2202,22 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     }
   }, [configForms, scope, snap]);
 
+  // 默认输入模态的候选同样从宿主 schema 现读：宿主的 defaultInput 是多选
+  // union（当前 text / image），新增模态时这里自动跟上；读不到时退回内置
+  // 清单并在卡片上标注。顺序就是 chip 的渲染顺序，也是写入数组的顺序。
+  const modalChoices = React.useMemo(() => {
+    try {
+      const schemaOps = configForms?.schema ?? scope?.schema;
+      const mirror = typeof configForms?.describe === "function" ? configForms.describe() : undefined;
+      const view = mirror?.getSnapshot?.().view?.namespaces?.find?.((row) => row.ns === LLM_NS)
+        ?? scope?.mirror?.namespace?.(LLM_NS);
+      return modalityChoicesFromSchema(schemaOps, view?.schema);
+    } catch {
+      return modalityChoicesFromSchema(undefined, undefined);
+    }
+  }, [configForms, scope, snap]);
+  const modalChoiceValues = Array.isArray(modalChoices?.choices) ? modalChoices.choices : [];
+
   const [routeId, setRouteId] = React.useState("");
   const [modelId, setModelId] = React.useState("");
   const [displayName, setDisplayName] = React.useState("");
@@ -2204,8 +2286,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   // generation 作废「发起后表单又被改过」或「切了路由」的迟到结果。
   const [connectionTest, setConnectionTest] = React.useState({ status: "idle", tone: "", text: "" });
   const connectionTestGeneration = React.useRef(0);
-  // 两个默认值的「哪些模型会用到」清单各自折叠；按模型字段名存。
-  const [routeDefaultUsageOpen, setRouteDefaultUsageOpen] = React.useState({ contextWindow: false, maxTokens: false });
+  // 三个默认值的「哪些模型会用到」清单各自折叠；按模型字段名存。
+  const [routeDefaultUsageOpen, setRouteDefaultUsageOpen] = React.useState({ contextWindow: false, maxTokens: false, input: false });
 
   // 新建路由（工单 #21）：目录读取、表单、校验与提交状态全部留在 Workbench，
   // 弹窗组件保持无 hook；创建成功后用 revealCreatedRoute 让路由卡片自动展开。
@@ -2267,11 +2349,11 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
 
   const route = routeId ? providers[routeId] : undefined;
 
-  // 切换路由时收起卡片并重新预填九个字段；不把上一条路由的表单带过来。
+  // 切换路由时收起卡片并重新预填十个字段；不把上一条路由的表单带过来。
   React.useEffect(() => {
     setRouteCardOpen(false);
     setRouteConfirmOpen(false);
-    setRouteDefaultUsageOpen({ contextWindow: false, maxTokens: false });
+    setRouteDefaultUsageOpen({ contextWindow: false, maxTokens: false, input: false });
     setRouteFormState(routeFormFromProvider(route));
     connectionTestGeneration.current += 1;
     setConnectionTest({ status: "idle", tone: "", text: "" });
@@ -3284,7 +3366,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
    */
   async function saveRouteSettings(form) {
     const latestProviders = providersOf(scope.getSnapshot());
-    const plan = buildRouteEditOps(routeId, form, latestProviders[routeId]);
+    const plan = buildRouteEditOps(routeId, form, latestProviders[routeId], { modalities: modalChoiceValues });
     if (plan.warnings.length > 0) {
       setToast({ tone: "bad", text: plan.warnings[0].message });
       return { ok: false, form };
@@ -3466,6 +3548,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           provider={route}
           routeCount={routes.length}
           apiChoices={apiChoices}
+          modalChoices={modalChoices}
           writable={writable}
           busy={busy}
           open={routeCardOpen}
