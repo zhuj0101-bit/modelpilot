@@ -46,7 +46,7 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.initial.route, "preview-chat");
   });
 
-  test(`${scheme} 主题：展开后九个字段预填，未改动时保存禁用`, async (t) => {
+  test(`${scheme} 主题：展开后十个字段预填，未改动时保存禁用`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     assert.equal(result.expanded.open, true);
@@ -81,6 +81,10 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.expanded.defaultsHint, true);
     assert.deepEqual(result.expanded.cacheOptions, ["", "none", "short", "long"]);
     assert.deepEqual(result.expanded.transportOptions, ["", "sse", "websocket", "websocket-cached", "auto"]);
+    // 第 10 个字段：模态候选来自 schema；路由没声明 defaultInput → 全部不选。
+    assert.deepEqual(result.expanded.defaultInputChips, ["text", "image", "audio"]);
+    assert.deepEqual(result.expanded.defaultInputChecked, []);
+    assert.equal(result.expanded.defaultInputHintSchema, true);
   });
 
   test(`${scheme} 主题：api 下拉的选项来自宿主 schema`, async (t) => {
@@ -175,6 +179,9 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.lastRouteHint, true);
     assert.equal(result.fallbackNotice, true);
     assert.deepEqual(result.apiOptions, ["", ...FALLBACK_API_PROTOCOLS]);
+    assert.deepEqual(result.defaultInputChips, ["text", "image"], "模态候选退回内置 text / image");
+    assert.deepEqual(result.defaultInputChecked, []);
+    assert.equal(result.modalFallbackNotice, true, "标注「使用内置模态清单」");
     assert.equal(result.saveDisabled, true);
     assert.equal(result.mutations, 0);
   });
@@ -195,11 +202,15 @@ for (const scheme of ["light", "dark"]) {
   test(`${scheme} 主题：三行语义提示 + 两个默认值留空时显示宿主内置回落常量`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme, "usage");
-    assert.match(result.blank.block, /未声明窗口 \/ 输出上限的模型回落到这两个值；已声明自己的模型不受影响。/);
+    assert.match(result.blank.block, /未声明窗口 \/ 输出上限 \/ 输入模态的模型回落到这里的默认值；已声明自己的模型不受影响。/);
     assert.match(result.blank.block, /回落顺序：模型自己 → 内置目录 → 这里。/);
     assert.match(result.blank.block, /注意：这里只影响请求参数，不影响 DSH 压缩阈值 —— 后者只认模型自己声明的那一项。/);
     assert.equal(result.blank.windowLine, "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）");
     assert.equal(result.blank.outputLine, "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）");
+    assert.equal(
+      result.blank.inputLine,
+      "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+    );
     assert.equal(result.blank.countButtons, 0, "留空时没有可展开的计数");
     assert.equal(result.blank.mutations, 0);
   });
@@ -245,5 +256,125 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.empty.hasCountText, false, "路由没有模型时不显示计数行");
     assert.equal(result.empty.emptyListHint, true);
     assert.equal(result.empty.mutations, 0);
+  });
+  test(`${scheme} 主题：默认输入模态候选来自 schema，预填声明值，计数只数未声明 input 的模型`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "input:schema");
+    assert.equal(result.prefill.open, true);
+    assert.deepEqual(result.prefill.chips, ["text", "image", "audio"], "候选从 schema 现读");
+    assert.deepEqual(result.prefill.checked, ["image"], "只预填路由声明的 image");
+    assert.equal(result.prefill.hintSchema, true);
+    assert.equal(result.prefill.fallbackNotice, false);
+    assert.equal(result.prefill.saveDisabled, true, "未改动时保存禁用");
+    assert.deepEqual(result.prefill.ops, []);
+    assert.equal(
+      result.prefill.countLine,
+      "默认输入模态：当前路由 4 个模型中有 2 个会使用这个默认值。",
+    );
+    assert.equal(result.prefill.countButton, true);
+    assert.equal(result.prefill.mutations, 0, "计数不需要保存");
+    assert.equal(result.count.expanded, true);
+    // input: [] 算已声明；只声明 token 的模型在输入模态计数里仍然受影响。
+    assert.equal(
+      result.count.list,
+      [
+        "jxf/undeclared —— 未声明 input（路由默认值生效）",
+        "jxf/tokens-only —— 未声明 input（路由默认值生效）",
+      ].join("\n"),
+    );
+  });
+
+  test(`${scheme} 主题：默认输入模态 chip 选中态可辨识，文字对比度 ≥ 4.5`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "input:schema");
+    assert.equal(result.theme.selected.checked, true);
+    assert.equal(result.theme.unselected.checked, false);
+    assert.notEqual(result.theme.selected.border, result.theme.unselected.border, "选中态边框与未选中不同");
+    assert.notEqual(result.theme.selected.background, "rgba(0, 0, 0, 0)", "chip 背景不能透明");
+    assert.ok(
+      result.theme.selected.ratio >= 4.5,
+      `选中 chip 对比度 ${result.theme.selected.ratio}（${result.theme.selected.color} / ${result.theme.selected.background}）`,
+    );
+    assert.ok(
+      result.theme.unselected.ratio >= 4.5,
+      `未选中 chip 对比度 ${result.theme.unselected.ratio}`,
+    );
+  });
+
+  test(`${scheme} 主题：默认输入模态选 text + image → 1 条 set 叶子路径，保存后写入数组`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "input:schema");
+    assert.deepEqual(result.select.ops, [
+      { op: "set", path: ["providers", "modal-chat", "defaultInput"], value: ["text", "image"] },
+    ]);
+    assert.equal(result.select.changed, true);
+    assert.equal(result.select.saveDisabled, false);
+    assert.equal(result.select.mutations, 0, "预览 op 不写盘");
+    assert.equal(result.select.countLine, "默认输入模态：当前路由 4 个模型中有 2 个会使用这个默认值。");
+    assert.equal(result.saved.mutations, 1);
+    assert.deepEqual(result.saved.lastOps, result.select.ops);
+    assert.deepEqual(result.saved.provider.defaultInput, ["text", "image"]);
+    assert.deepEqual(result.saved.checked, ["text", "image"]);
+  });
+
+  test(`${scheme} 主题：默认输入模态全部取消 → 1 条 unset，保存后显示宿主回落 text`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "input:schema");
+    assert.deepEqual(result.cleared.checked, []);
+    assert.deepEqual(result.cleared.ops, [
+      { op: "unset", path: ["providers", "modal-chat", "defaultInput"] },
+    ]);
+    assert.equal("value" in result.cleared.ops[0], false, "清空必须 unset，不能写 []");
+    assert.equal(result.cleared.saveDisabled, false);
+    assert.equal(result.clearedSaved.mutations, 2);
+    assert.deepEqual(result.clearedSaved.lastOps, result.cleared.ops);
+    assert.equal(result.clearedSaved.provider.defaultInput, undefined);
+    assert.deepEqual(result.clearedSaved.checked, []);
+    assert.equal(
+      result.clearedSaved.fallbackLine,
+      "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+    );
+    assert.equal(result.clearedSaved.countButtonGone, true, "留空时没有可展开的计数");
+  });
+
+  test(`${scheme} 主题：默认输入模态点击顺序颠倒仍按候选顺序写入，等集合不产出 op`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "input:schema");
+    // 先点 image 再点 text：表单内部顺序被归一化成 ["text","image"]。
+    assert.deepEqual(result.clickOrder.checked, ["text", "image"]);
+    assert.deepEqual(result.clickOrder.ops, [
+      { op: "set", path: ["providers", "modal-chat", "defaultInput"], value: ["text", "image"] },
+    ]);
+    // 路由原值 ["image","text"]：集合相同，数组逐元素比较后不算改动。
+    assert.deepEqual(result.swapped.checked, ["text", "image"]);
+    assert.deepEqual(result.swapped.ops, []);
+    assert.equal(result.swapped.saveDisabled, true);
+    assert.deepEqual(result.swapped.retoggled.checked, ["text", "image"]);
+    assert.deepEqual(result.swapped.retoggled.ops, [], "取消再勾回不产生规则不同的数组");
+    assert.equal(result.swapped.retoggled.saveDisabled, true);
+    assert.equal(result.swapped.retoggled.mutations, 2, "结构比较不触发写入");
+  });
+
+  test(`${scheme} 主题：路由未声明 defaultInput 时全部不选，不产出 op`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "input:schema");
+    assert.deepEqual(result.blank.checked, []);
+    assert.equal(
+      result.blank.line,
+      "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+    );
+    assert.equal(result.blank.saveDisabled, true);
+    assert.equal(result.blank.mutations, 2, "切换路由 / 查看空白字段不写入");
+  });
+
+  test(`${scheme} 主题：schema 读不到模态清单时退回 text / image 并标注`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme, "input:fallback");
+    assert.deepEqual(result.prefill.chips, ["text", "image"]);
+    assert.deepEqual(result.prefill.checked, ["image"]);
+    assert.equal(result.prefill.hintSchema, false);
+    assert.equal(result.prefill.fallbackNotice, true, "标注「使用内置模态清单」");
+    assert.equal(result.prefill.saveDisabled, true);
+    assert.equal(result.prefill.mutations, 0);
   });
 }

@@ -1,4 +1,5 @@
 // 工单 #32 第一批的浏览器夹具：路由设置卡片 + 九个字段 + 删除整条路由。
+// 工单 #22：追加第 10 个字段 defaultInput 的多选 chip 夹具与断言数据。
 //
 // 与 model-edit-harness 一样，用最小的 React 兼容渲染器把打包后的 Workbench
 // 渲染成真实 DOM，再在 headless Chrome 里做真实点击、读回字段 / mutate 参数 /
@@ -17,6 +18,9 @@ export const SCHEMA_PROTOCOLS = Object.freeze([
   "bedrock-converse-stream",
   "preview-experimental",
 ]);
+
+/** 与宿主 defaultInput 同形的模态 union；额外加一个假模态证明候选来自 schema。 */
+export const SCHEMA_MODALITIES = Object.freeze(["text", "image", "audio"]);
 
 const PROVIDER_SOURCE = String.raw`
   const previewChat = {
@@ -100,6 +104,42 @@ function fixtureSource(routeMode) {
     writable: true,
   };`;
   }
+  if (routeMode === "input") {
+    return String.raw`
+  const providers = {
+    "modal-chat": {
+      id: "modal-chat",
+      displayName: "Modal Chat",
+      baseURL: "https://modal.invalid/v1",
+      api: "openai-completions",
+      defaultInput: ["image"],
+      models: [
+        { id: "jxf/undeclared" },
+        { id: "jxf/empty-array", input: [] },
+        { id: "jxf/declared", input: ["text", "image"] },
+        { id: "jxf/tokens-only", contextWindow: 128000, maxTokens: 8192 },
+      ],
+    },
+    "swapped-input": {
+      id: "swapped-input",
+      baseURL: "https://swapped.invalid/v1",
+      defaultInput: ["image", "text"],
+      models: [],
+    },
+    "blank-input": {
+      id: "blank-input",
+      baseURL: "https://blank.invalid/v1",
+      models: [{ id: "b/one" }],
+    },
+  };
+  const snapshot = {
+    status: "ready",
+    value: { providers },
+    user: { providers },
+    revision: 1,
+    writable: true,
+  };`;
+  }
   return `${PROVIDER_SOURCE}
   const providers = { "preview-chat": previewChat, "backup-route": backupRoute, "spare-route": spareRoute };
   const snapshot = {
@@ -116,16 +156,28 @@ function configFormsSource(schemaMode) {
     return String.raw`
   const schemaOps = {
     rehydrate: (serialized) => serialized,
-    nodeAtPath: (root, path) => (
-      path.length === 3 && path[0] === "providers" && path[2] === "api" ? root : undefined
-    ),
+    // 与宿主 settingsSchema.nodeAtPath 同形：object 按 key 取 dict，array 取 inner。
+    nodeAtPath: (root, path) => {
+      if (path.length === 3 && path[0] === "providers") return root?.[path[2]];
+      if (path.length === 1 && path[0] === "0" && root?.type === "array") return root.inner;
+      return undefined;
+    },
   };
-  const schemaUnion = {
-    type: "union",
-    list: ${JSON.stringify(SCHEMA_PROTOCOLS.map((value) => ({ value })))},
+  const schemaRoot = {
+    api: {
+      type: "union",
+      list: ${JSON.stringify(SCHEMA_PROTOCOLS.map((value) => ({ value })))},
+    },
+    defaultInput: {
+      type: "array",
+      inner: {
+        type: "union",
+        list: ${JSON.stringify(SCHEMA_MODALITIES.map((value) => ({ value })))},
+      },
+    },
   };
   const describe = () => ({
-    getSnapshot: () => ({ view: { namespaces: [{ ns: "llm-pi-ai", schema: schemaUnion }] } }),
+    getSnapshot: () => ({ view: { namespaces: [{ ns: "llm-pi-ai", schema: schemaRoot }] } }),
   });
   const configForms = { get: () => scope, whileServed: (namespaces, register) => register(new Set(namespaces)), describe, schema: schemaOps };
 `;
@@ -193,6 +245,11 @@ const HELPERS = String.raw`
     return background;
   };
   const styleOf = (element) => getComputedStyle(element);
+  const modalChipInputs = () => [...document.querySelectorAll('input[aria-label^="路由输入模态 "]')];
+  const modalChipName = (input) => input.getAttribute("aria-label").slice("路由输入模态 ".length);
+  const modalChipValues = () => modalChipInputs().map(modalChipName);
+  const modalChipChecked = () => modalChipInputs().filter((input) => input.checked).map(modalChipName);
+  const modalChipInput = (value) => modalChipInputs().find((input) => modalChipName(input) === value);
 `;
 
 function multiProbe(schemaMode) {
@@ -268,7 +325,7 @@ ${HELPERS}
     route: routeSelect().value,
   };
 
-  // ── 1. 展开：九个字段预填、未改动保存禁用、协议选项来自 schema ──
+  // ── 1. 展开：十个字段预填、未改动保存禁用、协议选项来自 schema ──
   routeSummary().click();
   result.expanded = {
     open: routeSummary()?.getAttribute("aria-expanded") === "true",
@@ -286,9 +343,12 @@ ${HELPERS}
     apiOptions: [...byAria("路由协议").options].map((option) => option.value),
     schemaHint: document.body.innerText.includes("选项来自宿主 schema"),
     fallbackNotice: document.body.innerText.includes("协议清单读取失败，使用内置列表"),
-    defaultsHint: document.body.innerText.includes("未声明窗口 / 输出上限的模型回落到这两个值"),
+    defaultsHint: document.body.innerText.includes("未声明窗口 / 输出上限 / 输入模态的模型回落到这里的默认值"),
     cacheOptions: [...byAria("路由缓存").options].map((option) => option.value),
     transportOptions: [...byAria("路由传输").options].map((option) => option.value),
+    defaultInputChips: modalChipValues(),
+    defaultInputChecked: modalChipChecked(),
+    defaultInputHintSchema: document.body.innerText.includes("选项来自宿主 schema"),
     changed: document.body.innerText.includes("改动字段：无（保存已禁用）"),
     ops: opsOf(),
   };
@@ -488,6 +548,7 @@ ${HELPERS}
     block: blockText(),
     windowLine: lineOf("默认上下文"),
     outputLine: lineOf("默认输出上限"),
+    inputLine: lineOf("默认输入模态"),
     countButtons: buttons().filter((element) => (element.getAttribute("aria-label") ?? "").startsWith("展开使用")).length,
     mutations: mutations.length,
   };
@@ -628,10 +689,219 @@ ${HELPERS}
     lastRouteHint: document.body.innerText.includes("至少要保留一个路由"),
     fallbackNotice: document.body.innerText.includes("协议清单读取失败，使用内置列表"),
     apiOptions: [...byAria("路由协议").options].map((option) => option.value),
+    defaultInputChips: modalChipValues(),
+    defaultInputChecked: modalChipChecked(),
+    modalFallbackNotice: document.body.innerText.includes("模态清单读取失败，使用内置模态清单"),
     saveDisabled: byAria("保存路由设置").disabled,
     summary: routeSummary()?.textContent.trim() ?? "",
     mutations: mutations.length,
   };
+  document.getElementById("result").textContent = JSON.stringify(result);
+  } catch (error) {
+    document.getElementById("result").textContent = JSON.stringify({ __error: String(error), stack: error.stack });
+  }
+})();
+`;
+}
+
+function inputProbe(schemaMode) {
+  return String.raw`
+(async () => {
+  try {
+  const client = window.__CLIENT__;
+  if (!client) throw new Error("client bundle did not register");
+${fixtureSource("input")}
+  const mutations = [];
+  const setPath = (root, path, value) => {
+    let node = root;
+    for (let i = 0; i < path.length - 1; i++) node = node[path[i]];
+    node[path[path.length - 1]] = value;
+  };
+  const unsetPath = (root, path) => {
+    let node = root;
+    for (let i = 0; i < path.length - 1; i++) node = node[path[i]];
+    const last = path[path.length - 1];
+    if (Array.isArray(node)) node.splice(Number(last), 1);
+    else delete node[last];
+  };
+  const scope = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    mutate: async (ops) => {
+      const copy = JSON.parse(JSON.stringify(ops));
+      mutations.push(copy);
+      for (const op of copy) {
+        if (op.op === "set") setPath(snapshot.value, op.path, op.value);
+        else if (op.op === "unset") unsetPath(snapshot.value, op.path);
+      }
+      return true;
+    },
+  };
+${configFormsSource(schemaMode)}
+  let Workbench;
+  let spec;
+  const ctx = {
+    effect: (fn) => {
+      const dispose = fn();
+      return typeof dispose === "function" ? dispose : () => {};
+    },
+    configForms,
+    slots: {
+      inject: (name, register) => register(),
+      register: (registeredSpec, component) => {
+        spec = registeredSpec;
+        Workbench = component;
+        return () => {};
+      },
+    },
+    remote: {
+      llm: { discoverModels: async () => ({ ok: true, value: [] }) },
+      credentials: {
+        describe: async (refs) => ({ ok: true, value: Object.fromEntries(refs.map((ref) => [ref, { configured: true, writable: true }])) }),
+        set: async () => ({ ok: true, value: undefined }),
+        unset: async () => ({ ok: true, value: undefined }),
+      },
+    },
+  };
+  client.apply(ctx);
+  if (typeof Workbench !== "function") throw new Error("workbench component not registered");
+  window.__renderComponent(Workbench, spec.inject());
+${HELPERS}
+
+  const defaultsBlock = () => document.querySelector('[aria-label="路由默认值说明"]');
+  // 计数行是块内的直接子元素：prefix / 「N 个」按钮 / suffix 拼成一整句。
+  const lineOf = (label) => {
+    const block = defaultsBlock();
+    if (block === null) return "";
+    for (const child of [...block.children]) {
+      const text = child.textContent.trim();
+      if (text.startsWith(label + "：")) return text;
+    }
+    return "";
+  };
+  const usageButton = (prefix) => buttons()
+    .find((element) => (element.getAttribute("aria-label") ?? "").startsWith(prefix));
+  const clickUsage = (prefix) => {
+    const button = usageButton(prefix);
+    if (button === undefined) throw new Error("未找到计数按钮：" + prefix);
+    button.click();
+  };
+  const listOf = (label) => document.querySelector('[aria-label="使用' + label + '的模型清单"]')?.innerText ?? "";
+  const switchRoute = (value) => setSelect(routeSelect(), value);
+  const chipLabel = (value) => modalChipInput(value).closest("label");
+  const chipInfo = (value) => {
+    const label = chipLabel(value);
+    return {
+      checked: modalChipInput(value).checked,
+      background: styleOf(label).backgroundColor,
+      border: styleOf(label).borderTopColor,
+      color: styleOf(label).color,
+      ratio: contrast(parseColor(styleOf(label).color), effectiveBackground(label)),
+    };
+  };
+
+  const result = { scheme: styleOf(document.documentElement).colorScheme };
+
+  // ── 1. 候选来自 schema；预填路由声明的模态；计数只数没声明 input 的模型 ──
+  routeSummary().click();
+  result.prefill = {
+    open: routeSummary()?.getAttribute("aria-expanded") === "true",
+    chips: modalChipValues(),
+    checked: modalChipChecked(),
+    hintSchema: document.body.innerText.includes("选项来自宿主 schema"),
+    fallbackNotice: document.body.innerText.includes("模态清单读取失败，使用内置模态清单"),
+    saveDisabled: byAria("保存路由设置").disabled,
+    ops: opsOf(),
+    countLine: lineOf("默认输入模态"),
+    countButton: usageButton("展开使用默认输入模态") !== undefined,
+    mutations: mutations.length,
+  };
+  result.theme = {
+    selected: chipInfo("image"),
+    unselected: chipInfo("text"),
+  };
+
+  // ── 2. 点「2 个」就地展开：空数组算已声明，只列未声明 input 的模型 ──
+  clickUsage("展开使用默认输入模态");
+  result.count = {
+    list: listOf("默认输入模态"),
+    expanded: usageButton("收起使用默认输入模态") !== undefined,
+  };
+
+  // ── 3. 再选 text → 恰好 1 条 set，value 按候选顺序 ["text","image"] ──
+  modalChipInput("text").click();
+  result.select = {
+    checked: modalChipChecked(),
+    ops: opsOf(),
+    changed: document.body.innerText.includes("改动字段：默认输入模态"),
+    saveDisabled: byAria("保存路由设置").disabled,
+    countLine: lineOf("默认输入模态"),
+    mutations: mutations.length,
+  };
+  byAria("保存路由设置").click();
+  await sleep(30);
+  result.saved = {
+    mutations: mutations.length,
+    lastOps: mutations[mutations.length - 1],
+    provider: JSON.parse(JSON.stringify(providers["modal-chat"])),
+    checked: modalChipChecked(),
+  };
+
+  // ── 4. 全部取消 → 1 条 unset（不是 set []）；保存后回到宿主回落文案 ──
+  modalChipInput("text").click();
+  modalChipInput("image").click();
+  result.cleared = {
+    checked: modalChipChecked(),
+    ops: opsOf(),
+    saveDisabled: byAria("保存路由设置").disabled,
+  };
+  byAria("保存路由设置").click();
+  await sleep(30);
+  result.clearedSaved = {
+    mutations: mutations.length,
+    lastOps: mutations[mutations.length - 1],
+    provider: JSON.parse(JSON.stringify(providers["modal-chat"])),
+    checked: modalChipChecked(),
+    fallbackLine: lineOf("默认输入模态"),
+    countButtonGone: usageButton("展开使用默认输入模态") === undefined,
+  };
+
+  // ── 5. 点击顺序颠倒：image → text，产出仍按候选顺序 ──
+  modalChipInput("image").click();
+  modalChipInput("text").click();
+  result.clickOrder = {
+    checked: modalChipChecked(),
+    ops: opsOf(),
+    saveDisabled: byAria("保存路由设置").disabled,
+  };
+
+  // ── 6. 结构比较：路由原值 ["image","text"]，集合相同 → 0 op；取消再勾回仍是 0 op ──
+  switchRoute("swapped-input");
+  routeSummary().click();
+  result.swapped = {
+    checked: modalChipChecked(),
+    ops: opsOf(),
+    saveDisabled: byAria("保存路由设置").disabled,
+  };
+  modalChipInput("image").click();
+  modalChipInput("image").click();
+  result.swapped.retoggled = {
+    checked: modalChipChecked(),
+    ops: opsOf(),
+    saveDisabled: byAria("保存路由设置").disabled,
+    mutations: mutations.length,
+  };
+
+  // ── 7. 路由没声明 defaultInput：全部不选，显示宿主回落 text ──
+  switchRoute("blank-input");
+  routeSummary().click();
+  result.blank = {
+    checked: modalChipChecked(),
+    line: lineOf("默认输入模态"),
+    saveDisabled: byAria("保存路由设置").disabled,
+    mutations: mutations.length,
+  };
+
   document.getElementById("result").textContent = JSON.stringify(result);
   } catch (error) {
     document.getElementById("result").textContent = JSON.stringify({ __error: String(error), stack: error.stack });
@@ -647,7 +917,9 @@ export function buildRouteEditHtml(bundleSource, scheme, { routeMode = "multi", 
     ? oneRouteProbe()
     : routeMode === "usage"
       ? usageProbe()
-      : multiProbe(schemaMode);
+      : routeMode === "input"
+        ? inputProbe(schemaMode)
+        : multiProbe(schemaMode);
   return [
     "<!doctype html>",
     `<html lang="en" data-scheme="${scheme}" style="color-scheme: ${scheme}">`,

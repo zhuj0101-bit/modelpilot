@@ -14,6 +14,7 @@ const root = join(here, "..", "..");
 const {
   CACHE_RETENTION_CHOICES,
   FALLBACK_API_PROTOCOLS,
+  FALLBACK_MODALITIES,
   HOST_ROUTE_DEFAULT_FALLBACKS,
   ROUTE_DEFAULT_FIELDS,
   ROUTE_FIELD_DEFINITIONS,
@@ -25,19 +26,24 @@ const {
   countRouteDefaultUsers,
   describeHostDefaultFallback,
   describeRouteDefaultCount,
+  describeRouteDefaultInputUsage,
   describeRouteDefaultUsage,
   describeRouteSummary,
+  modalityChoicesFromSchema,
+  normalizeModalities,
   routeDefaultCountParts,
   routeDeleteBlockReason,
   routeFieldLabels,
   routeFormFromProvider,
   usesRouteDefault,
+  usesRouteDefaultInput,
+  validateModalityForm,
   validateRouteForm,
 } = await import(pathToFileURL(join(root, "src", "core", "route-edit.js")).href);
 
 const ROUTE_ID = "preview-chat";
 
-/** 九个字段全部声明、且带宿主未来字段的一条路由。 */
+/** 十个字段全部声明、且带宿主未来字段的一条路由。 */
 const provider = Object.freeze({
   displayName: "Preview Chat",
   baseURL: "https://preview.invalid/v1",
@@ -48,11 +54,20 @@ const provider = Object.freeze({
   cacheRetention: "short",
   transport: "auto",
   timeoutMs: 60000,
+  defaultInput: ["text"],
   models: [{ id: "jxf/dsv4.1-flash" }, { id: "jxf/dsv4.1-pro" }],
   modelOverrides: { "jxf/dsv4.1-flash": { maxTokens: 1024 } },
   compat: { supportsReasoningEffort: true },
   futureHostField: { keep: ["exactly", "these"] },
 });
+
+/** 十个字段全部清空的表单：模态字段用空数组（全部 chip 不选），不是空串。 */
+function clearedForm() {
+  return {
+    ...Object.fromEntries(ROUTE_FIELD_KEYS.map((key) => [key, ""])),
+    defaultInput: [],
+  };
+}
 
 /** 所有路径都必须落在 ["providers", routeId] 之下。 */
 function assertRouteScoped(ops, routeId = ROUTE_ID) {
@@ -76,7 +91,7 @@ function assertNoWholeRouteSet(ops, routeId = ROUTE_ID) {
 
 // ── 读取与展示 ─────────────────────────────────────────────────────────
 
-test("routeFormFromProvider：九个字段预填路由上声明的值", () => {
+test("routeFormFromProvider：十个字段预填路由上声明的值", () => {
   assert.deepEqual(routeFormFromProvider(provider), {
     displayName: "Preview Chat",
     baseURL: "https://preview.invalid/v1",
@@ -87,6 +102,7 @@ test("routeFormFromProvider：九个字段预填路由上声明的值", () => {
     cacheRetention: "short",
     transport: "auto",
     timeoutMs: "60000",
+    defaultInput: ["text"],
   });
 });
 
@@ -102,6 +118,7 @@ test("routeFormFromProvider：未声明字段显示空，不把宿主默认值�
     cacheRetention: "",
     transport: "",
     timeoutMs: "",
+    defaultInput: [],
   });
   // 非数字的 token 值 / 0 / 负数都不是合法声明，仍显示空。
   assert.equal(routeFormFromProvider({ defaultMaxTokens: "8192", defaultContextWindow: 0 }).defaultMaxTokens, "");
@@ -226,7 +243,7 @@ test("routeDefaultCountParts：未知字段直接报错，不拼出没有标签�
   assert.throws(() => routeDefaultCountParts("defaultTopK", 3, 1), /未知的路由默认值字段/);
 });
 
-test("describeHostDefaultFallback：留空回落到内置 1,000,000 / 128,000，而不是「不限制」", () => {
+test("describeHostDefaultFallback：留空回落到内置常量 / text，而不是「不限制」", () => {
   assert.equal(
     describeHostDefaultFallback("defaultContextWindow"),
     "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）",
@@ -235,12 +252,240 @@ test("describeHostDefaultFallback：留空回落到内置 1,000,000 / 128,000，
     describeHostDefaultFallback("defaultMaxTokens"),
     "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）",
   );
+  assert.equal(
+    describeHostDefaultFallback("defaultInput"),
+    "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+  );
   assert.equal(describeHostDefaultFallback("defaultTopK"), null);
-  assert.deepEqual(HOST_ROUTE_DEFAULT_FALLBACKS, { defaultContextWindow: 1_000_000, defaultMaxTokens: 128_000 });
-  assert.deepEqual(ROUTE_DEFAULT_FIELDS.map((field) => field.key), ["defaultContextWindow", "defaultMaxTokens"]);
+  assert.deepEqual(HOST_ROUTE_DEFAULT_FALLBACKS, {
+    defaultContextWindow: 1_000_000,
+    defaultMaxTokens: 128_000,
+    defaultInput: ["text"],
+  });
+  assert.deepEqual(
+    ROUTE_DEFAULT_FIELDS.map((field) => [field.key, field.modelField, field.kind]),
+    [
+      ["defaultContextWindow", "contextWindow", "token"],
+      ["defaultMaxTokens", "maxTokens", "token"],
+      ["defaultInput", "input", "modalities"],
+    ],
+  );
 });
 
-test("字段定义固定为九个，顺序与 labels 一致", () => {
+// ── defaultInput：多选模态（工单 #22）─────────────────────────────────
+
+test("normalizeModalities：按候选顺序排、去重、丢非字符串，未知值按原顺序补在末尾", () => {
+  assert.deepEqual(normalizeModalities(["image", "text"], ["text", "image"]), ["text", "image"]);
+  assert.deepEqual(normalizeModalities(["text", "text", "image"], ["text", "image"]), ["text", "image"]);
+  assert.deepEqual(normalizeModalities(["audio", "image", "text"], ["text", "image"]), ["text", "image", "audio"]);
+  assert.deepEqual(normalizeModalities([" audio ", "image"], ["text", "image"]), ["image", "audio"]);
+  assert.deepEqual(normalizeModalities([3, null, "", "  ", "text"], ["text", "image"]), ["text"]);
+  assert.deepEqual(normalizeModalities(undefined), []);
+  assert.deepEqual(normalizeModalities("text"), []);
+  assert.deepEqual(FALLBACK_MODALITIES, ["text", "image"]);
+});
+
+test("routeFormFromProvider：defaultInput 预填声明的模态并按候选顺序归一化，未声明为 []", () => {
+  assert.deepEqual(routeFormFromProvider({ defaultInput: ["image", "text"] }).defaultInput, ["text", "image"]);
+  assert.deepEqual(routeFormFromProvider({ defaultInput: [] }).defaultInput, []);
+  assert.deepEqual(routeFormFromProvider({ defaultInput: "text" }).defaultInput, []);
+  // 旧 schema 认识、当前候选清单没有的模态不被静默丢掉。
+  assert.deepEqual(routeFormFromProvider({ defaultInput: ["audio", "text"] }).defaultInput, ["text", "audio"]);
+});
+
+test("defaultInput：选 text + image → 1 条 set 叶子路径，value 是数组", () => {
+  const form = { ...routeFormFromProvider(provider), defaultInput: ["text", "image"] };
+  const plan = buildRouteEditOps(ROUTE_ID, form, provider, { modalities: ["text", "image"] });
+  assert.deepEqual(plan.ops, [
+    { op: "set", path: ["providers", ROUTE_ID, "defaultInput"], value: ["text", "image"] },
+  ]);
+  assert.deepEqual(plan.changed, ["defaultInput"]);
+  assertRouteScoped(plan.ops);
+  assertNoWholeRouteSet(plan.ops);
+});
+
+test("defaultInput：全部取消选择 → 1 条 unset，不是 set []（宿主拒绝空数组）", () => {
+  for (const selection of [[], undefined, null, "", "image"]) {
+    const form = { ...routeFormFromProvider(provider), defaultInput: selection };
+    const plan = buildRouteEditOps(ROUTE_ID, form, provider, { modalities: ["text", "image"] });
+    assert.deepEqual(
+      plan.ops,
+      [{ op: "unset", path: ["providers", ROUTE_ID, "defaultInput"] }],
+      `选择：${JSON.stringify(selection)}`,
+    );
+  }
+});
+
+test("defaultInput：写入顺序按候选清单排，不按点击顺序", () => {
+  const base = routeFormFromProvider({ ...provider, defaultInput: ["image"] });
+  // 先点 image（本来就有）再点 text，表单里 text 追加在末尾；产出仍按白名单顺序。
+  const form = { ...base, defaultInput: normalizeModalities([...base.defaultInput, "text"], ["text", "image"]) };
+  assert.deepEqual(form.defaultInput, ["text", "image"]);
+  const plan = buildRouteEditOps(ROUTE_ID, form, { ...provider, defaultInput: ["image"] }, { modalities: ["text", "image"] });
+  assert.deepEqual(plan.ops, [
+    { op: "set", path: ["providers", ROUTE_ID, "defaultInput"], value: ["text", "image"] },
+  ]);
+});
+
+test("defaultInput：与路由原值做结构比较，集合相同（顺序不同）不产出 op", () => {
+  const swapped = Object.freeze({ ...provider, defaultInput: ["image", "text"] });
+  const plan = buildRouteEditOps(ROUTE_ID, routeFormFromProvider(swapped), swapped, {
+    modalities: ["text", "image"],
+  });
+  assert.deepEqual(plan.ops, []);
+  assert.deepEqual(plan.changed, []);
+  // 引用不同但元素相同：同样不算改动。
+  const sameCopy = Object.freeze({ ...provider, defaultInput: ["text"] });
+  assert.deepEqual(
+    buildRouteEditOps(ROUTE_ID, routeFormFromProvider(provider), sameCopy, { modalities: ["text", "image"] }).ops,
+    [],
+  );
+});
+
+test("defaultInput：路由上已有空数组 → 表单全部不选 → 1 条 unset（空数组不算声明）", () => {
+  const emptyArray = Object.freeze({ ...provider, defaultInput: [] });
+  const plan = buildRouteEditOps(ROUTE_ID, routeFormFromProvider(emptyArray), emptyArray, {
+    modalities: ["text", "image"],
+  });
+  assert.deepEqual(plan.ops, [{ op: "unset", path: ["providers", ROUTE_ID, "defaultInput"] }]);
+});
+
+test("defaultInput：未知模态拒绝写入；路由上已声明的未来模态允许原样保留", () => {
+  const form = { ...routeFormFromProvider(provider), defaultInput: ["text", "future-modality"] };
+  const rejected = buildRouteEditOps(ROUTE_ID, form, provider, { modalities: ["text", "image"] });
+  assert.equal(rejected.errors.defaultInput, "存在未知的输入模态：future-modality");
+  assert.deepEqual(rejected.ops, [], "整体拒绝，避免半套写入");
+
+  const withFuture = Object.freeze({ ...provider, defaultInput: ["text", "future-modality"] });
+  const kept = buildRouteEditOps(ROUTE_ID, routeFormFromProvider(withFuture), withFuture, {
+    modalities: ["text", "image"],
+  });
+  assert.deepEqual(kept.errors, {});
+  assert.deepEqual(kept.ops, [], "已声明的现有值不算用户的新选择，不产出 op");
+  assert.deepEqual(validateModalityForm(routeFormFromProvider(withFuture), withFuture, ["text", "image"]), {});
+});
+
+test("usesRouteDefaultInput：声明了 input（含空数组）或目录描述 → 不受路由默认值影响", () => {
+  const catalog = new Set(["catalog/model"]);
+  assert.equal(usesRouteDefaultInput({ id: "a" }), true);
+  assert.equal(usesRouteDefaultInput({ id: "a", input: [] }), false, "空数组也是明确声明");
+  assert.equal(usesRouteDefaultInput({ id: "a", input: ["text"] }), false);
+  assert.equal(usesRouteDefaultInput({ id: "catalog/model" }, catalog), false);
+  assert.equal(usesRouteDefaultInput({ id: "custom" }, catalog), true);
+  assert.equal(usesRouteDefaultInput(null, catalog), false);
+});
+
+test("countRouteDefaultUsers：第三个字段 input 独立计数，空数组算已声明", () => {
+  const models = [
+    { id: "undeclared" },
+    { id: "empty-array", input: [] },
+    { id: "declared", input: ["text", "image"] },
+    { id: "tokens-only", contextWindow: 128000, maxTokens: 8192 },
+  ];
+  const usage = countRouteDefaultUsers(models);
+  assert.equal(usage.total, 4);
+  assert.equal(usage.input.count, 2);
+  assert.deepEqual(usage.input.models.map((model) => model.id), ["undeclared", "tokens-only"]);
+  // 只声明 token 字段的模型：输入模态受影响、输出上限不受影响（互不合并）。
+  assert.equal(usage.maxTokens.count, 3);
+  assert.equal(usage.maxTokens.models.includes(models[3]), false, "tokens-only 声明了 maxTokens");
+  assert.equal(usage.input.models.includes(models[3]), true, "tokens-only 没声明 input");
+  // 目录描述的 id 同样排除在 input 计数之外。
+  const withCatalog = countRouteDefaultUsers(models, new Set(["tokens-only"]));
+  assert.deepEqual(withCatalog.input.models.map((model) => model.id), ["undeclared"]);
+  // 没有模型时三个字段都是空计数。
+  assert.deepEqual(countRouteDefaultUsers([]).input, { count: 0, models: [] });
+});
+
+test("countRouteDefaultUsers：只声明 input 的模型在模态计数里不受影响、在输出上限计数里受影响", () => {
+  const models = [
+    { id: "input-only", input: ["text", "image"] },
+    { id: "tokens-only", contextWindow: 128000, maxTokens: 8192 },
+  ];
+  const usage = countRouteDefaultUsers(models);
+  assert.equal(usage.input.count, 1);
+  assert.deepEqual(usage.input.models.map((model) => model.id), ["tokens-only"]);
+  assert.equal(usage.maxTokens.count, 1);
+  assert.deepEqual(usage.maxTokens.models.map((model) => model.id), ["input-only"]);
+});
+
+test("describeRouteDefaultInputUsage：写清 input 未声明 / 空数组 / 已声明", () => {
+  assert.equal(describeRouteDefaultInputUsage({ id: "a" }), "未声明 input（路由默认值生效）");
+  assert.equal(describeRouteDefaultInputUsage({ id: "a", input: [] }), "已声明 input（空数组：一个模态都不开）");
+  assert.equal(describeRouteDefaultInputUsage({ id: "a", input: ["text", "image"] }), "已声明 input（text / image）");
+});
+
+test("routeDefaultCountParts / describeRouteDefaultCount：模态字段用自己的措辞", () => {
+  assert.equal(
+    describeRouteDefaultCount("defaultInput", 3, 3),
+    "默认输入模态：当前路由 3 个模型全部使用这个默认值。",
+  );
+  assert.equal(
+    describeRouteDefaultCount("defaultInput", 3, 2),
+    "默认输入模态：当前路由 3 个模型中有 2 个会使用这个默认值。",
+  );
+  assert.equal(
+    describeRouteDefaultCount("defaultInput", 3, 0),
+    "默认输入模态：当前路由 3 个模型都已声明自己的模态，这个多选项不影响它们。",
+  );
+  assert.deepEqual(routeDefaultCountParts("defaultInput", 3, 2), {
+    prefix: "默认输入模态：当前路由 3 个模型中有 ",
+    countText: "2 个",
+    suffix: "会使用这个默认值。",
+  });
+  assert.equal(routeDefaultCountParts("defaultInput", 0, 0), null);
+});
+
+test("modalityChoicesFromSchema：从 array.inner 的 union 读模态，过滤非字符串并去重", () => {
+  const modalSchemaOps = {
+    rehydrate: (serialized) => serialized,
+    nodeAtPath: (root, path) => {
+      if (path.length === 3 && path[0] === "providers" && path[2] === "defaultInput") return root.input;
+      if (path.length === 1 && path[0] === "0" && root?.type === "array") return root.inner;
+      return undefined;
+    },
+  };
+  const namespaceSchema = {
+    input: {
+      type: "array",
+      inner: {
+        type: "union",
+        list: [
+          { value: "text" },
+          { value: "image" },
+          { value: "text" },
+          { value: "" },
+          { value: 42 },
+          { value: "audio" },
+        ],
+      },
+    },
+  };
+  const snapshot = JSON.stringify(namespaceSchema);
+  assert.deepEqual(modalityChoicesFromSchema(modalSchemaOps, namespaceSchema), {
+    choices: ["text", "image", "audio"],
+    source: "schema",
+  });
+  assert.equal(JSON.stringify(namespaceSchema), snapshot, "不修改传入的 schema 对象");
+
+  const broken = [
+    modalityChoicesFromSchema(undefined, {}),
+    modalityChoicesFromSchema(modalSchemaOps, undefined),
+    modalityChoicesFromSchema({}, {}),
+    modalityChoicesFromSchema(modalSchemaOps, { input: { type: "union", list: [{ value: "text" }] } }),
+    modalityChoicesFromSchema(modalSchemaOps, { input: { type: "array" } }),
+    modalityChoicesFromSchema(modalSchemaOps, { input: { type: "array", inner: { type: "union", list: [] } } }),
+    modalityChoicesFromSchema(
+      { rehydrate: () => ({}), nodeAtPath: () => { throw new Error("schema broken"); } },
+      {},
+    ),
+  ];
+  for (const result of broken) {
+    assert.deepEqual(result, { choices: [...FALLBACK_MODALITIES], source: "fallback" });
+  }
+});
+
+test("字段定义固定为十个，defaultInput 追加在末尾，顺序与 labels 一致", () => {
   assert.deepEqual(ROUTE_FIELD_KEYS, [
     "displayName",
     "baseURL",
@@ -251,9 +496,11 @@ test("字段定义固定为九个，顺序与 labels 一致", () => {
     "cacheRetention",
     "transport",
     "timeoutMs",
+    "defaultInput",
   ]);
-  assert.equal(ROUTE_FIELD_DEFINITIONS.length, 9);
-  assert.deepEqual(routeFieldLabels(["baseURL", "defaultMaxTokens"]), ["接口地址", "默认输出上限"]);
+  assert.equal(ROUTE_FIELD_DEFINITIONS.length, 10);
+  assert.deepEqual(ROUTE_FIELD_DEFINITIONS[9], { key: "defaultInput", label: "默认输入模态", kind: "modalities" });
+  assert.deepEqual(routeFieldLabels(["baseURL", "defaultMaxTokens", "defaultInput"]), ["接口地址", "默认输出上限", "默认输入模态"]);
 });
 
 test("cacheRetention / transport 的取值清单与宿主 schema 一致", () => {
@@ -353,7 +600,7 @@ test("清空 displayName → 恰好 1 条 unset（不是 set null）", () => {
   assert.deepEqual(plan.changed, ["displayName"]);
 });
 
-test("九个字段全改 → 9 条 set，全部是叶子路径", () => {
+test("十个字段全改 → 10 条 set，全部是叶子路径", () => {
   const form = {
     displayName: "Renamed",
     baseURL: "http://renamed.invalid/v1",
@@ -364,22 +611,28 @@ test("九个字段全改 → 9 条 set，全部是叶子路径", () => {
     cacheRetention: "long",
     transport: "websocket",
     timeoutMs: "30000",
+    defaultInput: ["text", "image"],
   };
-  const plan = buildRouteEditOps(ROUTE_ID, form, provider);
-  assert.equal(plan.ops.length, 9);
+  const plan = buildRouteEditOps(ROUTE_ID, form, provider, { modalities: ["text", "image"] });
+  assert.equal(plan.ops.length, 10);
   assert.deepEqual(plan.changed, ROUTE_FIELD_KEYS);
   for (const op of plan.ops) {
     assert.equal(op.op, "set");
     assert.equal(op.path.length, 3, `set 必须是叶子字段：${JSON.stringify(op)}`);
   }
   assert.deepEqual(plan.ops[2], { op: "set", path: ["providers", ROUTE_ID, "api"], value: "anthropic-messages" });
+  assert.deepEqual(plan.ops[9], {
+    op: "set",
+    path: ["providers", ROUTE_ID, "defaultInput"],
+    value: ["text", "image"],
+  });
   assertRouteScoped(plan.ops);
 });
 
-test("九个字段全清 → 9 条 unset，全部是叶子路径", () => {
-  const form = Object.fromEntries(ROUTE_FIELD_KEYS.map((key) => [key, ""]));
-  const plan = buildRouteEditOps(ROUTE_ID, form, provider);
-  assert.equal(plan.ops.length, 9);
+test("十个字段全清 → 10 条 unset，全部是叶子路径", () => {
+  const form = clearedForm();
+  const plan = buildRouteEditOps(ROUTE_ID, form, provider, { modalities: ["text", "image"] });
+  assert.equal(plan.ops.length, 10);
   assert.ok(plan.ops.every((op) => op.op === "unset" && op.path.length === 3));
   assert.deepEqual(new Set(plan.ops.map((op) => op.path[2])), new Set(ROUTE_FIELD_KEYS));
   assertRouteScoped(plan.ops);
@@ -421,7 +674,7 @@ test("所有 op 都以 [\"providers\", routeId] 为前缀", () => {
   const scenarios = [
     { ...routeFormFromProvider(provider), baseURL: "https://next.invalid/v1" },
     { ...routeFormFromProvider(provider), displayName: "", timeoutMs: "" },
-    Object.fromEntries(ROUTE_FIELD_KEYS.map((key) => [key, ""])),
+    clearedForm(),
   ];
   for (const form of scenarios) {
     const plan = buildRouteEditOps("another-route", form, { ...provider, id: "another-route" });
@@ -433,7 +686,7 @@ test("任何 op 都不是对整条路由的 set（否则会丢 models / compat /
   const scenarios = [
     routeFormFromProvider(provider),
     { ...routeFormFromProvider(provider), baseURL: "https://next.invalid/v1", defaultMaxTokens: "16384" },
-    Object.fromEntries(ROUTE_FIELD_KEYS.map((key) => [key, ""])),
+    clearedForm(),
     { ...routeFormFromProvider(provider), api: "anthropic-messages" },
   ];
   for (const form of scenarios) {
@@ -447,7 +700,7 @@ test("任何 op 都不是对整条路由的 set（否则会丢 models / compat /
 });
 
 test("携带 models / compat / futureHostField 的路由对象从不被整条读取或重写", () => {
-  // 纯函数只读取九个字段；路由的其它内容连出现在 ops 里的机会都没有。
+  // 纯函数只读取十个字段；路由的其它内容连出现在 ops 里的机会都没有。
   const snapshot = JSON.stringify(provider);
   const form = { ...routeFormFromProvider(provider), baseURL: "https://next.invalid/v1" };
   const plan = buildRouteEditOps(ROUTE_ID, form, provider);
