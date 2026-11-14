@@ -94,7 +94,16 @@ ${MODEL_EDIT_ROUTE_SOURCE}
         return () => {};
       },
     },
-    remote: { llm: { discoverModels: async () => ({ ok: true, value: [] }) } },
+    remote: {
+      llm: { discoverModels: async () => ({ ok: true, value: [] }) },
+      // 工单 #18：密钥区块注入的宿主管道。夹具默认所有引用都已配置且可写；
+      // 具体状态机由 test/client/api-key-harness.mjs 单独覆盖。
+      credentials: {
+        describe: async (refs) => ({ ok: true, value: Object.fromEntries(refs.map((ref) => [ref, { configured: true, writable: true }])) }),
+        set: async () => ({ ok: true, value: undefined }),
+        unset: async () => ({ ok: true, value: undefined }),
+      },
+    },
   };
   client.apply(ctx);
   if (typeof Workbench !== "function") throw new Error("workbench component not registered");

@@ -46,7 +46,7 @@ createContext(sandbox);
 new Script(src, { filename: "client.js" }).runInContext(sandbox);
 console.log(registered?.id === "dsh-model-assistant" ? "PASS" : "FAIL", "13 ModuleLoader.load 已执行");
 console.log(typeof registered?.exports?.apply === "function" ? "PASS" : "FAIL", "14 exports.apply 是函数");
-console.log(registered?.exports?.inject?.join(",") === "slots,configForms,remote,remote.llm" ? "PASS" : "FAIL", "15 inject 列表");
+console.log(registered?.exports?.inject?.join(",") === "slots,configForms,remote,remote.llm,remote.credentials" ? "PASS" : "FAIL", "15 inject 列表");
 
 // 宿主侧以纯 ESM 加载。它的 `@deepseek-ai/*` 导入由 DSH 安装锚点在运行时提供
 // （dsh-app-boot 的 collectInstallationScopePackages），因此在加载前先把这些包

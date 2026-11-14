@@ -17,6 +17,9 @@
    外加引擎产生的每一条告警。
 5. "写入 DSH 设置"通过宿主自己的 `configForms`（`mutate(ops, expectedRevision)`）
    执行带版本围栏的写入，并自动处理冲突（重读 + 重试一次）。
+6. 在同一页编辑当前路由的九个路由级字段，并管理 `apiKeyEnv` 那条引用背后的
+   真实密钥：`credentials.describe` 只给出「已配置 / 未配置」，`set` / `unset`
+   直接写入宿主的凭据存储。密钥不进入配置文件、settingsOps、日志或任何提示。
 
 ## 写入前强制执行的守卫
 

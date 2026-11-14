@@ -99,6 +99,7 @@ touches models/compat: false
 ## 本批没有做（按路线留给后续批次）
 
 - 凭据值管理（`credentials.describe / set / unset`）：第二批。本批 `apiKeyEnv` 只改引用名，不读也不写密钥内容。
+  —— 第二批已完成，证据见 [`../api-key-management/README.md`](../api-key-management/README.md)。
 - 新增路由、从目录新增：第三批。本批只能编辑 / 删除已有路由。
 - 模型拖动排序：第三批。
 - 测试连接（`probeApi` / `probeBase`）：第四批。
