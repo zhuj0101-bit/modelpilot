@@ -8,6 +8,7 @@
 // 逐字节相同：R1–R7 推理预检、目录替换门禁、白名单过滤、重复条目守卫。
 
 import * as React from "react";
+import { estimateContextBudget } from "../core/context-budget.js";
 import { projectPiAi } from "../core/pi-ai-projection.js";
 import {
   describeTemplate,
@@ -18,6 +19,7 @@ import {
   writeDefaultTemplate,
 } from "../core/default-template.js";
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
+import { describeModelRow, diffRow, formFromModel } from "../core/model-edit.js";
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
 import {
   allReasoningLevels,
@@ -65,6 +67,35 @@ function catalogIdsOf(route) {
 }
 
 const PENDING_UNSET = "未设置";
+
+/** 表单里的 token 字符串 → 正整数；空 / 非法值返回 undefined（不展示预算提示）。 */
+function tokenInputOf(text) {
+  if (typeof text !== "string" || text.trim() === "") return undefined;
+  if (!/^\d+$/.test(text.trim())) return undefined;
+  const value = Number(text);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** 预算提示里的整数千分位；负数也保留符号。 */
+function formatTokenNumber(value) {
+  const number = Math.trunc(Number(value));
+  if (!Number.isFinite(number)) return String(value);
+  return number.toLocaleString("en-US");
+}
+
+/**
+ * 宿主会把 compat 物化成对象（可能只有空的 chatTemplateKwargs/Args）。
+ * 只有真正声明了内容时才显示「原样保留」提示，避免每条模型都弹同一句。
+ */
+function hasMeaningfulCompat(compat) {
+  if (compat === null || typeof compat !== "object" || Array.isArray(compat)) return false;
+  return Object.entries(compat).some(([, value]) => {
+    if (value === undefined || value === null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    return true;
+  });
+}
 
 /** 待写入区块展示的是投影后的实际字段值，不是 ops 的 JSON。 */
 function describePendingFields(row) {
@@ -168,6 +199,49 @@ const s = {
     overflowWrap: "anywhere",
   },
   pendingFields: { fontSize: 11, lineHeight: 1.55, opacity: 0.78, overflowWrap: "anywhere" },
+  // 模型列表：一条一行，展开编辑时同一行内表单展开；同时只允许一条展开。
+  modelsPanel: {
+    display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
+  },
+  modelRow: {
+    display: "flex", flexDirection: "column", gap: 4,
+    padding: "8px 0",
+    borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2))",
+  },
+  modelRowFirst: { borderTop: "none", paddingTop: 0 },
+  modelRowHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  modelSummary: { fontSize: 11, lineHeight: 1.55, opacity: 0.72, overflowWrap: "anywhere" },
+  modelEmpty: { fontSize: 12, lineHeight: 1.6, opacity: 0.66 },
+  modelEditor: {
+    display: "flex", flexDirection: "column", gap: 10, marginTop: 6, padding: "10px 12px",
+    borderRadius: 8,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    background: "var(--dsw-alias-bg-base, rgba(128,128,128,0.04))",
+  },
+  compatibility: {
+    padding: "7px 9px", borderRadius: 7, fontSize: 11, lineHeight: 1.55,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
+  },
+  budget: { fontSize: 11, lineHeight: 1.55, color: "var(--dsw-alias-label-primary, inherit)" },
+  budgetWarn: {
+    padding: "6px 9px", borderRadius: 7, fontSize: 11, lineHeight: 1.55,
+    color: "var(--dsw-alias-state-error-primary, #e05252)",
+    background: "var(--dsw-alias-state-warn-tertiary, rgba(220,150,40,0.12))",
+    border: "1px solid var(--dsw-alias-state-warn-secondary, rgba(220,150,40,0.34))",
+  },
+  budgetSuggestion: { marginTop: 2, opacity: 0.92 },
+  editorFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
+  btnDanger: {
+    padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
+    border: "1px solid var(--dsw-alias-state-error-primary, rgba(220,80,80,0.55))",
+    // 实心错误色 + 前景反色：浅色下白字 / 深色下深字，两边都 ≥ 4.5。
+    background: "var(--dsw-alias-state-error-primary, rgba(220,80,80,0.9))",
+    color: "var(--dsw-alias-label-primary-foreground, #fff)", fontFamily: "inherit", fontWeight: 600,
+  },
   warn: {
     padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
     background: "var(--dsw-alias-state-warn-tertiary, rgba(220,150,40,0.12))",
@@ -268,7 +342,7 @@ function Field({ label, children, hint, style }) {
  * 不用原生 datalist：datalist 会按当前输入值过滤候选项，选中一个之后
  * 其余的就不再可见（工单问题 1）。这里始终渲染完整候选列表。
  */
-function TokenCountField({ label, value, candidates, error, placeholder, onChange }) {
+function TokenCountField({ label, value, candidates, error, placeholder, ariaLabel, onChange }) {
   const [open, setOpen] = React.useState(false);
   const boxRef = React.useRef(null);
 
@@ -299,6 +373,7 @@ function TokenCountField({ label, value, candidates, error, placeholder, onChang
           onChange={onChange}
           onFocus={() => setOpen(true)}
           placeholder={placeholder}
+          aria-label={ariaLabel}
           inputMode="numeric"
           role="combobox"
           aria-expanded={open}
@@ -550,6 +625,295 @@ function ModelPicker({
   );
 }
 
+/**
+ * maxTokens 的实时影响提示：按 DSH 默认压缩策略估算可用上下文。
+ *
+ * 窗口或输出为空 / 非法时不渲染，避免显示 0 或 NaN；两处（新增 / 编辑）
+ * 复用同一个 estimateContextBudget。具体数字放在输入框下面，底部还有一段
+ * 抽象说明。
+ */
+function BudgetHint({ contextWindow, maxTokens }) {
+  const windowValue = tokenInputOf(contextWindow);
+  const outputValue = tokenInputOf(maxTokens);
+  if (windowValue === undefined || outputValue === undefined) return null;
+  const estimate = estimateContextBudget(windowValue, outputValue);
+  if (estimate === null) return null;
+
+  if (estimate.ok) {
+    return (
+      <div style={s.budget} role="status">
+        可用上下文 {formatTokenNumber(estimate.threshold)}（零损失 ✓）
+        <div style={s.fieldHint}>按默认压缩策略估算；实际值以宿主运行时为准。</div>
+      </div>
+    );
+  }
+
+  const severe = estimate.loss > 0.1;
+  const percent = (estimate.loss * 100).toFixed(1);
+  return (
+    <div style={severe ? s.budgetWarn : s.budget} role="status">
+      {severe ? "⚠ " : ""}可用上下文 {formatTokenNumber(estimate.threshold)}（比最优少 {percent}%）
+      {severe && estimate.freeBoundary > 0 ? (
+        <div style={s.budgetSuggestion}>建议 ≤ {formatTokenNumber(estimate.freeBoundary)} 可零损失</div>
+      ) : null}
+      <div style={s.fieldHint}>按默认压缩策略估算；实际值以宿主运行时为准。</div>
+    </div>
+  );
+}
+
+const EDIT_FIELD_LABELS = Object.freeze({
+  name: "显示名",
+  contextWindow: "上下文窗口",
+  maxTokens: "输出上限",
+  input: "输入模态",
+  reasoning: "推理档位",
+});
+
+/**
+ * 行内编辑表单。每个字段都预填现有值；保存按钮在改动集为空时禁用。
+ * 表单状态由 Workbench 持有，便于把 diffRow 与 projectPiAi(update) 接起来。
+ */
+function EditModelForm({
+  model,
+  modelId,
+  form,
+  errors,
+  projection,
+  changed,
+  canSave,
+  busy,
+  writable,
+  guard,
+  onChange,
+  onTokenChange,
+  onToggleLevel,
+  onSave,
+  onCancel,
+  onDelete,
+}) {
+  const changedFields = Object.keys(changed);
+  const hasCompat = hasMeaningfulCompat(model?.compat);
+  const stale = (projection?.warnings ?? []).find((warning) => warning.code === "stale-index");
+  const unsupported = projection?.unsupportedControls ?? [];
+
+  return (
+    <div style={s.modelEditor} aria-label={`编辑表单 ${modelId}`}>
+      <div style={s.row}>
+        <Field label="显示名（可选）" hint="">
+          <input
+            style={s.input}
+            value={form.name}
+            onChange={(event) => onChange({ name: event.target.value })}
+            placeholder="留空则不写"
+            aria-label="编辑显示名"
+          />
+        </Field>
+      </div>
+
+      <div style={s.row}>
+        <TokenCountField
+          label="上下文窗口 (contextWindow)"
+          value={form.contextWindow}
+          candidates={CONTEXT_WINDOW_CANDIDATES}
+          error={errors.contextWindow}
+          placeholder="如 131072"
+          ariaLabel="编辑上下文窗口"
+          onChange={(event) => onTokenChange(event, "contextWindow")}
+        />
+        <TokenCountField
+          label="输出上限 (maxTokens)"
+          value={form.maxTokens}
+          candidates={MAX_TOKENS_CANDIDATES}
+          error={errors.maxTokens}
+          placeholder="如 8192"
+          ariaLabel="编辑输出上限"
+          onChange={(event) => onTokenChange(event, "maxTokens")}
+        />
+        <div style={s.levels}>
+          <span style={s.label}>推理档位（多选）</span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {PI_AI_LEVELS.map((level) => (
+              <label key={level} style={{ ...s.chip, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={form.reasoningLevels.includes(level)}
+                  onChange={() => onToggleLevel(level)}
+                  aria-label={`编辑档位 ${level}`}
+                />
+                {level}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <button type="button" style={s.btnSmall} onClick={() => onChange({ reasoningLevels: allReasoningLevels() })}>全选</button>
+            <button type="button" style={s.btnSmall} onClick={() => onChange({ reasoningLevels: [] })}>全不选</button>
+            <button type="button" style={s.btnSmall} onClick={() => onChange({ reasoningLevels: defaultReasoningLevels() })}>恢复默认</button>
+          </div>
+          {guard ? <div style={s.err}>{guard}</div> : null}
+          {form.reasoningLevels.length === 0 ? (
+            <span style={s.sub}>全不选：不修改现有 reasoningEfforts（一期只支持修改档位，不清空字段）。</span>
+          ) : null}
+        </div>
+      </div>
+
+      <BudgetHint contextWindow={form.contextWindow} maxTokens={form.maxTokens} />
+
+      <div style={s.row}>
+        <label style={{ ...s.chip, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={form.inputText}
+            onChange={(event) => onChange({ inputText: event.target.checked })}
+            aria-label="编辑输入模态 text"
+          /> text
+        </label>
+        <label style={{ ...s.chip, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={form.inputImage}
+            onChange={(event) => onChange({ inputImage: event.target.checked })}
+            aria-label="编辑输入模态 image"
+          /> image
+        </label>
+      </div>
+
+      {hasCompat ? (
+        <div style={s.compatibility}>ⓘ 该模型还声明了 compat 字段，保存时会原样保留。</div>
+      ) : null}
+
+      {!writable ? <div style={s.warn}>当前配置不可写（writable: false），保存已禁用。</div> : null}
+
+      {stale ? <div style={s.err}>{stale.message} 请取消编辑后重新打开。</div> : null}
+      {unsupported.filter((item) => item.reason !== "stale-index").map((item, index) => (
+        <div key={`eu${index}`} style={s.err}>
+          不可写：<strong>{item.control}</strong> — {item.reason}
+          {item.message ? `（${item.message}）` : ""}
+        </div>
+      ))}
+
+      <div style={s.sub}>
+        改动字段：{changedFields.length === 0 ? "无（保存已禁用）" : changedFields.map((field) => EDIT_FIELD_LABELS[field] ?? field).join(" / ")}
+      </div>
+
+      <details style={s.details}>
+        <summary style={s.summary}>
+          保存将写入的 settingsOps（{projection?.settingsOps?.length ?? 0} 条）· 点击展开
+        </summary>
+        <pre style={s.pre}>{JSON.stringify(projection?.settingsOps ?? [], null, 2)}</pre>
+      </details>
+
+      <div style={s.editorFooter}>
+        <span style={s.sub}>写入走宿主 configForms（修订号围栏 + 冲突自动重读）。</span>
+        <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" style={s.btn} onClick={onCancel} aria-label="取消编辑">取消</button>
+          <button
+            type="button"
+            style={busy ? { ...s.btnDanger, opacity: 0.55, cursor: "not-allowed" } : s.btnDanger}
+            disabled={busy}
+            onClick={onDelete}
+            aria-label="删除模型"
+          >
+            删除
+          </button>
+          <button
+            type="button"
+            style={canSave ? s.btnPrimary : { ...s.btn, opacity: 0.5, cursor: "not-allowed" }}
+            disabled={!canSave}
+            onClick={onSave}
+            aria-label="保存修改"
+          >
+            {busy ? "保存中…" : "保存修改"}
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** 自绘的删除二次确认（不用原生 confirm，避免破坏主题）。 */
+function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
+  const dialogRef = React.useRef(null);
+  const cancelRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (cancelRef.current !== null) cancelRef.current.focus();
+  }, []);
+
+  function handleKeyDown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const root = dialogRef.current;
+    if (root === null) return;
+    const focusables = [...root.querySelectorAll("button:not([disabled])")];
+    if (focusables.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !root.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  return (
+    <div
+      style={s.overlay}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        style={s.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label="删除模型确认"
+        onKeyDown={handleKeyDown}
+      >
+        <div style={s.pickerHeader}>
+          <span style={s.h}>删除模型</span>
+          <span style={s.pickerHint}>二次确认</span>
+        </div>
+        <p style={s.sub}>
+          确定要从 <b>{routeId}</b> 删除模型 <b>{modelId}</b> 吗？
+        </p>
+        <p style={s.sub}>
+          删除会用一条 set 重写该路由的 models 数组（长度减一），不会在数组里留下空洞；此操作无法撤销。
+        </p>
+        <div style={s.pickerFooter}>
+          <span style={s.pickerHint}>模型条目计数会立即同步。</span>
+          <span style={{ display: "flex", gap: 8 }}>
+            <button ref={cancelRef} type="button" style={s.btn} onClick={onCancel} aria-label="取消删除">取消</button>
+            <button
+              type="button"
+              style={busy ? { ...s.btnDanger, opacity: 0.55, cursor: "not-allowed" } : s.btnDanger}
+              disabled={busy}
+              onClick={onConfirm}
+              aria-label="确认删除"
+            >
+              {busy ? "删除中…" : "删除"}
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** 工作台界面。 */
 function Workbench({ configForms, discoverModels }) {
   const scope = configForms.get(LLM_NS);
@@ -604,6 +968,15 @@ function Workbench({ configForms, discoverModels }) {
 
   const [template, setTemplate] = React.useState(() => readDefaultTemplate(storage));
 
+  // 行内编辑：同时只允许一条展开。editModelId 是打开编辑时的 id，
+  // 用于 projectPiAi(update) 的 stale-index 校验（防止配置被别处改动）。
+  const [editingIndex, setEditingIndex] = React.useState(null);
+  const [editForm, setEditForm] = React.useState(null);
+  const [editErrors, setEditErrors] = React.useState({ contextWindow: false, maxTokens: false });
+  const [editModelId, setEditModelId] = React.useState("");
+  // 自绘删除确认的目标；null 表示弹窗关闭。
+  const [deleteTarget, setDeleteTarget] = React.useState(null);
+
   // 首次挂载：有模板就填进表单。只跑一次，用户之后的手动编辑不被覆盖。
   const templateApplied = React.useRef(false);
   React.useEffect(() => {
@@ -650,6 +1023,10 @@ function Workbench({ configForms, discoverModels }) {
     setPickerSelected(new Set());
     setPickerAckReplace(false);
     setBatchProjection(null);
+    setEditingIndex(null);
+    setEditForm(null);
+    setEditModelId("");
+    setDeleteTarget(null);
   }, [routeId]);
 
   // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
@@ -691,6 +1068,42 @@ function Workbench({ configForms, discoverModels }) {
   );
   const canApply = writable && !busy && reasoningGuard === null && modelId.trim() !== "" && projection && !blocked && !hardStop && projection.settingsOps.length > 0;
 
+  // ── 行内编辑：diffRow 只产出真正变化的字段；projectPiAi(update) 再以现有行为基底合并 ──
+  const editModel = editingIndex === null ? undefined : routeModels[editingIndex];
+  const editDiff = React.useMemo(() => {
+    if (editingIndex === null || editForm === null) return {};
+    return diffRow(editForm, editModel);
+  }, [editingIndex, editForm, editModel]);
+  const editDraft = React.useMemo(() => ({ id: editModelId, ...editDiff }), [editModelId, editDiff]);
+  const editProjection = React.useMemo(() => {
+    if (editingIndex === null || editModelId === "") return undefined;
+    try {
+      return projectPiAi(
+        editDraft,
+        { providers, catalogModels: catalogIds },
+        { routeId, mode: "update", index: editingIndex },
+      );
+    } catch (error) {
+      return {
+        settingsOps: [],
+        warnings: [{ code: "engine-error", message: String(error?.message ?? error) }],
+        unsupportedControls: [],
+        appliedFields: [],
+        profileOnlyFields: [],
+      };
+    }
+  }, [editDraft, providers, routeId, editingIndex, editModelId, catalogIds]);
+  const editGuard = editForm === null ? null : reasoningLevelsGuard(editForm.reasoningLevels);
+  const editStale = (editProjection?.warnings ?? []).some((warning) => warning.code === "stale-index");
+  const editCanSave =
+    writable &&
+    !busy &&
+    editGuard === null &&
+    Object.keys(editDiff).length > 0 &&
+    !editStale &&
+    (editProjection?.unsupportedControls?.length ?? 0) === 0 &&
+    (editProjection?.settingsOps?.length ?? 0) > 0;
+
   /** token 输入：合法值写入状态；非法值不落状态，回显最近一次合法值并给出错误。 */
   function changeTokenCount(event, current, setValue, setError) {
     const next = event.target.value;
@@ -701,6 +1114,124 @@ function Workbench({ configForms, discoverModels }) {
     }
     setError(true);
     event.target.value = current;
+  }
+
+  /** 打开某一行的编辑表单；换行时前一条自动收起（editingIndex 只有一个）。 */
+  function openEditor(index) {
+    const model = routeModels[index];
+    if (model === undefined) return;
+    setEditingIndex(index);
+    setEditModelId(typeof model.id === "string" ? model.id : "");
+    setEditForm(formFromModel(model));
+    setEditErrors({ contextWindow: false, maxTokens: false });
+    setDeleteTarget(null);
+    setToast(null);
+  }
+
+  function closeEditor() {
+    setEditingIndex(null);
+    setEditForm(null);
+    setEditModelId("");
+    setEditErrors({ contextWindow: false, maxTokens: false });
+    setDeleteTarget(null);
+  }
+
+  function updateEditForm(patch) {
+    setEditForm((current) => (current === null ? current : { ...current, ...patch }));
+  }
+
+  /** 编辑表单的 token 输入：与新增流程同样拒绝非法值，回显最近一次合法值。 */
+  function changeEditToken(event, field) {
+    const next = event.target.value;
+    if (next === "" || isPositiveTokenCount(next)) {
+      updateEditForm({ [field]: next });
+      setEditErrors((current) => ({ ...current, [field]: false }));
+      return;
+    }
+    setEditErrors((current) => ({ ...current, [field]: true }));
+    event.target.value = editForm?.[field] ?? "";
+  }
+
+  function toggleEditLevel(level) {
+    setEditForm((current) => (current === null
+      ? current
+      : { ...current, reasoningLevels: toggleReasoningLevel(current.reasoningLevels, level) }));
+  }
+
+  /** 保存编辑：恰好一条 set，路径是 models.<打开时的下标>。 */
+  async function saveEdit() {
+    if (!editCanSave || !editProjection) return;
+    setBusy(true);
+    setToast(null);
+    try {
+      const ok = await scope.mutate(editProjection.settingsOps);
+      if (ok) {
+        setToast({ tone: "good", text: `已更新 ${routeId} / ${editModelId}` });
+        closeEditor();
+      } else {
+        setToast({ tone: "bad", text: "更新被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+      }
+    } catch (error) {
+      setToast({ tone: "bad", text: `更新异常：${error?.message ?? error}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 删除请求：打开自绘二次确认弹窗。 */
+  function requestDelete() {
+    if (editingIndex === null || editModelId === "") return;
+    setDeleteTarget({ index: editingIndex, id: editModelId });
+  }
+
+  /**
+   * 确认删除。先按最新快照复核下标与 id，防止弹窗打开期间配置被别处改动
+   * 而删错行；随后走 projectPiAi(remove) 的一条 set 重写整个 models 数组。
+   */
+  async function confirmDelete() {
+    if (deleteTarget === null) return;
+    const latestProviders = providersOf(scope.getSnapshot());
+    const latestRoute = latestProviders[routeId];
+    const latestModels = Array.isArray(latestRoute?.models) ? latestRoute.models : [];
+    if (latestModels[deleteTarget.index]?.id !== deleteTarget.id) {
+      setDeleteTarget(null);
+      setToast({ tone: "bad", text: "模型下标已失效，配置可能已被别处修改；已重新读取，请核对后重试" });
+      return;
+    }
+    const projectionResult = projectPiAi(
+      {},
+      { providers: latestProviders },
+      { routeId, mode: "remove", index: deleteTarget.index },
+    );
+    if (projectionResult.settingsOps.length === 0) {
+      setDeleteTarget(null);
+      setToast({ tone: "bad", text: "删除被拒绝：模型下标已失效，请重新读取后重试" });
+      return;
+    }
+    setBusy(true);
+    setToast(null);
+    try {
+      const ok = await scope.mutate(projectionResult.settingsOps);
+      if (ok) {
+        setToast({ tone: "good", text: `已删除 ${routeId} / ${deleteTarget.id}` });
+        setDeleteTarget(null);
+        if (editingIndex === deleteTarget.index) closeEditor();
+      } else {
+        setToast({ tone: "bad", text: "删除被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+      }
+    } catch (error) {
+      setToast({ tone: "bad", text: `删除异常：${error?.message ?? error}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 「+ 新增」回到现有新增表单：滚动到模型 ID 并聚焦；不改动选择器流程。 */
+  function focusCreateForm() {
+    const input = typeof document === "undefined" ? null : document.getElementById("modelpilot-model-id");
+    if (input === null) return;
+    if (typeof input.scrollIntoView === "function") input.scrollIntoView({ block: "center" });
+    if (typeof input.focus === "function") input.focus();
   }
 
   /**
@@ -957,6 +1488,60 @@ function Workbench({ configForms, discoverModels }) {
         </Field>
       </div>
 
+      <div style={s.modelsPanel} aria-label="该路由的模型列表">
+        <div style={s.pendingHeader}>
+          <span style={s.pendingTitle}>该路由的模型（{routeModels.length} 条）</span>
+          <button type="button" style={s.btnSmall} onClick={focusCreateForm} aria-label="新增模型">
+            + 新增
+          </button>
+        </div>
+        {routeModels.length === 0 ? (
+          <div style={s.modelEmpty}>该路由没有模型。可在下方新增，或从端点拉取后批量添加。</div>
+        ) : routeModels.map((model, index) => {
+          const modelKey = typeof model?.id === "string" && model.id !== "" ? model.id : `#${index}`;
+          return (
+            <div
+              key={`${modelKey}:${index}`}
+              style={index === 0 ? { ...s.modelRow, ...s.modelRowFirst } : s.modelRow}
+              aria-label={`模型 ${modelKey}`}
+            >
+              <div style={s.modelRowHead}>
+                <span style={s.pendingName}>{modelKey}</span>
+                <button
+                  type="button"
+                  style={s.btnSmall}
+                  onClick={() => openEditor(index)}
+                  aria-label={`编辑模型 ${modelKey}`}
+                >
+                  编辑
+                </button>
+              </div>
+              <span style={s.modelSummary}>{describeModelRow(model, humanizeTokenCount)}</span>
+              {editingIndex === index && editForm !== null ? (
+                <EditModelForm
+                  model={model}
+                  modelId={editModelId}
+                  form={editForm}
+                  errors={editErrors}
+                  projection={editProjection}
+                  changed={editDiff}
+                  canSave={editCanSave}
+                  busy={busy}
+                  writable={writable}
+                  guard={editGuard}
+                  onChange={updateEditForm}
+                  onTokenChange={changeEditToken}
+                  onToggleLevel={toggleEditLevel}
+                  onSave={saveEdit}
+                  onCancel={closeEditor}
+                  onDelete={requestDelete}
+                />
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
       {fetchState === "failed" ? <div style={s.err}>拉取失败：{fetchError}</div> : null}
       {fetchState === "done" ? (
         <div style={s.row}>
@@ -973,6 +1558,7 @@ function Workbench({ configForms, discoverModels }) {
           candidates={CONTEXT_WINDOW_CANDIDATES}
           error={contextWindowError}
           placeholder="如 131072"
+          ariaLabel="上下文窗口"
           onChange={(e) => changeTokenCount(e, contextWindow, setContextWindow, setContextWindowError)}
         />
         <TokenCountField
@@ -981,6 +1567,7 @@ function Workbench({ configForms, discoverModels }) {
           candidates={MAX_TOKENS_CANDIDATES}
           error={maxTokensError}
           placeholder="如 8192"
+          ariaLabel="输出上限"
           onChange={(e) => changeTokenCount(e, maxTokens, setMaxTokens, setMaxTokensError)}
         />
         <div style={s.levels}>
@@ -1008,6 +1595,8 @@ function Workbench({ configForms, discoverModels }) {
           ) : null}
         </div>
       </div>
+
+      <BudgetHint contextWindow={contextWindow} maxTokens={maxTokens} />
 
       <div style={s.row}>
         <label style={{ ...s.chip, cursor: "pointer" }}>
@@ -1202,7 +1791,8 @@ function Workbench({ configForms, discoverModels }) {
       <p style={s.sub}>
         支持的推理档位：{PI_AI_LEVELS.join(" / ")}　·　输入模态：{MODALITIES.join(" / ")}
         <br />
-        maxTokens 同时充当该模型的默认请求输出预算（DSH 双重身份），不填则跟随路由默认。
+        maxTokens 有两个作用：① 这个模型最多能输出多少；② 每次请求默认预留多少输出量。
+        后者会从上下文窗口里扣掉，填得越大能装的历史越少。
       </p>
 
       {pickerOpen ? (
@@ -1222,6 +1812,16 @@ function Workbench({ configForms, discoverModels }) {
           onAckChange={setPickerAckReplace}
           onConfirm={confirmPicker}
           onCancel={closePicker}
+        />
+      ) : null}
+
+      {deleteTarget ? (
+        <DeleteConfirmDialog
+          routeId={routeId}
+          modelId={deleteTarget.id}
+          busy={busy}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={confirmDelete}
         />
       ) : null}
     </div>
