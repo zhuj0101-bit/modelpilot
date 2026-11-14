@@ -215,6 +215,8 @@ const s = {
   modelRowHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
   modelSummary: { fontSize: 11, lineHeight: 1.55, opacity: 0.72, overflowWrap: "anywhere" },
   modelEmpty: { fontSize: 12, lineHeight: 1.6, opacity: 0.66 },
+  // 编辑表单顶部：填入默认模板 + 模板摘要 / 无模板说明。
+  templateBar: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
   modelEditor: {
     display: "flex", flexDirection: "column", gap: 10, marginTop: 6, padding: "10px 12px",
     borderRadius: 8,
@@ -677,6 +679,7 @@ function EditModelForm({
   model,
   modelId,
   form,
+  template,
   errors,
   projection,
   changed,
@@ -687,6 +690,7 @@ function EditModelForm({
   onChange,
   onTokenChange,
   onToggleLevel,
+  onFillTemplate,
   onSave,
   onCancel,
   onDelete,
@@ -698,6 +702,23 @@ function EditModelForm({
 
   return (
     <div style={s.modelEditor} aria-label={`编辑表单 ${modelId}`}>
+      <div style={s.templateBar}>
+        <button
+          type="button"
+          style={template === null ? { ...s.btnSmall, opacity: 0.55, cursor: "not-allowed" } : s.btnSmall}
+          disabled={template === null}
+          onClick={onFillTemplate}
+          aria-label="填入默认模板"
+        >
+          填入默认模板
+        </button>
+        <span style={s.fieldHint}>
+          {template === null
+            ? "尚未设置默认模板，先在新增表单里「存为默认模板」"
+            : `默认模板：${describeTemplate(template, humanizeTokenCount)}`}
+        </span>
+      </div>
+
       <div style={s.row}>
         <Field label="显示名（可选）" hint="">
           <input
@@ -1140,6 +1161,18 @@ function Workbench({ configForms, discoverModels }) {
     setEditForm((current) => (current === null ? current : { ...current, ...patch }));
   }
 
+  /**
+   * 把已保存的默认模板填进编辑表单。
+   *
+   * templateToForm 不返回 name，浅合并不会动显示名。模板里为空的字段会
+   * 如实清空表单值 —— 这是「整体替换」，不是「只覆盖有值的字段」。
+   */
+  function fillEditTemplate() {
+    if (template === null) return;
+    updateEditForm(templateToForm(template));
+    setEditErrors({ contextWindow: false, maxTokens: false });
+  }
+
   /** 编辑表单的 token 输入：与新增流程同样拒绝非法值，回显最近一次合法值。 */
   function changeEditToken(event, field) {
     const next = event.target.value;
@@ -1522,6 +1555,7 @@ function Workbench({ configForms, discoverModels }) {
                   model={model}
                   modelId={editModelId}
                   form={editForm}
+                  template={template}
                   errors={editErrors}
                   projection={editProjection}
                   changed={editDiff}
@@ -1532,6 +1566,7 @@ function Workbench({ configForms, discoverModels }) {
                   onChange={updateEditForm}
                   onTokenChange={changeEditToken}
                   onToggleLevel={toggleEditLevel}
+                  onFillTemplate={fillEditTemplate}
                   onSave={saveEdit}
                   onCancel={closeEditor}
                   onDelete={requestDelete}
@@ -1762,6 +1797,25 @@ function Workbench({ configForms, discoverModels }) {
           }}
         >
           存为默认模板
+        </button>
+        <button
+          type="button"
+          style={template === null ? { ...s.btn, opacity: 0.55, cursor: "not-allowed" } : s.btn}
+          disabled={template === null}
+          onClick={() => {
+            if (template === null) return;
+            const form = templateToForm(template);
+            setContextWindow(form.contextWindow);
+            setMaxTokens(form.maxTokens);
+            setContextWindowError(false);
+            setMaxTokensError(false);
+            setInputText(form.inputText);
+            setInputImage(form.inputImage);
+            setReasoningLevels(form.reasoningLevels);
+          }}
+          aria-label="填入默认模板"
+        >
+          填入默认模板
         </button>
       </div>
 
