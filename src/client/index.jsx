@@ -74,21 +74,24 @@ const s = {
   row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" },
   field: { display: "flex", flexDirection: "column", gap: 4, minWidth: 148 },
   fieldHint: { fontSize: 11, lineHeight: 1.4, opacity: 0.62 },
-  fieldError: { fontSize: 11, lineHeight: 1.4, color: "#e05252" },
+  fieldError: { fontSize: 11, lineHeight: 1.4, color: "var(--dsw-alias-state-error-primary, #e05252)" },
   // 提示行始终占位：高度固定，内容出现/消失时字段高度不变（问题 3）。
   hintLine: { minHeight: 16, height: 16, lineHeight: "16px", display: "flex", alignItems: "center" },
   label: { fontSize: 11, opacity: 0.7, letterSpacing: 0.2 },
   comboBox: { position: "relative", display: "flex", alignItems: "stretch" },
   comboToggle: {
     padding: "0 8px", fontSize: 11, cursor: "pointer", borderRadius: 6,
-    border: "1px solid rgba(128,128,128,0.32)", background: "rgba(128,128,128,0.1)",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1))",
     color: "inherit", fontFamily: "inherit", marginLeft: 4,
   },
   comboPanel: {
     position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
     maxHeight: 220, overflowY: "auto", padding: 4, borderRadius: 8,
-    border: "1px solid rgba(128,128,128,0.32)",
-    background: "Canvas", boxShadow: "0 6px 20px rgba(0,0,0,0.18)",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+    // 不用系统色 Canvas：它在 Firefox / WebView 下不跟随 color-scheme。
+    background: "var(--dsw-alias-bg-layer-1, Canvas)",
+    boxShadow: "0 6px 20px rgba(0,0,0,0.18)",
   },
   comboItem: {
     display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -96,41 +99,51 @@ const s = {
     border: "none", background: "transparent", color: "inherit",
     fontFamily: "inherit", cursor: "pointer", textAlign: "left",
   },
-  comboItemActive: { background: "rgba(90,140,230,0.22)" },
+  comboItemActive: { background: "var(--dsw-alias-interactive-bg-hover, rgba(90,140,230,0.22))" },
   comboItemHint: { fontSize: 10, opacity: 0.6 },
   input: {
     padding: "6px 8px", fontSize: 13, borderRadius: 6,
-    border: "1px solid rgba(128,128,128,0.32)", background: "transparent",
-    color: "inherit", fontFamily: "inherit", minWidth: 0,
+    border: "1px solid var(--dsw-alias-border-l4, rgba(128,128,128,0.32))",
+    // 关键：不用 transparent。显式透明会让原生 <select> 弹出层退回平台浅色。
+    background: "var(--dsw-alias-bg-layer-1, transparent)",
+    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit", minWidth: 0,
     // 固定盒高：原生 select 与 input 的默认高度不同，同一行 flex-end
     // 对齐时顶边会差 2px（验收判据 6）。
     boxSizing: "border-box", height: 29,
+    // 显式继承 color-scheme，保证原生下拉、复选框、滚动条都跟随宿主主题。
+    colorScheme: "inherit",
   },
   pre: {
     margin: 0, padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5,
-    background: "rgba(128,128,128,0.09)", overflowX: "auto",
+    background: "var(--dsw-alias-markdown-code-block, rgba(128,128,128,0.09))",
+    overflowX: "auto",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   },
   warn: {
     padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
-    background: "rgba(220,150,40,0.12)", border: "1px solid rgba(220,150,40,0.34)",
+    background: "var(--dsw-alias-state-warn-tertiary, rgba(220,150,40,0.12))",
+    border: "1px solid var(--dsw-alias-state-warn-secondary, rgba(220,150,40,0.34))",
   },
   err: {
     padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
-    background: "rgba(220,80,80,0.12)", border: "1px solid rgba(220,80,80,0.34)",
+    background: "var(--dsw-alias-state-error-secondary, rgba(220,80,80,0.12))",
+    border: "1px solid var(--dsw-alias-state-error-primary, rgba(220,80,80,0.34))",
   },
   ok: {
     padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
-    background: "rgba(80,170,110,0.12)", border: "1px solid rgba(80,170,110,0.34)",
+    background: "var(--dsw-alias-state-success-secondary, rgba(80,170,110,0.12))",
+    border: "1px solid var(--dsw-alias-state-success-primary, rgba(80,170,110,0.34))",
   },
   btn: {
     padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
-    border: "1px solid rgba(128,128,128,0.36)", background: "rgba(128,128,128,0.12)",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.36))",
+    background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.12))",
     color: "inherit", fontFamily: "inherit",
   },
   btnSmall: {
     padding: "3px 9px", fontSize: 11, borderRadius: 6, cursor: "pointer",
-    border: "1px solid rgba(128,128,128,0.32)", background: "rgba(128,128,128,0.1)",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+    background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1))",
     color: "inherit", fontFamily: "inherit",
   },
   btnLink: {
@@ -141,13 +154,15 @@ const s = {
   levels: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 340px", minWidth: 280 },
   btnPrimary: {
     padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
-    border: "1px solid rgba(90,140,230,0.55)", background: "rgba(90,140,230,0.22)",
+    border: "1px solid var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55))",
+    background: "var(--dsw-alias-button-primary-fill, rgba(90,140,230,0.22))",
     color: "inherit", fontFamily: "inherit", fontWeight: 600,
   },
   chip: {
     display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px",
-    borderRadius: 999, fontSize: 11, border: "1px solid rgba(128,128,128,0.3)",
-    background: "rgba(128,128,128,0.1)",
+    borderRadius: 999, fontSize: 11,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3))",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1))",
   },
 };
 
@@ -482,7 +497,7 @@ function Workbench({ configForms, discoverModels }) {
 
       <div style={s.row}>
         <Field label="路由 (provider)" hint="">
-          <select style={s.input} value={routeId} onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}>
+          <select style={{ ...s.input, colorScheme: "inherit" }} value={routeId} onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}>
             {routes.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}

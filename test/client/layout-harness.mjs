@@ -9,6 +9,15 @@
 // 状态更新是同步重渲染 —— 测试在页面 load 前就能拿到矩形结果，因此
 // `--dump-dom` 无需等待异步任务。
 
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..", "..");
+
 export const SHIM_SOURCE = String.raw`
 (() => {
   const hookStores = new Map();
@@ -418,4 +427,308 @@ export function buildLayoutHtml(bundleSource) {
     `<script>${FIXTURE_SOURCE}</script>`,
     "</body></html>",
   ].join("\n");
+}
+
+// ── 工单 #20：深色主题回归夹具 ────────────────────────────────────────────
+//
+// 宿主在 <body> 上写入这些 --dsw-* token，并把 documentElement 的
+// color-scheme 设成当前主题。夹具里复刻这两件事，才能测到真实 token 解析，
+// 而不是所有 var() 都走 fallback。
+
+export const THEME_TOKENS = Object.freeze({
+  light: Object.freeze({
+    "--dsw-alias-bg-base": "#ffffff",
+    "--dsw-alias-bg-layer-1": "#f7f8fa",
+    "--dsw-alias-border-l2": "#0000001a",
+    "--dsw-alias-border-l4": "#00000026",
+    "--dsw-alias-label-primary": "#1a1a1a",
+    "--dsw-alias-label-tertiary": "#8a8a8a",
+    "--dsw-alias-state-error-primary": "#d93026",
+    "--dsw-alias-state-error-secondary": "#d9302620",
+    "--dsw-alias-state-warn-secondary": "#b7791f57",
+    "--dsw-alias-state-warn-tertiary": "#b7791f1f",
+    "--dsw-alias-state-success-primary": "#2f855a",
+    "--dsw-alias-state-success-secondary": "#2f855a1f",
+    "--dsw-alias-markdown-code-block": "#f2f3f5",
+    "--dsw-alias-interactive-bg-hover": "#0000000d",
+    "--dsw-alias-button-primary-fill": "#3b6fd41f",
+    "--dsw-alias-state-business-primary": "#3b6fd4",
+  }),
+  dark: Object.freeze({
+    "--dsw-alias-bg-base": "#1b1c1f",
+    "--dsw-alias-bg-layer-1": "#232529",
+    "--dsw-alias-border-l2": "#ffffff1f",
+    "--dsw-alias-border-l4": "#ffffff29",
+    "--dsw-alias-label-primary": "#ececf0",
+    "--dsw-alias-label-tertiary": "#9a9ba0",
+    "--dsw-alias-state-error-primary": "#f0736a",
+    "--dsw-alias-state-error-secondary": "#f0736a26",
+    "--dsw-alias-state-warn-secondary": "#e0b2525c",
+    "--dsw-alias-state-warn-tertiary": "#e0b25224",
+    "--dsw-alias-state-success-primary": "#6cc48d",
+    "--dsw-alias-state-success-secondary": "#6cc48d24",
+    "--dsw-alias-markdown-code-block": "#1f2125",
+    "--dsw-alias-interactive-bg-hover": "#ffffff12",
+    "--dsw-alias-button-primary-fill": "#5a8ce63d",
+    "--dsw-alias-state-business-primary": "#7aa4ee",
+  }),
+});
+
+function themeRule(scheme) {
+  const declarations = Object.entries(THEME_TOKENS[scheme])
+    .map(([name, value]) => `    ${name}: ${value};`)
+    .join("\n");
+  return `  :root[data-scheme="${scheme}"] {\n    color-scheme: ${scheme};\n${declarations}\n  }`;
+}
+
+/** 最小 token 集：light / dark 各自定义，并让 body 使用底色与主文字。 */
+export const THEME_TOKEN_FIXTURE = [
+  themeRule("light"),
+  themeRule("dark"),
+  "  html, body { background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }",
+].join("\n");
+
+/** 深色场景：填模型 ID、触发非法 token 输入、展开候选面板，然后读回计算样式。 */
+export const THEME_PROBE_SOURCE = String.raw`
+(() => {
+  const client = window.__CLIENT__;
+  if (!client) throw new Error("client bundle did not register");
+
+  const route = {
+    id: "preview-model-existing",
+    name: "preview-model-existing",
+    contextWindow: 131072,
+    maxTokens: 8192,
+    input: ["text"],
+    reasoningEfforts: { off: null, low: "low", medium: "medium", high: "high" },
+  };
+  const providers = { "preview-chat": route };
+  const snapshot = {
+    status: "ready",
+    value: { providers },
+    user: { providers },
+    revision: 1,
+    writable: true,
+  };
+  const scope = { getSnapshot: () => snapshot, subscribe: () => () => {}, mutate: async () => true };
+  const configForms = { get: () => scope };
+  let Workbench;
+  const ctx = {
+    effect: (fn) => {
+      const dispose = fn();
+      return typeof dispose === "function" ? dispose : () => {};
+    },
+    configForms: { get: () => scope, whileServed: (namespaces, register) => register(new Set(namespaces)) },
+    slots: {
+      inject: (name, register) => register(),
+      register: (spec, component) => {
+        Workbench = component;
+        return () => {};
+      },
+    },
+  };
+  client.apply(ctx);
+  if (typeof Workbench !== "function") throw new Error("workbench component not registered");
+  window.__renderComponent(Workbench, { configForms });
+
+  const byPlaceholder = (placeholder) => [...document.querySelectorAll("input")].find((el) => el.placeholder === placeholder);
+  const cwInput = () => byPlaceholder("如 131072");
+  const mtInput = () => byPlaceholder("如 8192");
+  const modelInput = () => byPlaceholder("如 tflow/alpha-32b");
+  const setValue = (input, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const fieldOf = (input) => input.closest("label");
+
+  setValue(modelInput(), "tflow/alpha-32b");
+  setValue(cwInput(), "131072");
+  setValue(mtInput(), "8192");
+  // 非法值：不写入状态，显示红色「请输入正整数」，用于测量错误色对比度。
+  setValue(cwInput(), "abc");
+  fieldOf(cwInput()).querySelector('button[aria-label="展开候选"]').click();
+
+  const rect = (element) => {
+    const box = element.getBoundingClientRect();
+    return {
+      top: Number(box.top.toFixed(2)),
+      height: Number(box.height.toFixed(2)),
+    };
+  };
+  const parseColor = (text) => {
+    const match = String(text).match(/rgba?\(([^)]+)\)/);
+    if (!match) return { r: 0, g: 0, b: 0, a: 0 };
+    const parts = match[1].split(/[,\s/]+/).filter(Boolean).map(Number);
+    return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+  };
+  const over = (top, bottom) => ({
+    r: top.r * top.a + bottom.r * (1 - top.a),
+    g: top.g * top.a + bottom.g * (1 - top.a),
+    b: top.b * top.a + bottom.b * (1 - top.a),
+    a: 1,
+  });
+  const luminance = ({ r, g, b }) => {
+    const channel = (value) => {
+      const v = value / 255;
+      return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  };
+  const contrast = (foreground, background) => {
+    const [high, low] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+    return (high + 0.05) / (low + 0.05);
+  };
+  // 把元素的半透明背景逐层合成到第一个不透明祖先上（按钮底色是半透明 token）。
+  const effectiveBackground = (element) => {
+    const layers = [];
+    for (let node = element; node; node = node.parentElement) {
+      const color = parseColor(getComputedStyle(node).backgroundColor);
+      if (color.a > 0) layers.push(color);
+      if (color.a === 1) break;
+    }
+    let background = { r: 255, g: 255, b: 255, a: 1 };
+    for (let index = layers.length - 1; index >= 0; index--) background = over(layers[index], background);
+    return background;
+  };
+
+  const select = document.querySelector("select");
+  const input = cwInput();
+  const checkbox = document.querySelector('input[type="checkbox"]');
+  const chip = checkbox.closest("label");
+  const panel = document.querySelector('[role="listbox"]');
+  const pre = document.querySelector("pre");
+  const error = [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "请输入正整数");
+  const style = (element) => getComputedStyle(element);
+
+  let worst = { ratio: Infinity, where: "" };
+  for (const element of document.querySelectorAll("span, label, button, p, option")) {
+    const text = (element.textContent || "").trim();
+    if (text === "") continue;
+    if (element.closest("button[disabled]")) continue;
+    const ratio = contrast(parseColor(style(element).color), effectiveBackground(element));
+    if (ratio < worst.ratio) worst = { ratio: Number(ratio.toFixed(2)), where: element.tagName + ":" + text.slice(0, 24) };
+  }
+
+  const result = {
+    scheme: style(document.documentElement).colorScheme,
+    select: {
+      background: style(select).backgroundColor,
+      color: style(select).color,
+      colorScheme: style(select).colorScheme,
+    },
+    input: {
+      background: style(input).backgroundColor,
+      color: style(input).color,
+      colorScheme: style(input).colorScheme,
+    },
+    checkbox: { colorScheme: style(checkbox).colorScheme },
+    chip: { background: style(chip).backgroundColor },
+    panel: {
+      background: style(panel).backgroundColor,
+      color: style(panel).color,
+    },
+    pre: { background: style(pre).backgroundColor },
+    error: { color: style(error).color },
+    contrast: worst,
+    rects: {
+      selectH: rect(select).height,
+      selectTop: rect(select).top,
+      modelTop: rect(modelInput()).top,
+      displayTop: rect(byPlaceholder("留空则不写")).top,
+      contextTop: rect(cwInput()).top,
+      maxTop: rect(mtInput()).top,
+      panelTop: rect(panel).top,
+      pageHeight: Number(document.getElementById("root").getBoundingClientRect().height.toFixed(2)),
+    },
+  };
+  document.getElementById("result").textContent = JSON.stringify(result);
+})();
+`;
+
+/** 以指定主题组装工作台页面（token 由 THEME_TOKEN_FIXTURE 提供）。 */
+export function buildThemeHtml(bundleSource, scheme) {
+  if (!Object.hasOwn(THEME_TOKENS, scheme)) throw new TypeError(`未知主题：${scheme}`);
+  return [
+    "<!doctype html>",
+    `<html lang="en" data-scheme="${scheme}" style="color-scheme: ${scheme}">`,
+    '<head><meta charset="utf-8" />',
+    `<style>body { margin: 0; font-family: system-ui, sans-serif; font-size: 14px; }\n${THEME_TOKEN_FIXTURE}</style>`,
+    "</head><body>",
+    '<div id="root"></div>',
+    '<pre id="result">pending</pre>',
+    `<script>${SHIM_SOURCE}</script>`,
+    `<script>${bundleSource}</script>`,
+    `<script>${THEME_PROBE_SOURCE}</script>`,
+    "</body></html>",
+  ].join("\n");
+}
+
+/**
+ * 以指定主题渲染工作台，返回可交给 headless Chrome 查询的页面描述。
+ * 默认读取构建后的 lib/client.js，测试也可注入自己的 bundle 源码。
+ */
+export async function openWorkbenchInTheme(scheme, options = {}) {
+  if (!Object.hasOwn(THEME_TOKENS, scheme)) throw new TypeError(`未知主题：${scheme}`);
+  const bundleSource = options.bundleSource ?? readFileSync(join(root, "lib", "client.js"), "utf8");
+  return { scheme, tokens: THEME_TOKENS[scheme], html: buildThemeHtml(bundleSource, scheme) };
+}
+
+/** 找可用的 Chrome/Chromium；找不到返回 null。 */
+export function findChrome() {
+  const candidates = [
+    process.env.CHROME_PATH,
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const probe = spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: 10_000 });
+    if (probe.status === 0) return candidate;
+  }
+  return null;
+}
+
+/** 在 headless Chrome 里加载页面，读回 <pre id="result"> 里的 JSON。 */
+export function runPageProbe(chrome, html) {
+  const dir = mkdtempSync(join(tmpdir(), "modelpilot-page-"));
+  const page = join(dir, "index.html");
+  writeFileSync(page, html);
+  try {
+    const run = spawnSync(
+      chrome,
+      [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--allow-file-access-from-files",
+        "--window-size=1440,1000",
+        "--virtual-time-budget=10000",
+        "--dump-dom",
+        pathToFileURL(page).href,
+      ],
+      { encoding: "utf8", timeout: 60_000, maxBuffer: 20 * 1024 * 1024 },
+    );
+    if (run.error) throw new Error(`chrome failed to start: ${run.error.message}`);
+    const match = run.stdout?.match(/<pre id="result">([\s\S]*?)<\/pre>/);
+    if (!match) throw new Error(`probe result missing. stderr: ${run.stderr?.slice(-2000)}`);
+    return JSON.parse(decodeText(match[1]));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** 解析 --dump-dom 的文本节点转义，仅处理测量结果里可能出现的字符。 */
+export function decodeText(text) {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
 }
