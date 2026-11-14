@@ -18,6 +18,7 @@ import {
   writeDefaultTemplate,
 } from "../core/default-template.js";
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
+import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
 import {
   allReasoningLevels,
   defaultReasoningLevels,
@@ -164,6 +165,38 @@ const s = {
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3))",
     background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1))",
   },
+  // 选择器弹窗：全部用 --dsw-* token 并带 fallback，深浅色都跟随宿主主题。
+  // overlay 必须 fixed —— 设置页有滚动容器，absolute 会被裁掉。
+  overlay: {
+    position: "fixed", inset: 0, zIndex: 100,
+    background: "rgba(0,0,0,0.45)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+  },
+  dialog: {
+    width: "min(560px, calc(100vw - 32px))",
+    maxHeight: "min(640px, calc(100vh - 64px))",
+    display: "flex", flexDirection: "column",
+    borderRadius: 12, padding: 14, gap: 10,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+    background: "var(--dsw-alias-bg-layer-1, Canvas)",
+    color: "var(--dsw-alias-label-primary, inherit)",
+    colorScheme: "inherit",
+    boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+  },
+  pickerHeader: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 },
+  pickerList: {
+    flex: "1 1 auto", overflowY: "auto", minHeight: 160,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    borderRadius: 8, padding: 4,
+  },
+  pickerRow: {
+    display: "flex", alignItems: "center", gap: 8, padding: "5px 8px",
+    fontSize: 12, borderRadius: 5, cursor: "pointer",
+  },
+  pickerRowDisabled: { opacity: 0.45, cursor: "not-allowed" },
+  pickerId: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  pickerHint: { fontSize: 10, opacity: 0.65 },
+  pickerFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
 };
 
 function Field({ label, children, hint, style }) {
@@ -263,6 +296,209 @@ function TokenCountField({ label, value, candidates, error, placeholder, onChang
   );
 }
 
+/**
+ * 拉取结果选择器。
+ *
+ * 勾选集合由父组件持有：改搜索词只影响 visible，不影响 selected ——
+ * 因此过滤后勾选状态不丢；关窗时父组件重置集合。
+ */
+function ModelPicker({
+  models,
+  existing,
+  hasTemplate,
+  overridesInUse,
+  catalogWarning,
+  busy,
+  query,
+  selected,
+  ackReplacement,
+  onQueryChange,
+  onToggle,
+  onSelectAll,
+  onAckChange,
+  onConfirm,
+  onCancel,
+}) {
+  const dialogRef = React.useRef(null);
+  const searchRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (searchRef.current !== null) searchRef.current.focus();
+  }, []);
+
+  const entries = classifyModels(models, existing);
+  const statusById = new Map(entries.map((entry) => [entry.id, entry]));
+  const visible = filterModels(models, query)
+    .map((id) => statusById.get(id))
+    .filter((entry) => entry !== undefined);
+  const selectable = entries.filter((entry) => entry.status === "new");
+  const allSelected = selectable.length > 0 && selectable.every((entry) => selected.has(entry.id));
+  const selectedEntries = entries.filter((entry) => selected.has(entry.id));
+  const writableCount = selectedEntries.filter((entry) => entry.status === "new").length;
+  // 跳过计数描述整批拉取结果中被排除的条目，而不是只有用户勾中的冲突项。
+  const skippedExists = entries.filter((entry) => entry.status === "exists").length;
+  const skippedCasefold = entries.filter((entry) => entry.status === "casefold").length;
+  // 目录路由的批量替换必须先确认；单条选择只是回填模型 ID，不需要。
+  const acknowledgementMissing = catalogWarning && selected.size >= 2 && !ackReplacement;
+  const canConfirm =
+    !busy &&
+    !overridesInUse &&
+    selected.size > 0 &&
+    !acknowledgementMissing &&
+    !(selected.size >= 2 && writableCount === 0);
+
+  /** Esc 关闭、Enter 确认、Tab 在弹窗内循环。 */
+  function handleKeyDown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key === "Enter") {
+      if (event.target?.tagName === "BUTTON" || event.target?.tagName === "TEXTAREA") return;
+      if (canConfirm) {
+        event.preventDefault();
+        onConfirm();
+      }
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const root = dialogRef.current;
+    if (root === null) return;
+    const focusables = [...root.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )];
+    if (focusables.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !root.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  return (
+    <div
+      style={s.overlay}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        style={s.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label="选择模型"
+        onKeyDown={handleKeyDown}
+      >
+        <div style={s.pickerHeader}>
+          <span style={s.h}>选择模型</span>
+          <span style={s.pickerHint}>已拉取 {models.length} 个</span>
+        </div>
+
+        <input
+          ref={searchRef}
+          style={s.input}
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="搜索模型 ID…"
+          aria-label="搜索模型"
+        />
+
+        <label style={{ ...s.pickerRow, cursor: selectable.length === 0 ? "not-allowed" : "pointer" }}>
+          <input
+            type="checkbox"
+            checked={allSelected}
+            disabled={selectable.length === 0}
+            onChange={() => onSelectAll(!allSelected)}
+          />
+          <span style={s.pickerId}>全选（可选 {selectable.length} 个）</span>
+        </label>
+
+        <div style={s.pickerList}>
+          {visible.length === 0 ? (
+            <div style={{ ...s.pickerHint, padding: "8px" }}>没有匹配的模型</div>
+          ) : visible.map((entry) => {
+            const disabled = entry.status === "exists";
+            return (
+              <label
+                key={entry.id}
+                style={disabled ? { ...s.pickerRow, ...s.pickerRowDisabled } : s.pickerRow}
+              >
+                <input
+                  type="checkbox"
+                  disabled={disabled}
+                  checked={selected.has(entry.id)}
+                  onChange={() => onToggle(entry.id)}
+                  aria-label={entry.id}
+                />
+                <span style={s.pickerId}>{entry.id}</span>
+                {entry.status === "exists" ? (
+                  <span style={s.pickerHint}>已存在</span>
+                ) : entry.status === "casefold" ? (
+                  <span style={s.pickerHint}>仅大小写不同</span>
+                ) : null}
+              </label>
+            );
+          })}
+        </div>
+
+        {!hasTemplate ? <div style={s.pickerHint}>未设置默认模板，将使用内置默认值</div> : null}
+
+        {catalogWarning ? (
+          <label style={{ ...s.warn, display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={ackReplacement}
+              onChange={(event) => onAckChange(event.target.checked)}
+              style={{ marginTop: 2 }}
+              aria-label="确认目录替换"
+            />
+            <span>
+              <b>catalog-replacement</b>：该路由是目录路由，批量写入 models 会<b>整体替换</b>它的模型目录。我确认继续。
+            </span>
+          </label>
+        ) : null}
+
+        {overridesInUse ? (
+          <div style={s.err}>
+            该路由已在用 <b>modelOverrides</b>；写 models 数组会被宿主拒绝，无法批量写入。请先在宿主中移除 modelOverrides。
+          </div>
+        ) : null}
+
+        <div style={s.pickerFooter}>
+          <span style={s.pickerHint}>
+            将写入 {writableCount} 条模型；已跳过 {skippedExists} 条已存在、{skippedCasefold} 条仅大小写不同
+          </span>
+          <span style={{ display: "flex", gap: 8 }}>
+            <button type="button" style={s.btn} onClick={onCancel}>取消</button>
+            <button
+              type="button"
+              style={canConfirm ? s.btnPrimary : { ...s.btn, opacity: 0.5, cursor: "not-allowed" }}
+              disabled={!canConfirm}
+              onClick={onConfirm}
+            >
+              确定（{selected.size}）
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** 工作台界面。 */
 function Workbench({ configForms, discoverModels }) {
   const scope = configForms.get(LLM_NS);
@@ -290,12 +526,20 @@ function Workbench({ configForms, discoverModels }) {
   const [busy, setBusy] = React.useState(false);
   const [toast, setToast] = React.useState(null);
 
-  // 已拉取的远端候选；只在下拉里作为额外分组展示，不自动填充模型 ID。
+  // 已拉取的远端候选；同时供 datalist 补全和选择器弹窗使用，不自动填充模型 ID。
   const [remoteModels, setRemoteModels] = React.useState([]);
   const [fetchState, setFetchState] = React.useState("idle"); // idle | loading | done | failed
   const [fetchError, setFetchError] = React.useState("");
   // 切换路由后清掉上一条路由的结果；用序号作废未完成的请求。
   const fetchGeneration = React.useRef(0);
+
+  // 选择器弹窗。勾选集合与过滤词分开存，改搜索词不会丢勾选。
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [pickerQuery, setPickerQuery] = React.useState("");
+  const [pickerSelected, setPickerSelected] = React.useState(() => new Set());
+  const [pickerAckReplace, setPickerAckReplace] = React.useState(false);
+  // 最近一次批量投影：确认后先渲染 ops，再调用一次 scope.mutate。
+  const [batchProjection, setBatchProjection] = React.useState(null);
 
   // localStorage 在隐私模式 / 被禁用时会抛异常；用一个惰性 getter 包住，
   // 拿不到就当作没有存储，全部走「无模板」分支。
@@ -334,13 +578,27 @@ function Workbench({ configForms, discoverModels }) {
   const routeModels = Array.isArray(route?.models) ? route.models : [];
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const catalogIds = React.useMemo(() => catalogIdsOf(route), [route]);
+  const existingModelIds = routeModels.map((model) => model?.id).filter((id) => typeof id === "string");
+  const overridesInUse =
+    route?.modelOverrides !== null &&
+    typeof route?.modelOverrides === "object" &&
+    !Array.isArray(route.modelOverrides) &&
+    Object.keys(route.modelOverrides).length > 0;
+  // 目录路由：没有 models 数组即由宿主目录提供模型（手工声明的路由必须列出 models）。
+  // 批量写入 models 会整体替换宿主目录，必须先确认。
+  const catalogWarning = route !== undefined && route.models === undefined;
 
-  // 切换路由后清掉上一条路由的候选与状态；未完成的请求由 generation 作废。
+  // 切换路由后清掉上一条路由的候选、选择器与批量预览；未完成的请求由 generation 作废。
   React.useEffect(() => {
     fetchGeneration.current += 1;
     setRemoteModels([]);
     setFetchState("idle");
     setFetchError("");
+    setPickerOpen(false);
+    setPickerQuery("");
+    setPickerSelected(new Set());
+    setPickerAckReplace(false);
+    setBatchProjection(null);
   }, [routeId]);
 
   // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
@@ -435,11 +693,106 @@ function Workbench({ configForms, discoverModels }) {
       }
       setRemoteModels(ids);
       setFetchState("done");
+      setBatchProjection(null);
+      // 拉取成功自动打开选择器；空列表 / 失败在上面已经返回，不会开窗。
+      setPickerQuery("");
+      setPickerSelected(new Set());
+      setPickerAckReplace(false);
+      setPickerOpen(true);
     } catch (error) {
       if (generation !== fetchGeneration.current) return;
       setFetchState("failed");
       setFetchError(String(error?.message ?? error));
     }
+  }
+
+  /** 清空选择器的搜索词、勾选与目录确认；开窗/关窗都调用（不记忆上次）。 */
+  function resetPickerState() {
+    setPickerQuery("");
+    setPickerSelected(new Set());
+    setPickerAckReplace(false);
+  }
+
+  function openPicker() {
+    resetPickerState();
+    setPickerOpen(true);
+  }
+
+  function closePicker() {
+    setPickerOpen(false);
+    resetPickerState();
+  }
+
+  function togglePickerModel(id) {
+    setPickerSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** 全选只勾 status:"new"；已存在与默认的「仅大小写不同」保持原状。 */
+  function selectAllPicker(select) {
+    setPickerSelected((current) => {
+      if (!select) return new Set();
+      const next = new Set(current);
+      for (const entry of classifyModels(remoteModels, existingModelIds)) {
+        if (entry.status === "new") next.add(entry.id);
+      }
+      return next;
+    });
+  }
+
+  function buildBatchPlan(ids, ackedReplacement) {
+    return planBatchSelection(
+      ids,
+      { providers, catalogModels: catalogIds },
+      { routeId, template, ackedReplacement },
+    );
+  }
+
+  /** 批量写入：所有 op 合成一个数组，只调用一次 scope.mutate。 */
+  async function applyBatchPlan(plan) {
+    setBusy(true);
+    setToast(null);
+    try {
+      const ok = await scope.mutate(plan.ops);
+      setToast(
+        ok
+          ? { tone: "good", text: `已写入 ${routeId} / ${plan.written.length} 个模型` }
+          : { tone: "bad", text: "写入被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" },
+      );
+      if (ok) setAckReplace(false);
+    } catch (error) {
+      setToast({ tone: "bad", text: `写入异常：${error?.message ?? error}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 确定：1 个回填单条表单；≥2 个走默认模板批量投影 + 一次写入。 */
+  function confirmPicker() {
+    if (overridesInUse) return;
+    const selectedIds = remoteModels.filter((id) => pickerSelected.has(id));
+    if (selectedIds.length === 0) return;
+    if (selectedIds.length === 1) {
+      const id = selectedIds[0];
+      setModelId(id);
+      setBatchProjection(null);
+      if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(id));
+      closePicker();
+      return;
+    }
+    const plan = buildBatchPlan(selectedIds, pickerAckReplace);
+    setBatchProjection(plan);
+    if (plan.ops.length === 0) {
+      setToast({ tone: "bad", text: "没有可写入的模型（全部被跳过或投影被拒绝）" });
+      closePicker();
+      return;
+    }
+    closePicker();
+    void applyBatchPlan(plan);
   }
 
   async function apply() {
@@ -466,6 +819,7 @@ function Workbench({ configForms, discoverModels }) {
         setInputImage(form.inputImage);
         setReasoningLevels(form.reasoningLevels);
         setAckReplace(false);
+        setBatchProjection(null);
       }
     } catch (error) {
       setToast({ tone: "bad", text: `写入异常：${error?.message ?? error}` });
@@ -512,6 +866,7 @@ function Workbench({ configForms, discoverModels }) {
               onChange={(e) => {
                 const next = e.target.value;
                 setModelId(next);
+                setBatchProjection(null);
                 if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(next));
               }}
               placeholder="如 tflow/alpha-32b"
@@ -548,12 +903,12 @@ function Workbench({ configForms, discoverModels }) {
         </Field>
       </div>
 
-      {fetchState === "failed" ? (
-        <div style={s.err}>拉取失败：{fetchError}</div>
-      ) : fetchState === "done" ? (
-        <div style={s.sub}>
-          已拉取 {remoteModels.length} 个模型：{remoteModels.slice(0, 8).join("、")}
-          {remoteModels.length > 8 ? ` 等 ${remoteModels.length} 个` : ""}
+      {fetchState === "failed" ? <div style={s.err}>拉取失败：{fetchError}</div> : null}
+      {fetchState === "done" ? (
+        <div style={s.row}>
+          <button type="button" style={s.btnSmall} onClick={openPicker}>
+            已拉取 {remoteModels.length} 个 · 选择
+          </button>
         </div>
       ) : null}
 
@@ -612,8 +967,28 @@ function Workbench({ configForms, discoverModels }) {
         </span>
       </div>
 
+      {batchProjection ? (
+        <>
+          <div style={s.label}>批量投影结果（写出 {batchProjection.written.length} 条）</div>
+          <div style={s.sub}>
+            {batchProjection.ops.map((op) => `${op.path.join(".")} ← ${op.value?.id ?? ""}`).join(" · ")}
+          </div>
+          <pre style={s.pre}>{JSON.stringify(batchProjection.ops, null, 2)}</pre>
+          {batchProjection.warnings.map((w, i) => (
+            <div key={`bw${i}`} style={s.warn}>
+              <strong>{w.code}</strong>：{w.message}
+              {w.removedCatalogIds?.length ? `（将从该路由消失：${w.removedCatalogIds.join("、")}）` : ""}
+            </div>
+          ))}
+          <div style={s.sub}>
+            已跳过 {classifyModels(remoteModels, existingModelIds).filter((entry) => entry.status === "exists").length} 条已存在、
+            {classifyModels(remoteModels, existingModelIds).filter((entry) => entry.status === "casefold").length} 条仅大小写不同
+          </div>
+        </>
+      ) : null}
+
       {modelId.trim() === "" ? (
-        <div style={s.sub}>填入模型 ID 后这里显示将要写入的内容。</div>
+        batchProjection ? null : <div style={s.sub}>填入模型 ID 后这里显示将要写入的内容。</div>
       ) : (
         <>
           <div style={s.label}>投影结果（写出的只有这些字段）</div>
@@ -672,6 +1047,7 @@ function Workbench({ configForms, discoverModels }) {
             setInputImage(form.inputImage);
             setReasoningLevels(form.reasoningLevels);
             setAckReplace(false);
+            setBatchProjection(null);
             setToast(null);
           }}
         >
@@ -726,6 +1102,26 @@ function Workbench({ configForms, discoverModels }) {
         <br />
         maxTokens 同时充当该模型的默认请求输出预算（DSH 双重身份），不填则跟随路由默认。
       </p>
+
+      {pickerOpen ? (
+        <ModelPicker
+          models={remoteModels}
+          existing={existingModelIds}
+          hasTemplate={template !== null}
+          overridesInUse={overridesInUse}
+          catalogWarning={catalogWarning}
+          busy={busy}
+          query={pickerQuery}
+          selected={pickerSelected}
+          ackReplacement={pickerAckReplace}
+          onQueryChange={setPickerQuery}
+          onToggle={togglePickerModel}
+          onSelectAll={selectAllPicker}
+          onAckChange={setPickerAckReplace}
+          onConfirm={confirmPicker}
+          onCancel={closePicker}
+        />
+      ) : null}
     </div>
   );
 }
