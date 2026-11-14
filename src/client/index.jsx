@@ -32,6 +32,7 @@ import {
   describeHostDefaultFallback,
   describeRouteDefaultUsage,
   describeRouteSummary,
+  moveModel,
   routeDefaultCountParts,
   routeDeleteBlockReason,
   routeFieldLabels,
@@ -295,12 +296,36 @@ const s = {
   modelRow: {
     display: "flex", flexDirection: "column", gap: GAP.xs,
     padding: "8px 0",
+    position: "relative",
     borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2))",
     transition: `background-color ${ROW_HOVER_MS}ms ease`,
   },
   modelRowHover: { background: "var(--dsw-alias-interactive-bg-hover, rgba(90,140,230,0.22))" },
+  // 拖动中的行半透明：位置仍由列表顺序决定，松手 / 方向键后才真正换位。
+  modelRowDragging: { opacity: 0.45 },
   modelRowFirst: { borderTop: "none", paddingTop: 0 },
   modelRowHead: { display: "flex", alignItems: "baseline", gap: GAP.sm, paddingRight: GAP.xs },
+  // 拖动手柄：只在行首占一个字符宽，不改变行高；聚焦后方向键也能排序。
+  modelHandle: {
+    padding: 0, margin: 0, border: "none", background: "transparent",
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+    font: "inherit", fontSize: FONT.caption, lineHeight: 1, cursor: "grab",
+    userSelect: "none", flex: "0 0 auto",
+  },
+  modelHandleDisabled: { opacity: 0.4, cursor: "not-allowed" },
+  // 序号只读：想换位置就拖手柄或按方向键（工单 #19 3.4）。
+  modelIndex: {
+    fontSize: FONT.hint, fontVariantNumeric: "tabular-nums",
+    minWidth: 14, textAlign: "right", flex: "0 0 auto", userSelect: "none",
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  // 插入线绝对定位，不占布局高度；颜色只用主题 token，深浅色都跟随宿主。
+  dropLine: {
+    position: "absolute", left: 0, right: 0, height: 2, zIndex: 2, pointerEvents: "none",
+    background: "var(--dsw-alias-brand-primary, var(--dsw-alias-state-business-primary, currentColor))",
+  },
+  dropLineBefore: { top: -1 },
+  dropLineAfter: { bottom: -1 },
   modelRowMeta: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, paddingRight: GAP.xs },
   modelName: {
     fontSize: FONT.caption, fontWeight: 600, overflowWrap: "anywhere",
@@ -1558,6 +1583,11 @@ function Workbench({ configForms, discoverModels }) {
   const [deleteTarget, setDeleteTarget] = React.useState(null);
   // 模型行 hover 反馈：纯展示状态，不参与任何投影 / 写入。
   const [hoveredRow, setHoveredRow] = React.useState(null);
+  // 拖动排序：只记录正在拖哪一行、插入线画在哪；真正写盘在 drop / 方向键时
+  // 立即发生。dragCancelled 记录 Esc 取消，让随后的 drop 不再写入。
+  const [dragState, setDragState] = React.useState(null);
+  const dragCancelled = React.useRef(false);
+  const pendingHandleFocus = React.useRef(null);
 
   // 路由设置卡片的状态放在 Workbench：卡片组件保持无 hook，测试用的轻量
   // 渲染器（按组件树展开函数调用而不隔离 hook 槽）才能安全地展开它。
@@ -1626,7 +1656,35 @@ function Workbench({ configForms, discoverModels }) {
     setEditModelId("");
     setDeleteTarget(null);
     setHoveredRow(null);
+    setDragState(null);
+    dragCancelled.current = false;
+    pendingHandleFocus.current = null;
   }, [routeId]);
+
+  // 键盘移动后行的 key 会变，手柄被重建、焦点丢失；写盘成功后把焦点还给
+  // 新位置的手柄，保证可以连续按方向键。
+  React.useEffect(() => {
+    const index = pendingHandleFocus.current;
+    if (index === null) return;
+    pendingHandleFocus.current = null;
+    const handle = typeof document === "undefined"
+      ? null
+      : document.getElementById(`modelpilot-model-handle-${index}`);
+    if (handle !== null && typeof handle.focus === "function") handle.focus();
+  });
+
+  // 拖动中按 Esc：不写盘。原生拖放在多数浏览器里也会自己取消，这里再记一个
+  // 标记，保证即使随后仍收到 drop 也不会提交。
+  React.useEffect(() => {
+    if (dragState === null || typeof document === "undefined") return undefined;
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      dragCancelled.current = true;
+      setDragState(null);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [dragState]);
 
   // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
   const draft = React.useMemo(() => {
@@ -1703,6 +1761,9 @@ function Workbench({ configForms, discoverModels }) {
     (editProjection?.unsupportedControls?.length ?? 0) === 0 &&
     (editProjection?.settingsOps?.length ?? 0) > 0;
 
+  // 至少两条才谈得上排序；只读 / 写入进行中也禁用，避免并发写同一数组。
+  const canReorderModels = writable && !busy && routeModels.length > 1;
+
   /** token 输入：合法值写入状态；非法值不落状态，回显最近一次合法值并给出错误。 */
   function changeTokenCount(event, current, setValue, setError) {
     const next = event.target.value;
@@ -1733,6 +1794,131 @@ function Workbench({ configForms, discoverModels }) {
     setEditModelId("");
     setEditErrors({ contextWindow: false, maxTokens: false });
     setDeleteTarget(null);
+  }
+
+  // ── 模型排序（工单 #19）：拖动 + 键盘，松手 / 按键即写盘 ──────────────
+
+  /** 拖动手柄按下：只记来源，不改列表；拖拽数据用 text/plain 兼容 Firefox。 */
+  function beginModelDrag(event, index) {
+    if (!canReorderModels) {
+      event.preventDefault();
+      return;
+    }
+    dragCancelled.current = false;
+    if (event.dataTransfer !== null && event.dataTransfer !== undefined) {
+      event.dataTransfer.effectAllowed = "move";
+      try {
+        event.dataTransfer.setData("text/plain", String(index));
+      } catch {
+        /* 某些浏览器在合成事件里不允许写 DataTransfer；拖动本身不依赖它 */
+      }
+    }
+    setDragState({ from: index, over: null, edge: null });
+  }
+
+  /** 拖动经过某一行：按指针在行的上半 / 下半决定插入线画在行前还是行后。 */
+  function updateModelDragOver(event, index) {
+    if (dragState === null) return;
+    event.preventDefault();
+    if (event.dataTransfer !== null && event.dataTransfer !== undefined) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const edge = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
+    setDragState((current) => (
+      current === null || (current.over === index && current.edge === edge)
+        ? current
+        : { ...current, over: index, edge }
+    ));
+  }
+
+  function endModelDrag() {
+    dragCancelled.current = false;
+    setDragState(null);
+  }
+
+  /**
+   * 松手：把「行前 / 行后插入点」换算成移除来源后的目标下标，再立即写盘。
+   * 拖回原位（to === from）不产生任何写入。
+   */
+  function handleModelDrop(event, index) {
+    if (dragState === null) return;
+    event.preventDefault();
+    const cancelled = dragCancelled.current;
+    dragCancelled.current = false;
+    setDragState(null);
+    if (cancelled) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const edge = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
+    const slot = index + (edge === "after" ? 1 : 0);
+    const to = slot > dragState.from ? slot - 1 : slot;
+    if (to === dragState.from) return;
+    void moveModelTo(dragState.from, to);
+  }
+
+  /** 手柄聚焦后的方向键：↑ / ↓ 一位，Home / End 首 / 末位，每次立即写盘。 */
+  function handleModelHandleKey(event, index) {
+    if (!canReorderModels) return;
+    const last = routeModels.length - 1;
+    let to;
+    if (event.key === "ArrowUp") to = Math.max(index - 1, 0);
+    else if (event.key === "ArrowDown") to = Math.min(index + 1, last);
+    else if (event.key === "Home") to = 0;
+    else if (event.key === "End") to = last;
+    else return;
+    event.preventDefault();
+    if (to === index) return;
+    void moveModelTo(index, to, { focusHandle: true });
+  }
+
+  /**
+   * 立即写盘：先按最新快照复核下标（防止拖动期间配置被别处改动），再用
+   * moveModel 生成一条整数组 set，只调用一次 mutate。失败时不改本地顺序 ——
+   * 列表本来就还停在移动前，正是要回滚到的状态；只用 toast 说明未保存。
+   */
+  async function moveModelTo(from, to, { focusHandle = false } = {}) {
+    if (!writable || busy) return;
+    const latestProviders = providersOf(scope.getSnapshot());
+    const latestRoute = routeId === "" ? undefined : latestProviders[routeId];
+    const latestModels = Array.isArray(latestRoute?.models) ? latestRoute.models : [];
+    const currentIds = routeModels.map((model) => model?.id);
+    const latestIds = latestModels.map((model) => model?.id);
+    const unchanged =
+      latestIds.length === currentIds.length && latestIds.every((id, index) => id === currentIds[index]);
+    if (!unchanged) {
+      setToast({ tone: "bad", text: "模型列表已变化，排序未保存；已重新读取当前配置，请核对后重试" });
+      return;
+    }
+    const result = moveModel(latestModels, from, to, routeId);
+    if (result.warning !== undefined) {
+      setToast({ tone: "bad", text: result.warning.message });
+      return;
+    }
+    const movedId =
+      typeof latestModels[from]?.id === "string" && latestModels[from].id !== ""
+        ? latestModels[from].id
+        : `第 ${from + 1} 个模型`;
+    setBusy(true);
+    setToast(null);
+    try {
+      const ok = await scope.mutate(result.ops);
+      if (ok) {
+        // 行内编辑 / 删除确认按「打开时的下标」定位；重排后下标全变，继续
+        // 展开会编辑到另一条模型，因此成功后收起，让用户按新位置重开。
+        closeEditor();
+        setDeleteTarget(null);
+        if (focusHandle) pendingHandleFocus.current = to;
+        setToast({ tone: "good", text: `已把 ${movedId} 移到第 ${to + 1} 位` });
+      } else {
+        if (focusHandle) pendingHandleFocus.current = from;
+        setToast({ tone: "bad", text: "排序未保存（宿主拒绝或修订号冲突），列表保持原顺序，请核对后重试" });
+      }
+    } catch (error) {
+      if (focusHandle) pendingHandleFocus.current = from;
+      setToast({ tone: "bad", text: `排序失败：${error?.message ?? error}；列表保持原顺序` });
+    } finally {
+      setBusy(false);
+    }
   }
 
   function updateEditForm(patch) {
@@ -2230,17 +2416,52 @@ function Workbench({ configForms, discoverModels }) {
           const modelKey = typeof model?.id === "string" && model.id !== "" ? model.id : `#${index}`;
           const rowKey = `${modelKey}:${index}`;
           const hovered = hoveredRow === rowKey;
+          const dragging = dragState !== null && dragState.from === index;
+          const rowStyle = {
+            ...s.modelRow,
+            ...(index === 0 ? s.modelRowFirst : null),
+            ...(hovered ? s.modelRowHover : null),
+            ...(dragging ? s.modelRowDragging : null),
+          };
           return (
             <div
               key={rowKey}
-              style={index === 0
-                ? { ...s.modelRow, ...s.modelRowFirst, ...(hovered ? s.modelRowHover : null) }
-                : { ...s.modelRow, ...(hovered ? s.modelRowHover : null) }}
+              style={rowStyle}
               aria-label={`模型 ${modelKey}`}
               onMouseEnter={() => setHoveredRow(rowKey)}
               onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
+              onDragOver={(event) => updateModelDragOver(event, index)}
+              onDrop={(event) => handleModelDrop(event, index)}
             >
+              {dragState !== null && dragState.over === index ? (
+                <div
+                  title="插入位置"
+                  aria-hidden="true"
+                  style={dragState.edge === "after"
+                    ? { ...s.dropLine, ...s.dropLineAfter }
+                    : { ...s.dropLine, ...s.dropLineBefore }}
+                />
+              ) : null}
               <div style={s.modelRowHead}>
+                <button
+                  type="button"
+                  id={`modelpilot-model-handle-${index}`}
+                  draggable={canReorderModels}
+                  disabled={!canReorderModels}
+                  style={canReorderModels ? s.modelHandle : { ...s.modelHandle, ...s.modelHandleDisabled }}
+                  aria-label={`拖动排序 第 ${index + 1} 位`}
+                  title={canReorderModels
+                    ? "拖动排序；聚焦后可用 ↑ / ↓ / Home / End 移动"
+                    : routeModels.length <= 1
+                      ? "只有一个模型，无法排序"
+                      : "当前不可排序（配置只读或正在写入）"}
+                  onDragStart={(event) => beginModelDrag(event, index)}
+                  onDragEnd={endModelDrag}
+                  onKeyDown={(event) => handleModelHandleKey(event, index)}
+                >
+                  ⠿
+                </button>
+                <span style={s.modelIndex}>{index + 1}</span>
                 <span style={s.modelName}>{modelKey}</span>
               </div>
               <div style={s.modelRowMeta}>

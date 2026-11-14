@@ -114,6 +114,12 @@ export const SHIM_SOURCE = String.raw`
     onInput: "input",
     onMouseEnter: "mouseenter",
     onMouseLeave: "mouseleave",
+    onDragStart: "dragstart",
+    onDragOver: "dragover",
+    onDrop: "drop",
+    onDragEnd: "dragend",
+    onDragEnter: "dragenter",
+    onDragLeave: "dragleave",
   };
 
   const UNITLESS_STYLES = new Set([
