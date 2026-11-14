@@ -60,7 +60,7 @@ test("打包产物以包 id 注册并导出插件契约", () => {
   const { id, exports } = loadBundle();
   assert.equal(id, "dsh-model-assistant");
   assert.equal(typeof exports.apply, "function");
-  assert.equal(exports.inject.join(","), "slots,configForms,remote,remote.llm"); // 跨模块域安全
+  assert.equal(exports.inject.join(","), "slots,configForms,remote,remote.llm,remote.credentials"); // 跨模块域安全
   assert.equal(exports.name, "model-assistant-client");
   assert.equal(exports.default.apply, exports.apply);
 });
@@ -75,7 +75,16 @@ test("apply() 通过 configForms.whileServed 接线 settings.section", () => {
       const dispose = fn();
       return typeof dispose === "function" ? dispose : () => {};
     },
-    remote: { llm: { discoverModels: async () => ({ ok: true, value: [] }) } },
+    remote: {
+      llm: { discoverModels: async () => ({ ok: true, value: [] }) },
+      // 工单 #18：密钥区块注入的宿主管道。夹具默认所有引用都已配置且可写；
+      // 具体状态机由 test/client/api-key-harness.mjs 单独覆盖。
+      credentials: {
+        describe: async (refs) => ({ ok: true, value: Object.fromEntries(refs.map((ref) => [ref, { configured: true, writable: true }])) }),
+        set: async () => ({ ok: true, value: undefined }),
+        unset: async () => ({ ok: true, value: undefined }),
+      },
+    },
     configForms: {
       get: () => ({ getSnapshot: () => ({ value: {}, writable: true }), subscribe: () => () => {} }),
       whileServed: (namespaces, register) => {
@@ -113,6 +122,9 @@ test("apply() 通过 configForms.whileServed 接线 settings.section", () => {
   const injected = spec.inject();
   assert.ok(injected.configForms, "component receives configForms");
   assert.equal(typeof injected.discoverModels, "function", "component receives a bound discoverModels callback");
+  assert.equal(typeof injected.credentialOps?.describe, "function", "component receives a bound credentials.describe callback");
+  assert.equal(typeof injected.credentialOps?.set, "function", "component receives a bound credentials.set callback");
+  assert.equal(typeof injected.credentialOps?.unset, "function", "component receives a bound credentials.unset callback");
   assert.equal(typeof component, "function");
 });
 

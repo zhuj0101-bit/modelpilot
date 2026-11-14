@@ -539,6 +539,15 @@ export const THEME_PROBE_SOURCE = String.raw`
           value: [{ id: "alpha/one" }, { id: "beta/two" }, { id: "gamma/three" }],
         }),
       },
+      // 工单 #18：密钥区块的宿主管道；布局 / 主题夹具只关心它不抛错。
+      credentials: {
+        describe: async (refs) => ({
+          ok: true,
+          value: Object.fromEntries(refs.map((ref) => [ref, { configured: true, writable: true }])),
+        }),
+        set: async () => ({ ok: true, value: undefined }),
+        unset: async () => ({ ok: true, value: undefined }),
+      },
     },
   };
   client.apply(ctx);

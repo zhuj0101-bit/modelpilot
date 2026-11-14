@@ -8,6 +8,12 @@
 // 逐字节相同：R1–R7 推理预检、目录替换门禁、白名单过滤、重复条目守卫。
 
 import * as React from "react";
+import {
+  CREDENTIAL_TEXT,
+  credentialRefOf,
+  credentialView,
+  deriveKeyRef,
+} from "../core/api-key.js";
 import { estimateContextBudget } from "../core/context-budget.js";
 import { projectPiAi } from "../core/pi-ai-projection.js";
 import {
@@ -47,7 +53,7 @@ import {
 } from "./reasoning-levels.js";
 
 export const name = "model-assistant-client";
-export const inject = ["slots", "configForms", "remote", "remote.llm"];
+export const inject = ["slots", "configForms", "remote", "remote.llm", "remote.credentials"];
 
 const SECTION_ID = "modelpilot.workbench";
 const LLM_NS = "llm-pi-ai";
@@ -74,6 +80,24 @@ function userProvidersOf(snapshot) {
   if (!user || typeof user !== "object" || Array.isArray(user)) return {};
   const providers = user.providers;
   return providers && typeof providers === "object" && !Array.isArray(providers) ? providers : {};
+}
+
+/** credentials.describe / set / unset 的失败响应 → 可展示的文案（永不含密钥内容）。 */
+function credentialErrorMessage(response, fallback) {
+  const message = response?.error?.message;
+  return typeof message === "string" && message !== "" ? message : fallback;
+}
+
+/**
+ * 从错误文案里抹掉用户刚输入的明文密钥。
+ *
+ * 宿主自己的错误消息不会回显参数，但客户端仍做这一道保险：任何异常 / 拒绝
+ * 文案在展示前都先去掉与输入逐字节相同的片段，避免「错误消息带出密钥」。
+ */
+function redactSecret(text, secret) {
+  const message = typeof text === "string" ? text : String(text ?? "");
+  if (typeof secret !== "string" || secret === "") return message;
+  return message.split(secret).join("[已隐藏]");
 }
 
 /** 把某条路由上 models.dev 风格的目录 id 转成供门禁使用的 Set。 */
@@ -329,6 +353,48 @@ const s = {
     cursor: "pointer", fontSize: FONT.caption, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
   },
   routeBody: { display: "flex", flexDirection: "column", gap: GAP.md, marginTop: GAP.sm },
+  // 密钥区块：紧贴在 apiKeyEnv 输入框下方，说明「那条引用背后的值」。
+  credentialBlock: {
+    display: "flex", flexDirection: "column", gap: GAP.sm,
+    padding: "9px 11px", borderRadius: RADIUS.sm,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    background: "var(--dsw-alias-bg-base, rgba(128,128,128,0.04))",
+  },
+  credentialRow: { display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap" },
+  credentialLabel: {
+    fontSize: FONT.label, fontWeight: 500, letterSpacing: 0.2,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  // 圆点同时用字形（● / ○）、描边与底色编码：浅色 / 深色下都不只靠颜色区分。
+  // 字形本身仍用 label-primary，保证它是「状态文字」而不是低对比装饰。
+  credentialDot: {
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    width: 16, height: 16, borderRadius: "50%", boxSizing: "border-box",
+    fontSize: FONT.hint, lineHeight: 1,
+    color: "var(--dsw-alias-label-primary, inherit)",
+  },
+  credentialDotOn: {
+    background: "var(--dsw-alias-state-success-secondary, rgba(80,170,110,0.16))",
+    border: "1px solid var(--dsw-alias-state-success-primary, #2f855a)",
+  },
+  credentialDotOff: {
+    background: "transparent",
+    border: "1px solid var(--dsw-alias-border-l4, rgba(128,128,128,0.32))",
+  },
+  credentialText: { fontSize: FONT.body, color: "var(--dsw-alias-label-primary, inherit)" },
+  credentialActions: { display: "flex", alignItems: "center", gap: GAP.sm, marginLeft: "auto" },
+  credentialEditor: { display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap" },
+  credentialInput: { ...INPUT, flex: "1 1 240px" },
+  credentialHint: {
+    fontSize: FONT.hint, lineHeight: 1.5,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  credentialSuggestion: {
+    display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap",
+    fontSize: FONT.hint, lineHeight: 1.5,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  credentialSuggestionRef: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" },
   // 路由默认值说明块：三行语义 + 每个字段的留空后果 / 实时计数。
   // 字号沿用 FONT.hint（工单 #34 3.1），整块只有 11px，避免抢字段的注意力。
   routeDefaults: {
@@ -1013,6 +1079,133 @@ function EditModelForm({
   );
 }
 
+/**
+ * 密钥区块：apiKeyEnv 那条引用背后的真实密钥。
+ *
+ * 状态只来自宿主 credentials.describe 的 configured / writable 两个布尔值；
+ * 明文只活在密码框的受控值里，保存时原样交给 credentials.set —— 不 trim、
+ * 不加前后缀、不进入 configForms，也不回显到任何提示里。
+ */
+function CredentialBlock({
+  reference,
+  suggestion,
+  view,
+  editorOpen,
+  draft,
+  busy,
+  error,
+  onChangeDraft,
+  onOpenEditor,
+  onCancelEditor,
+  onSave,
+  onOpenClear,
+  onUseSuggestion,
+}) {
+  const disabledStyle = { ...s.btnSmall, opacity: 0.5, cursor: "not-allowed" };
+  const openLabel = view.showReplace ? "更换" : "设置";
+  const openAria = view.showReplace ? "更换密钥" : "设置密钥";
+  const showEditor = editorOpen && view.kind === "ready" && !view.readOnly;
+  const saveDisabled = busy || draft === "";
+
+  return (
+    <div style={s.credentialBlock} role="group" aria-label="密钥">
+      {reference === "" && suggestion !== "" ? (
+        <div style={s.credentialSuggestion} aria-label="密钥引用建议">
+          <span>
+            建议：<b style={s.credentialSuggestionRef}>{suggestion}</b>
+          </span>
+          <button type="button" style={s.btnSmall} onClick={onUseSuggestion} aria-label="采用引用名建议">
+            采用
+          </button>
+        </div>
+      ) : null}
+
+      <div style={s.credentialRow} role="status" aria-label="密钥状态">
+        <span style={s.credentialLabel}>密钥状态</span>
+        {view.kind === "ready" ? (
+          <React.Fragment>
+            <span
+              style={{ ...s.credentialDot, ...(view.configured ? s.credentialDotOn : s.credentialDotOff) }}
+              aria-hidden="true"
+            >
+              {view.configured ? "●" : "○"}
+            </span>
+            <span style={s.credentialText}>{view.text}</span>
+          </React.Fragment>
+        ) : (
+          <span style={s.credentialText}>{view.text}</span>
+        )}
+        {view.showSet || view.showReplace || view.showClear ? (
+          <span style={s.credentialActions}>
+            {view.showSet || view.showReplace ? (
+              <button
+                type="button"
+                style={view.readOnly || busy ? disabledStyle : s.btnSmall}
+                disabled={view.readOnly || busy}
+                onClick={onOpenEditor}
+                aria-label={openAria}
+              >
+                {openLabel}
+              </button>
+            ) : null}
+            {view.showClear ? (
+              <button
+                type="button"
+                style={view.readOnly || busy ? disabledStyle : s.btnSmall}
+                disabled={view.readOnly || busy}
+                onClick={onOpenClear}
+                aria-label="清除密钥"
+              >
+                清除
+              </button>
+            ) : null}
+          </span>
+        ) : null}
+      </div>
+
+      {view.readOnly && view.kind === "ready" ? (
+        <span style={s.credentialHint}>ⓘ 该引用来自部署的环境变量，这里只显示状态。</span>
+      ) : null}
+
+      {showEditor ? (
+        <React.Fragment>
+          <div style={s.credentialEditor}>
+            <input
+              style={s.credentialInput}
+              type="password"
+              value={draft}
+              onChange={onChangeDraft}
+              placeholder="输入密钥值"
+              aria-label="密钥值"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button type="button" style={s.btnSmall} disabled={busy} onClick={onCancelEditor} aria-label="取消密钥编辑">
+              取消
+            </button>
+            <button
+              type="button"
+              style={saveDisabled ? { ...s.btnPrimary, opacity: 0.5, cursor: "not-allowed" } : s.btnPrimary}
+              disabled={saveDisabled}
+              onClick={onSave}
+              aria-label="保存密钥"
+            >
+              {busy ? "保存中…" : "保存密钥"}
+            </button>
+          </div>
+          <span style={s.credentialHint}>ⓘ {CREDENTIAL_TEXT.editorHint}</span>
+        </React.Fragment>
+      ) : null}
+
+      {error !== "" ? (
+        <div style={s.fieldError} role="alert" aria-label="密钥错误">
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** 自绘的二次确认外壳（不用原生 confirm，避免破坏主题）。 */
 function ConfirmDialog({
   ariaLabel,
@@ -1158,6 +1351,35 @@ function DeleteRouteDialog({ routeId, modelCount, busy, onCancel, onConfirm }) {
 }
 
 /**
+ * 清除密钥的二次确认：复用同一套自绘确认外壳（与删除模型 / 删除路由一致）。
+ * 文案只出现引用名，不出现任何密钥内容 —— 客户端本来也拿不到明文。
+ */
+function ClearCredentialDialog({ reference, busy, onCancel, onConfirm }) {
+  return (
+    <ConfirmDialog
+      ariaLabel="清除密钥确认"
+      title="清除密钥"
+      badge="二次确认"
+      cancelAria="取消清除密钥"
+      confirmAria="确认清除密钥"
+      confirmLabel="清除"
+      busyLabel="清除中…"
+      footerHint="只删除宿主凭据存储里的这一条，不改动配置文件。"
+      busy={busy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <p style={s.sub}>
+        确定要清除引用 <b>{reference}</b> 的密钥吗？
+      </p>
+      <p style={s.sub}>
+        清除后该引用变为「未配置」，使用它的路由会认证失败；这一步不能撤销。
+      </p>
+    </ConfirmDialog>
+  );
+}
+
+/**
  * 路由（provider）级字段编辑卡片。
  *
  * 默认折叠；展开后可编辑九个路由级字段。写入只产出叶子 set / unset，
@@ -1175,6 +1397,7 @@ function RouteSettingsCard({
   form,
   confirmOpen,
   usageOpen,
+  credential,
   onChange,
   onToggleOpen,
   onOpenConfirm,
@@ -1182,6 +1405,14 @@ function RouteSettingsCard({
   onSave,
   onDelete,
   onToggleUsage,
+  onCredentialDraftChange,
+  onOpenCredentialEditor,
+  onCancelCredentialEditor,
+  onSaveCredential,
+  onOpenCredentialConfirm,
+  onCloseCredentialConfirm,
+  onClearCredential,
+  onUseCredentialSuggestion,
 }) {
   if (form === null) return null;
 
@@ -1201,6 +1432,12 @@ function RouteSettingsCard({
   const modelCount = routeModels.length;
   const apiChoicesList = Array.isArray(apiChoices?.choices) ? apiChoices.choices : [];
   const apiChoicesSource = apiChoices?.source === "schema" ? "schema" : "fallback";
+  // 引用名以表单里的 apiKeyEnv 为准（改了引用名就查新条目的状态）；
+  // 派生建议只用于空引用时的 placeholder / 「采用」，不自动写入。
+  const credentialReference = credential?.reference ?? credentialRefOf(form.apiKeyEnv);
+  const keySuggestion = deriveKeyRef(routeId);
+  const credentialUi = credentialView(credential);
+  const credentialErrorText = credential?.opError ? credential.opError : credentialUi.error;
 
   // 路由默认值影响谁：按字段分别算，两个字段的受影响集合可能不同。
   // 宿主没有把「已安装目录描述了哪些模型 id」交给设置客户端，而 Workbench 的
@@ -1294,18 +1531,39 @@ function RouteSettingsCard({
               ) : null}
             </select>
           </Field>
-          <Field label="密钥引用 (apiKeyEnv)" hint="只改引用名">
+        </div>
+
+        <div style={s.row}>
+          <Field
+            label="密钥引用 (apiKeyEnv)"
+            hint="引用宿主凭据存储里的条目名"
+            style={{ flex: "0 1 360px" }}
+          >
             <input
-              style={s.input}
+              style={{ ...s.input, width: "100%" }}
               value={form.apiKeyEnv}
               onChange={(event) => update("apiKeyEnv", event.target.value)}
-              placeholder="如 PREVIEW_CHAT_API_KEY"
+              placeholder={keySuggestion === "" ? "如 PREVIEW_CHAT_API_KEY" : keySuggestion}
               aria-label="路由密钥引用"
             />
           </Field>
         </div>
 
-        <span style={s.sub}>ⓘ 只改引用名，密钥值在第二批管理；这里不读取也不写入任何密钥内容。</span>
+        <CredentialBlock
+          reference={credentialReference}
+          suggestion={keySuggestion}
+          view={credentialUi}
+          editorOpen={credential.editorOpen}
+          draft={credential.draft}
+          busy={credential.busy}
+          error={credentialErrorText}
+          onChangeDraft={onCredentialDraftChange}
+          onOpenEditor={onOpenCredentialEditor}
+          onCancelEditor={onCancelCredentialEditor}
+          onSave={onSaveCredential}
+          onOpenClear={onOpenCredentialConfirm}
+          onUseSuggestion={onUseCredentialSuggestion}
+        />
 
         {apiChoicesSource === "fallback" ? (
           <div style={s.warn} role="status" aria-label="协议清单来源">
@@ -1476,12 +1734,21 @@ function RouteSettingsCard({
           onConfirm={onDelete}
         />
       ) : null}
+
+      {open && credential.confirmOpen ? (
+        <ClearCredentialDialog
+          reference={credentialReference}
+          busy={credential.busy}
+          onCancel={onCloseCredentialConfirm}
+          onConfirm={onClearCredential}
+        />
+      ) : null}
     </section>
   );
 }
 
 /** 工作台界面。 */
-function Workbench({ configForms, discoverModels }) {
+function Workbench({ configForms, discoverModels, credentialOps }) {
   const scope = configForms.get(LLM_NS);
   const [snap, setSnap] = React.useState(() => scope.getSnapshot());
   React.useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope]);
@@ -1567,6 +1834,24 @@ function Workbench({ configForms, discoverModels }) {
   // 两个默认值的「哪些模型会用到」清单各自折叠；按模型字段名存。
   const [routeDefaultUsageOpen, setRouteDefaultUsageOpen] = React.useState({ contextWindow: false, maxTokens: false });
 
+  // 密钥区块：describe 只看 configured / writable；明文只存在于 credentialDraft，
+  // 保存成功后立即清空，失败时保留输入方便重试。绝不写入 localStorage。
+  const [credential, setCredential] = React.useState({
+    ref: "",
+    status: "idle",
+    configured: false,
+    writable: true,
+    error: "",
+  });
+  const credentialGeneration = React.useRef(0);
+  // describe 的重新读取信号：保存 / 清除成功后自增，不刷新页面就能拿到新状态。
+  const [credentialRefresh, setCredentialRefresh] = React.useState(0);
+  const [credentialEditorOpen, setCredentialEditorOpen] = React.useState(false);
+  const [credentialDraft, setCredentialDraft] = React.useState("");
+  const [credentialBusy, setCredentialBusy] = React.useState(false);
+  const [credentialError, setCredentialError] = React.useState("");
+  const [credentialConfirmOpen, setCredentialConfirmOpen] = React.useState(false);
+
   // 首次挂载：有模板就填进表单。只跑一次，用户之后的手动编辑不被覆盖。
   const templateApplied = React.useRef(false);
   React.useEffect(() => {
@@ -1596,6 +1881,69 @@ function Workbench({ configForms, discoverModels }) {
     setRouteDefaultUsageOpen({ contextWindow: false, maxTokens: false });
     setRouteFormState(routeFormFromProvider(route));
   }, [routeId]);
+
+  const credentialReference = routeFormState === null ? "" : credentialRefOf(routeFormState.apiKeyEnv);
+
+  // 换引用名就是换一条凭据：收起上一轮的编辑器与确认弹窗，状态交给下面的 effect。
+  // 卡片收起时也丢弃明文 —— 不让密码停留在已隐藏的 DOM 状态外。
+  React.useEffect(() => {
+    setCredentialEditorOpen(false);
+    setCredentialDraft("");
+    setCredentialError("");
+    setCredentialConfirmOpen(false);
+  }, [credentialReference, routeCardOpen]);
+
+  // 卡片展开时才查询（折叠状态不产生远程调用）。换引用名、保存 / 清除成功后
+  // 都重新 describe；generation 作废旧请求，防止旧 ref 的结果覆盖新 ref。
+  React.useEffect(() => {
+    if (!routeCardOpen || credentialReference === "") {
+      credentialGeneration.current += 1;
+      setCredential({ ref: credentialReference, status: "idle", configured: false, writable: true, error: "" });
+      return undefined;
+    }
+    const generation = ++credentialGeneration.current;
+    setCredential((current) => ({ ...current, ref: credentialReference, status: "loading", error: "" }));
+    let disposed = false;
+    const settle = (next) => {
+      if (disposed || generation !== credentialGeneration.current) return;
+      setCredential(next);
+    };
+    (async () => {
+      try {
+        const response = await credentialOps.describe([credentialReference]);
+        if (response?.ok === true) {
+          const info = response.value?.[credentialReference];
+          settle({
+            ref: credentialReference,
+            status: "ready",
+            configured: info?.configured === true,
+            writable: info?.writable !== false,
+            error: "",
+          });
+          return;
+        }
+        settle({
+          ref: credentialReference,
+          status: "error",
+          configured: false,
+          writable: false,
+          error: credentialErrorMessage(response, "宿主未返回原因"),
+        });
+      } catch (error) {
+        settle({
+          ref: credentialReference,
+          status: "error",
+          configured: false,
+          writable: false,
+          error: String(error?.message ?? error),
+        });
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [routeCardOpen, credentialReference, credentialRefresh, credentialOps]);
+
   const userRoute = routeId ? userProviders[routeId] : undefined;
   const routeModels = Array.isArray(route?.models) ? route.models : [];
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2030,6 +2378,77 @@ function Workbench({ configForms, discoverModels }) {
     setRouteFormState((current) => (current === null ? current : { ...current, ...patch }));
   }
 
+  /** 打开密钥编辑器：清空上一轮输入与错误，明文只在内存里停留到保存 / 取消。 */
+  function openCredentialEditor() {
+    setCredentialDraft("");
+    setCredentialError("");
+    setCredentialEditorOpen(true);
+  }
+
+  function cancelCredentialEditor() {
+    setCredentialEditorOpen(false);
+    setCredentialDraft("");
+    setCredentialError("");
+  }
+
+  function changeCredentialDraft(event) {
+    setCredentialDraft(event.target.value);
+    if (credentialError !== "") setCredentialError("");
+  }
+
+  /** 把派生建议填进 apiKeyEnv（只改表单，不自动保存）。 */
+  function useCredentialSuggestion() {
+    const suggestion = deriveKeyRef(routeId);
+    if (suggestion !== "") updateRouteForm({ apiKeyEnv: suggestion });
+  }
+
+  /**
+   * 保存密钥：value 原样交给宿主 credentials.set —— 不 trim、不加前后缀。
+   * 失败时不清空输入、不改状态；成功后才关闭编辑器并重新 describe。
+   */
+  async function saveCredential() {
+    if (credentialBusy || credentialReference === "" || credentialDraft === "") return;
+    setCredentialBusy(true);
+    setCredentialError("");
+    try {
+      const response = await credentialOps.set(credentialReference, credentialDraft);
+      if (response?.ok === true) {
+        setCredentialDraft("");
+        setCredentialEditorOpen(false);
+        setCredentialRefresh((current) => current + 1);
+      } else {
+        setCredentialError(
+          `密钥保存失败：${redactSecret(credentialErrorMessage(response, "宿主拒绝写入"), credentialDraft)}`,
+        );
+      }
+    } catch (error) {
+      setCredentialError(`密钥保存失败：${redactSecret(String(error?.message ?? error), credentialDraft)}`);
+    } finally {
+      setCredentialBusy(false);
+    }
+  }
+
+  /** 清除密钥：确认弹窗之后才调用 credentials.unset，然后重新 describe。 */
+  async function clearCredential() {
+    if (credentialBusy || credentialReference === "") return;
+    setCredentialBusy(true);
+    setCredentialError("");
+    try {
+      const response = await credentialOps.unset(credentialReference);
+      setCredentialConfirmOpen(false);
+      if (response?.ok === true) {
+        setCredentialRefresh((current) => current + 1);
+      } else {
+        setCredentialError(`密钥清除失败：${credentialErrorMessage(response, "宿主拒绝删除")}`);
+      }
+    } catch (error) {
+      setCredentialConfirmOpen(false);
+      setCredentialError(`密钥清除失败：${String(error?.message ?? error)}`);
+    } finally {
+      setCredentialBusy(false);
+    }
+  }
+
   function toggleRouteCard() {
     setRouteCardOpen((current) => !current);
   }
@@ -2117,6 +2536,21 @@ function Workbench({ configForms, discoverModels }) {
   // ConfigFormController 快照形态（0.2.2）：{status, value, base, user, revision, writable}。
   // 没有 `mode` 字段 —— 命名空间是否可用看 `status`，写权限看 `writable`。
   const status = snap?.status;
+
+  // describe 结果只在 ref 对得上时才算数：刚改完引用名、effect 还没跑的那一帧
+  // 必须显示「读取中」，不能把上一条引用的状态贴到新引用上。
+  const credentialStatus = credential.ref === credentialReference
+    ? credential.status
+    : credentialReference === ""
+      ? "idle"
+      : "loading";
+  const credentialUi = {
+    ref: credentialReference,
+    status: credentialStatus,
+    configured: credential.configured,
+    writable: credential.writable,
+    error: credential.error,
+  };
   return (
     <div style={s.page}>
       <div>
@@ -2201,6 +2635,14 @@ function Workbench({ configForms, discoverModels }) {
           form={routeFormState}
           confirmOpen={routeConfirmOpen}
           usageOpen={routeDefaultUsageOpen}
+          credential={{
+            ...credentialUi,
+            editorOpen: credentialEditorOpen,
+            draft: credentialDraft,
+            busy: credentialBusy,
+            opError: credentialError,
+            confirmOpen: credentialConfirmOpen,
+          }}
           onChange={updateRouteForm}
           onToggleOpen={toggleRouteCard}
           onOpenConfirm={() => setRouteConfirmOpen(true)}
@@ -2208,6 +2650,14 @@ function Workbench({ configForms, discoverModels }) {
           onSave={saveRouteSettings}
           onDelete={confirmDeleteRoute}
           onToggleUsage={toggleRouteDefaultUsage}
+          onCredentialDraftChange={changeCredentialDraft}
+          onOpenCredentialEditor={openCredentialEditor}
+          onCancelCredentialEditor={cancelCredentialEditor}
+          onSaveCredential={saveCredential}
+          onOpenCredentialConfirm={() => setCredentialConfirmOpen(true)}
+          onCloseCredentialConfirm={() => setCredentialConfirmOpen(false)}
+          onClearCredential={clearCredential}
+          onUseCredentialSuggestion={useCredentialSuggestion}
         />
       ) : null}
       </section>
@@ -2602,6 +3052,12 @@ export function apply(ctx) {
   const configForms = ctx.configForms;
   // 在 apply 作用域里绑定宿主操作：组件只拿到回调，不直接持有服务代理。
   const discoverModels = (namespace, request) => ctx.remote.llm.discoverModels(namespace, request);
+  // 密钥走独立命名空间：值只从密码框单向传入宿主，读路径只有 describe 的布尔值。
+  const credentialOps = {
+    describe: (refs) => ctx.remote.credentials.describe(refs),
+    set: (ref, value) => ctx.remote.credentials.set(ref, value),
+    unset: (ref) => ctx.remote.credentials.unset(ref),
+  };
   ctx.effect(
     () =>
       configForms.whileServed([LLM_NS], () =>
@@ -2612,7 +3068,7 @@ export function apply(ctx) {
               id: SECTION_ID,
               order: 12,
               label: () => "ModelPilot",
-              inject: () => ({ configForms, discoverModels }),
+              inject: () => ({ configForms, discoverModels, credentialOps }),
             },
             Workbench,
           ),
