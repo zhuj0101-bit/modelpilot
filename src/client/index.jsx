@@ -68,6 +68,12 @@ function isPositiveTokenCount(text) {
   return /^\d+$/.test(text) && Number(text) > 0;
 }
 
+/** 连接测试失败文案：宿主错误消息原样展示，最多 200 字符。 */
+function probeMessageText(message) {
+  const text = typeof message === "string" ? message : String(message ?? "");
+  return (text === "" ? "连接测试失败（宿主未返回原因）" : text).slice(0, 200);
+}
+
 /** 从 configForms 快照里读取当前的 pi-ai providers 映射。 */
 function providersOf(snapshot) {
   const value = snapshot?.value;
@@ -378,6 +384,28 @@ const s = {
     cursor: "pointer", fontSize: FONT.caption, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
   },
   routeBody: { display: "flex", flexDirection: "column", gap: GAP.md, marginTop: GAP.sm },
+  // 连接测试结果：文字色直接取宿主 state-* 主色，左侧同色描边再做一层编码；
+  // 底色用中性 layer，避免把宿主的实心 secondary 色当成浅色底。
+  connectionResult: {
+    padding: "8px 10px", borderRadius: RADIUS.sm, fontSize: FONT.caption, lineHeight: 1.55,
+    overflowWrap: "anywhere",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
+    borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    borderRight: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+  },
+  connectionSuccess: {
+    color: "var(--dsw-alias-state-success-primary, #2f855a)",
+    borderLeft: "3px solid var(--dsw-alias-state-success-primary, #2f855a)",
+  },
+  connectionWarn: {
+    color: "var(--dsw-alias-state-warn-primary, #b7791f)",
+    borderLeft: "3px solid var(--dsw-alias-state-warn-primary, #b7791f)",
+  },
+  connectionError: {
+    color: "var(--dsw-alias-state-error-primary, #e05252)",
+    borderLeft: "3px solid var(--dsw-alias-state-error-primary, #e05252)",
+  },
   // 密钥区块：紧贴在 apiKeyEnv 输入框下方，说明「那条引用背后的值」。
   credentialBlock: {
     display: "flex", flexDirection: "column", gap: GAP.sm,
@@ -1423,6 +1451,7 @@ function RouteSettingsCard({
   confirmOpen,
   usageOpen,
   credential,
+  connectionTest,
   onChange,
   onToggleOpen,
   onOpenConfirm,
@@ -1430,6 +1459,7 @@ function RouteSettingsCard({
   onSave,
   onDelete,
   onToggleUsage,
+  onTestConnection,
   onCredentialDraftChange,
   onOpenCredentialEditor,
   onCancelCredentialEditor,
@@ -1457,6 +1487,17 @@ function RouteSettingsCard({
   const modelCount = routeModels.length;
   const apiChoicesList = Array.isArray(apiChoices?.choices) ? apiChoices.choices : [];
   const apiChoicesSource = apiChoices?.source === "schema" ? "schema" : "fallback";
+  // 连接测试只看表单里的接口地址：空值 / 非 http(s) 不能发请求；密钥引用为空
+  // 不阻止测试 —— 本地 Ollama / vLLM 这类端点本来就不需要鉴权。
+  const baseURLText = typeof form.baseURL === "string" ? form.baseURL.trim() : "";
+  const testBlockReason = baseURLText === ""
+    ? "先填接口地址"
+    : /^https?:\/\//i.test(baseURLText)
+      ? null
+      : "接口地址格式不对";
+  const testing = connectionTest?.status === "running";
+  const testDisabled = testBlockReason !== null || testing;
+  const connectionTone = connectionTest?.status === "done" ? connectionTest.tone : "";
   // 引用名以表单里的 apiKeyEnv 为准（改了引用名就查新条目的状态）；
   // 派生建议只用于空引用时的 placeholder / 「采用」，不自动写入。
   const credentialReference = credential?.reference ?? credentialRefOf(form.apiKeyEnv);
@@ -1738,6 +1779,16 @@ function RouteSettingsCard({
             </button>
             <button
               type="button"
+              style={testDisabled ? { ...s.btn, opacity: 0.5, cursor: "not-allowed" } : s.btn}
+              disabled={testDisabled}
+              onClick={() => onTestConnection(form)}
+              title={testBlockReason ?? ""}
+              aria-label="测试连接"
+            >
+              {testing ? "测试中…" : "测试连接"}
+            </button>
+            <button
+              type="button"
               style={canSave ? s.btnPrimary : { ...s.btn, opacity: 0.5, cursor: "not-allowed" }}
               disabled={!canSave}
               onClick={save}
@@ -1747,6 +1798,23 @@ function RouteSettingsCard({
             </button>
           </span>
         </div>
+
+        {connectionTest?.status === "done" ? (
+          <div
+            style={{
+              ...s.connectionResult,
+              ...(connectionTone === "success"
+                ? s.connectionSuccess
+                : connectionTone === "warn"
+                  ? s.connectionWarn
+                  : s.connectionError),
+            }}
+            role="status"
+            aria-label="连接测试结果"
+          >
+            {connectionTest.text}
+          </div>
+        ) : null}
       </div>
       ) : null}
 
@@ -1861,6 +1929,10 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
   const [routeFormState, setRouteFormState] = React.useState(null);
   const [routeCardOpen, setRouteCardOpen] = React.useState(false);
   const [routeConfirmOpen, setRouteConfirmOpen] = React.useState(false);
+  // 连接测试是只读探活：状态只在这里，结果不写配置、不缓存、不自动跑。
+  // generation 作废「发起后表单又被改过」或「切了路由」的迟到结果。
+  const [connectionTest, setConnectionTest] = React.useState({ status: "idle", tone: "", text: "" });
+  const connectionTestGeneration = React.useRef(0);
   // 两个默认值的「哪些模型会用到」清单各自折叠；按模型字段名存。
   const [routeDefaultUsageOpen, setRouteDefaultUsageOpen] = React.useState({ contextWindow: false, maxTokens: false });
 
@@ -1910,6 +1982,8 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
     setRouteConfirmOpen(false);
     setRouteDefaultUsageOpen({ contextWindow: false, maxTokens: false });
     setRouteFormState(routeFormFromProvider(route));
+    connectionTestGeneration.current += 1;
+    setConnectionTest({ status: "idle", tone: "", text: "" });
   }, [routeId]);
 
   const credentialReference = routeFormState === null ? "" : credentialRefOf(routeFormState.apiKeyEnv);
@@ -2561,7 +2635,51 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
 
   /** 路由设置卡片：无 hook 的展示组件，状态全部由 Workbench 持有。 */
   function updateRouteForm(patch) {
+    // 任何一个字段变了，上一轮测试结论就不再对应当前表单（避免「测过 A 却
+    // 以为测的是 B」）；进行中的请求继续按发起时的快照跑，但结果不再落地。
+    connectionTestGeneration.current += 1;
+    setConnectionTest({ status: "idle", tone: "", text: "" });
     setRouteFormState((current) => (current === null ? current : { ...current, ...patch }));
+  }
+
+  /**
+   * 测试连接：用表单当前值发起一次真实探活。
+   *
+   * 关键：请求不带 provider —— 宿主一旦看到 provider 且内置目录非空，就会
+   * 直接返回目录、根本不发 HTTP 请求；这里要的是真实端点。
+   * 只传 baseURL / api，不传任何密钥：凭据解析完全归宿主。
+   */
+  async function testConnection(form) {
+    if (form === null || connectionTest.status === "running") return;
+    const baseURL = typeof form.baseURL === "string" ? form.baseURL.trim() : "";
+    if (baseURL === "" || !/^https?:\/\//i.test(baseURL)) return;
+    const api = typeof form.api === "string" && form.api.trim() !== "" ? form.api.trim() : undefined;
+    const generation = ++connectionTestGeneration.current;
+    setConnectionTest({ status: "running", tone: "", text: "" });
+    const settle = (tone, text) => {
+      if (generation !== connectionTestGeneration.current) return;
+      setConnectionTest({ status: "done", tone, text });
+    };
+    try {
+      const response = await discoverModels(LLM_NS, {
+        baseURL,
+        ...(api === undefined ? {} : { api }),
+      });
+      if (generation !== connectionTestGeneration.current) return;
+      if (response?.ok === true) {
+        const count = Array.isArray(response.value) ? response.value.length : 0;
+        if (count > 0) settle("success", `连接正常 · 端点返回 ${count} 个模型`);
+        else settle("warn", "连接正常，但端点没有返回任何模型");
+        return;
+      }
+      if (response?.error?.code === "DISCOVERY_UNSUPPORTED") {
+        settle("error", "该协议没有可读的模型列表，换个协议或手动填写模型");
+        return;
+      }
+      settle("error", probeMessageText(response?.error?.message));
+    } catch (error) {
+      settle("error", probeMessageText(error?.message ?? error));
+    }
   }
 
   /** 打开密钥编辑器：清空上一轮输入与错误，明文只在内存里停留到保存 / 取消。 */
@@ -2829,6 +2947,7 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
             opError: credentialError,
             confirmOpen: credentialConfirmOpen,
           }}
+          connectionTest={connectionTest}
           onChange={updateRouteForm}
           onToggleOpen={toggleRouteCard}
           onOpenConfirm={() => setRouteConfirmOpen(true)}
@@ -2836,6 +2955,7 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
           onSave={saveRouteSettings}
           onDelete={confirmDeleteRoute}
           onToggleUsage={toggleRouteDefaultUsage}
+          onTestConnection={testConnection}
           onCredentialDraftChange={changeCredentialDraft}
           onOpenCredentialEditor={openCredentialEditor}
           onCancelCredentialEditor={cancelCredentialEditor}
