@@ -104,14 +104,15 @@ export function projectDeepseekReasoning(policy) {
 }
 
 /**
- * 从模型 ID 推导默认显示名：取最后一个 `/` 之后的片段并去掉首尾空白。
- * 无 `/` 时就是模型 ID 本身；空模型 ID 得到空字符串。
+ * 从模型 ID 推导默认显示名：完整模型 ID（只去掉首尾空白）。
+ * 模型 ID 里的 `/` 往往就是名字的一部分（`jxf/dsv4.1-flash`），
+ * 去掉前缀会让不同模型撞成同一个显示名（工单 #24 问题 3）。
+ * 空模型 ID 得到空字符串；非字符串同样得到空字符串。
  * 纯函数，供客户端联动与单元测试共用（B4 工作台）。
  */
 export function displayNameFromModelId(modelId) {
-  const id = typeof modelId === "string" ? modelId : "";
-  if (id === "") return "";
-  return id.split("/").pop().trim();
+  const id = typeof modelId === "string" ? modelId.trim() : "";
+  return id;
 }
 
 /**

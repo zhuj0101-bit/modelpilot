@@ -119,11 +119,22 @@ test("planBatchSelection：按默认模板生成字段", () => {
   const plan = planBatchSelection(["a"], host, { routeId: "r", template });
   assert.deepEqual(plan.ops[0].value, {
     id: "a",
+    name: "a",
     contextWindow: 131072,
     maxTokens: 8192,
     input: ["text", "image"],
     reasoningEfforts: { off: null, high: "high" },
   });
+});
+
+test("planBatchSelection：每行显式写 name = 模型 ID 原文（含 / 与大小写）", () => {
+  const host = { providers: { r: { models: [] } }, catalogModels: new Set() };
+  const ids = ["jxf/dsv4.1-flash", "QoderCom/DeepSeek-Flash"];
+  const plan = planBatchSelection(ids, host, { routeId: "r", template: null });
+  assert.deepEqual(plan.written, ids);
+  assert.deepEqual(plan.ops.map((op) => op.value.name), ids);
+  // 不依赖宿主回落链：即使目录基准自带别的 name，写入的别名也严格等于 ID。
+  assert.deepEqual(plan.ops.map((op) => op.value.id), ids);
 });
 
 test("planBatchSelection：目录路由未确认时不下发 ops，确认后一次写完", () => {
@@ -225,7 +236,7 @@ function remoteStub(handler) {
 }
 
 /** 单次测试的 React 桩 + 真实打包产物 + 假 configForms/remote。 */
-function createHarness({ providers, remote, mutateImpl = async () => true }) {
+function createHarness({ providers, remote, mutateImpl = async () => true, storage }) {
   let hooks = [];
   let hookIndex = 0;
   let pending = false;
@@ -285,6 +296,7 @@ function createHarness({ providers, remote, mutateImpl = async () => true }) {
         },
       },
       setTimeout: () => 0,
+      ...(storage === undefined ? {} : { localStorage: storage }),
     },
     console,
   };
@@ -422,6 +434,21 @@ function createHarness({ providers, remote, mutateImpl = async () => true }) {
     confirmButton() {
       return harness.buttonStartsWith("确定（");
     },
+    pendingWriteButton() {
+      return harness.buttonByText("写入");
+    },
+    pendingClearButton() {
+      return harness.buttonByText("清空");
+    },
+    details() {
+      return findAll(current(), (node) => node.type === "details");
+    },
+    summaryTexts() {
+      return harness.details().map((node) => {
+        const summary = findAll(node, (child) => child.type === "summary")[0];
+        return textOf(summary?.props?.children).trim();
+      });
+    },
     cancelButton() {
       return harness.buttonByText("取消");
     },
@@ -557,18 +584,21 @@ test("关窗再打开：搜索词与勾选状态重置", async () => {
   assert.equal(harness.rowCheckbox("jxf/dsv4.1-flash").props.checked, false);
 });
 
-test("勾 1 个：确认后关闭弹窗并把 id 填进模型输入框，显示名联动", async () => {
+test("勾 1 个：确认后关闭弹窗并把完整 id 填进模型输入框，显示名联动", async () => {
   const harness = await fetchedHarness({ providers: { "newapi-chat": ROUTE_WITH_EXISTING } });
   harness.toggleRow("jxf/dsv4.1-flash");
   harness.click(harness.confirmButton());
 
   assert.equal(harness.dialog(), undefined);
   assert.equal(harness.modelInput().props.value, "jxf/dsv4.1-flash");
-  assert.equal(harness.displayNameInput().props.value, "dsv4.1-flash");
+  assert.equal(harness.displayNameInput().props.value, "jxf/dsv4.1-flash");
   assert.equal(harness.mutations.length, 0, "single selection does not write");
+  assert.doesNotMatch(harness.text(), /待写入/);
+  assert.deepEqual(harness.summaryTexts(), ["settingsOps（1 条）· 点击展开"]);
+  assert.equal(harness.details()[0].props.open, undefined, "single projection JSON default closed");
 });
 
-test("勾 3 个：一次 mutate 写入 3 条 op，写入前预览区已显示全部 ops", async () => {
+test("勾 3 个：确认只生成待写入区块，点「写入」才一次 mutate 3 条 op", async () => {
   let release;
   const deferred = new Promise((resolve) => { release = resolve; });
   const harness = await fetchedHarness({
@@ -578,7 +608,27 @@ test("勾 3 个：一次 mutate 写入 3 条 op，写入前预览区已显示全
   harness.selectAll();
   harness.click(harness.confirmButton());
 
+  // ① 确认只关窗并展示计划：配置没有任何变化。
   assert.equal(harness.dialog(), undefined);
+  assert.equal(harness.mutations.length, 0, "confirm must not write");
+  assert.match(harness.text(), /待写入 3 条模型/);
+  for (const id of ["jxf/dsv4.1-flash", "jxf/dsv4.1-pro", "tx/deepseek-v4.1-flash"]) {
+    assert.match(harness.text(), new RegExp(id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(harness.text(), /contextWindow 未设置/);
+  assert.match(harness.text(), /maxTokens 未设置/);
+  assert.match(harness.text(), /input text/);
+  assert.match(harness.text(), /reasoningEfforts off \/ low \/ medium \/ high/);
+  // ② 原始 JSON 在默认关闭的 details 中，摘要显示条数。
+  assert.deepEqual(harness.summaryTexts(), ["settingsOps（3 条）· 点击展开"]);
+  assert.equal(harness.details()[0].props.open, undefined, "details default closed");
+  assert.match(harness.projectionText(), /"models"/);
+  assert.equal((harness.projectionText().match(/"op": "set"/g) ?? []).length, 3);
+  assert.match(harness.text(), /providers\.newapi-chat\.models\.2 ← jxf\/dsv4\.1-flash/);
+  assert.match(harness.text(), /providers\.newapi-chat\.models\.4 ← tx\/deepseek-v4\.1-flash/);
+
+  // ③ 点「写入」：一次 mutate 覆盖整批，写入期间按钮禁用并显示「写入中…」。
+  harness.click(harness.pendingWriteButton());
   assert.equal(harness.mutations.length, 1, "one scope.mutate for the whole batch");
   assert.equal(harness.mutations[0].length, 3);
   assert.deepEqual(plain(harness.mutations[0].map((op) => op.path)), [
@@ -586,16 +636,95 @@ test("勾 3 个：一次 mutate 写入 3 条 op，写入前预览区已显示全
     ["providers", "newapi-chat", "models", "3"],
     ["providers", "newapi-chat", "models", "4"],
   ]);
-  // mutate 尚未 resolve，投影预览已经能读到 3 条 op。
-  assert.match(harness.projectionText(), /"models"/);
-  assert.equal((harness.projectionText().match(/"op": "set"/g) ?? []).length, 3);
-  assert.match(harness.text(), /providers\.newapi-chat\.models\.2 ← jxf\/dsv4\.1-flash/);
-  assert.match(harness.text(), /providers\.newapi-chat\.models\.4 ← tx\/deepseek-v4\.1-flash/);
+  assert.equal(harness.buttonByText("写入中…").props.disabled, true, "write button disabled while writing");
+  assert.match(harness.text(), /待写入 3 条模型/, "block stays until the write resolves");
 
   release(true);
   await harness.flush();
   harness.render();
   assert.match(harness.text(), /已写入 newapi-chat \/ 3 个模型/);
+  assert.doesNotMatch(harness.text(), /待写入/);
+  assert.deepEqual(harness.summaryTexts(), []);
+});
+
+test("待写入区块：「清空」丢弃计划且不写入", async () => {
+  const harness = await fetchedHarness({ providers: { "newapi-chat": ROUTE_WITH_EXISTING } });
+  harness.selectAll();
+  harness.click(harness.confirmButton());
+  assert.match(harness.text(), /待写入 3 条模型/);
+
+  harness.click(harness.pendingClearButton());
+  assert.equal(harness.mutations.length, 0);
+  assert.doesNotMatch(harness.text(), /待写入/);
+});
+
+test("待写入区块：写入失败保留，可再次点「写入」重试", async () => {
+  let attempt = 0;
+  const harness = await fetchedHarness({
+    providers: { "newapi-chat": ROUTE_WITH_EXISTING },
+    mutateImpl: async () => {
+      attempt += 1;
+      return attempt > 1;
+    },
+  });
+  harness.selectAll();
+  harness.click(harness.confirmButton());
+
+  harness.click(harness.pendingWriteButton());
+  await harness.flush();
+  harness.render();
+  assert.equal(attempt, 1);
+  assert.match(harness.text(), /写入被宿主拒绝/);
+  assert.match(harness.text(), /待写入 3 条模型/, "failure keeps the plan for retry");
+
+  harness.click(harness.pendingWriteButton());
+  await harness.flush();
+  harness.render();
+  assert.equal(attempt, 2);
+  assert.match(harness.text(), /已写入 newapi-chat \/ 3 个模型/);
+  assert.doesNotMatch(harness.text(), /待写入/);
+});
+
+test("待写入区块存在时再选一批：替换而不是累加", async () => {
+  const harness = await fetchedHarness({ providers: { "newapi-chat": ROUTE_WITH_EXISTING } });
+  harness.selectAll();
+  harness.click(harness.confirmButton());
+  assert.match(harness.text(), /待写入 3 条模型/);
+
+  harness.openPicker();
+  harness.toggleRow("jxf/dsv4.1-flash");
+  harness.toggleRow("jxf/dsv4.1-pro");
+  harness.click(harness.confirmButton());
+  assert.match(harness.text(), /待写入 2 条模型/);
+  assert.doesNotMatch(harness.text(), /待写入 3 条模型/);
+  assert.equal(harness.mutations.length, 0);
+});
+
+test("待写入区块展示模板里的实际字段值", async () => {
+  const storage = {
+    getItem: (key) =>
+      key === "modelpilot.default-template.v1"
+        ? JSON.stringify({
+            version: 1,
+            contextWindow: "131072",
+            maxTokens: "8192",
+            inputText: true,
+            inputImage: true,
+            reasoningLevels: ["off", "high"],
+          })
+        : null,
+    setItem: () => {},
+    removeItem: () => {},
+  };
+  const harness = await fetchedHarness({ providers: { "newapi-chat": ROUTE_WITH_EXISTING }, storage });
+  harness.toggleRow("jxf/dsv4.1-flash");
+  harness.toggleRow("jxf/dsv4.1-pro");
+  harness.click(harness.confirmButton());
+
+  assert.match(harness.text(), /contextWindow 131072/);
+  assert.match(harness.text(), /maxTokens 8192/);
+  assert.match(harness.text(), /input text \/ image/);
+  assert.match(harness.text(), /reasoningEfforts off \/ high/);
 });
 
 test("仅大小写不同的条目默认不勾；勾上后批量写入跳过并计数", async () => {
@@ -605,11 +734,16 @@ test("仅大小写不同的条目默认不勾；勾上后批量写入跳过并�
   harness.toggleRow("jxf/dsv4.1-pro");
   assert.match(harness.dialogText(), /已跳过 1 条已存在、1 条仅大小写不同/);
   harness.click(harness.confirmButton());
+  assert.match(harness.text(), /待写入 2 条模型/);
+  assert.match(harness.text(), /已跳过 1 条已存在、1 条仅大小写不同/);
 
+  harness.click(harness.pendingWriteButton());
+  await harness.flush();
+  harness.render();
   assert.equal(harness.mutations.length, 1);
   assert.equal(harness.mutations[0].length, 2);
   assert.deepEqual(plain(harness.mutations[0].map((op) => op.value.id)), ["jxf/dsv4.1-flash", "jxf/dsv4.1-pro"]);
-  assert.match(harness.text(), /已跳过 1 条已存在、1 条仅大小写不同/);
+  assert.deepEqual(plain(harness.mutations[0].map((op) => op.value.name)), ["jxf/dsv4.1-flash", "jxf/dsv4.1-pro"]);
 });
 
 test("没有默认模板：提示使用内置默认值，勾 3 个仍能写入", async () => {
@@ -617,6 +751,10 @@ test("没有默认模板：提示使用内置默认值，勾 3 个仍能写入",
   assert.match(harness.dialogText(), /未设置默认模板，将使用内置默认值/);
   harness.selectAll();
   harness.click(harness.confirmButton());
+  assert.match(harness.text(), /待写入 3 条模型/);
+  harness.click(harness.pendingWriteButton());
+  await harness.flush();
+  harness.render();
   assert.equal(harness.mutations.length, 1);
   assert.equal(harness.mutations[0].length, 3);
   assert.deepEqual(plain(harness.mutations[0][0].value.input), ["text"]);
@@ -635,6 +773,10 @@ test("目录路由：批量写入先显示 catalog-replacement 告警，确认�
   harness.render();
   assert.equal(harness.confirmButton().props.disabled, false);
   harness.click(harness.confirmButton());
+  assert.match(harness.text(), /待写入 2 条模型/);
+  harness.click(harness.pendingWriteButton());
+  await harness.flush();
+  harness.render();
   assert.equal(harness.mutations.length, 1);
   assert.deepEqual(plain(harness.mutations[0].map((op) => op.path)), [
     ["providers", "newapi-chat", "models", "0"],
