@@ -45,6 +45,12 @@ import {
   routeFormFromProvider,
 } from "../core/route-edit.js";
 import {
+  buildRouteCreatePlan,
+  defaultProtocolChoice,
+  filterCatalogRows,
+  routeCatalogRows,
+} from "../core/route-create.js";
+import {
   allReasoningLevels,
   defaultReasoningLevels,
   noReasoningLevels,
@@ -265,6 +271,16 @@ const s = {
     flexWrap: "wrap", gap: GAP.md, marginTop: GAP.xs,
   },
   comboBox: { position: "relative", display: "flex", alignItems: "stretch" },
+  // 路由选择器 + 新建按钮同一行；按钮不参与换行，窄容器下 select 先收缩。
+  routePickerRow: { display: "flex", alignItems: "center", gap: GAP.sm, minWidth: 0 },
+  newRouteButton: {
+    padding: "5px 10px", fontSize: FONT.hint, borderRadius: RADIUS.sm, cursor: "pointer",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+    background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1))",
+    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit",
+    whiteSpace: "nowrap", flex: "0 0 auto",
+  },
+  newRouteButtonDisabled: { opacity: 0.55, cursor: "not-allowed" },
   comboToggle: {
     padding: "0 8px", fontSize: FONT.hint, cursor: "pointer", borderRadius: RADIUS.sm,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
@@ -590,10 +606,24 @@ const s = {
     display: "flex", alignItems: "center", gap: GAP.sm, padding: "5px 8px",
     fontSize: FONT.caption, borderRadius: RADIUS.sm, cursor: "pointer",
   },
+  pickerRowSelected: { background: "var(--dsw-alias-interactive-bg-hover, rgba(90,140,230,0.22))" },
   pickerRowDisabled: { opacity: 0.45, cursor: "not-allowed" },
   pickerId: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   pickerHint: { fontSize: FONT.hint, opacity: 0.65 },
   pickerFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, flexWrap: "wrap" },
+  // 新建路由弹窗：来源（目录 / 自定义）是单选，两组字段互斥显示。
+  // 控件、列表、遮罩全部复用选择器的样式体系，只补一个居中的来源行。
+  modeRow: {
+    display: "flex", alignItems: "center", gap: GAP.lg, flexWrap: "wrap",
+    padding: "2px 2px 0",
+  },
+  modeOption: {
+    display: "inline-flex", alignItems: "center", gap: GAP.xs,
+    fontSize: FONT.caption, cursor: "pointer", userSelect: "none",
+  },
+  // 目录列表在弹窗里占固定高度，搜索词变化只增减行，不推挤底部按钮。
+  createList: { minHeight: 176, maxHeight: 260, flex: "1 1 176px" },
+  createModelField: { flex: "1 1 100%" },
 };
 
 function Field({ label, children, hint, error, style }) {
@@ -894,6 +924,247 @@ function ModelPicker({
               onClick={onConfirm}
             >
               确定（{selected.size}）
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 新建路由弹窗（工单 #21）。
+ *
+ * 只负责渲染，状态全部放在 Workbench —— 与路由设置卡片同样的取舍，避免
+ * 测试用最小渲染器在条件展开时丢失 hook 槽。视觉复用 ModelPicker 的
+ * overlay / dialog / pickerRow 体系，但逻辑不同：这里从宿主目录选提供商，
+ * 不去端点拉模型。
+ */
+function NewRouteDialog({
+  mode,
+  catalogStatus,
+  catalogError,
+  catalogTotal,
+  query,
+  rows,
+  selectedId,
+  providerId,
+  providerIdError,
+  providerIdHint,
+  baseURL,
+  baseURLError,
+  baseURLHint,
+  api,
+  apiChoices,
+  apiKeyEnv,
+  modelIds,
+  modelsError,
+  modelsHint,
+  catalogKnown,
+  catalogProviderName,
+  busy,
+  error,
+  canCreate,
+  focusRef,
+  onModeChange,
+  onQueryChange,
+  onSelectProvider,
+  onProviderIdChange,
+  onProviderIdBlur,
+  onBaseURLChange,
+  onBaseURLBlur,
+  onApiChange,
+  onApiKeyEnvChange,
+  onModelIdsChange,
+  onCancel,
+  onConfirm,
+  onRetryCatalog,
+}) {
+  const custom = mode === "custom";
+  const footerHint = custom
+    ? catalogKnown
+      ? "目录描述得了这条路由：不写 models，宿主继续用内置目录。"
+      : "目录外的路由必须至少列出 1 条模型，否则宿主会拒绝整条路由。"
+    : "从宿主目录选择；已配置的路由不可重复创建。";
+
+  return (
+    <div
+      style={s.overlay}
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+    >
+      <div style={s.dialog} role="dialog" aria-modal="true" aria-label="新建路由">
+        <div style={s.pickerHeader}>
+          <span style={s.h}>新建路由</span>
+          <span style={s.pickerHint}>
+            {custom ? "手填一个目录里没有的提供商" : `宿主目录 ${catalogTotal} 个`}
+          </span>
+        </div>
+
+        <div style={s.modeRow} role="radiogroup" aria-label="提供商来源">
+          <label style={s.modeOption}>
+            <input
+              type="radio"
+              name="modelpilot-new-route-mode"
+              checked={!custom}
+              onChange={() => onModeChange("catalog")}
+              aria-label="从目录选择"
+            />
+            从目录选择
+          </label>
+          <label style={s.modeOption}>
+            <input
+              type="radio"
+              name="modelpilot-new-route-mode"
+              checked={custom}
+              onChange={() => onModeChange("custom")}
+              aria-label="自定义"
+            />
+            自定义
+          </label>
+        </div>
+
+        {custom ? (
+          <>
+            <div style={s.row}>
+              <Field label="provider id" error={providerIdError} hint={providerIdHint} style={{ flex: "1 1 220px" }}>
+                <input
+                  ref={focusRef}
+                  style={s.input}
+                  value={providerId}
+                  onChange={(event) => onProviderIdChange(event.target.value)}
+                  onBlur={onProviderIdBlur}
+                  placeholder="如 my-relay"
+                  aria-label="provider id"
+                />
+              </Field>
+              <Field label="接口地址" error={baseURLError} hint={baseURLHint} style={{ flex: "1 1 220px" }}>
+                <input
+                  style={s.input}
+                  value={baseURL}
+                  onChange={(event) => onBaseURLChange(event.target.value)}
+                  onBlur={onBaseURLBlur}
+                  placeholder="https://relay.example.com/v1"
+                  aria-label="接口地址"
+                />
+              </Field>
+            </div>
+            <div style={s.row}>
+              <Field label="协议" style={{ flex: "1 1 220px" }}>
+                <select
+                  style={s.select}
+                  value={api}
+                  onChange={(event) => onApiChange(event.target.value)}
+                  aria-label="协议"
+                >
+                  {apiChoices.map((choice) => (
+                    <option key={choice} value={choice}>{choice}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="密钥引用" hint="只写引用名，真值在创建后设置" style={{ flex: "1 1 220px" }}>
+                <input
+                  style={s.input}
+                  value={apiKeyEnv}
+                  onChange={(event) => onApiKeyEnvChange(event.target.value)}
+                  placeholder="如 MY_RELAY_API_KEY"
+                  aria-label="密钥引用"
+                />
+              </Field>
+            </div>
+            {catalogKnown ? (
+              <div style={s.fieldHint}>
+                目录已描述该提供商（{catalogProviderName}），创建时无需列出模型。
+              </div>
+            ) : (
+              <Field
+                label="模型 ID（至少一条）"
+                error={modelsError}
+                hint={modelsHint}
+                style={s.createModelField}
+              >
+                <input
+                  style={s.input}
+                  value={modelIds}
+                  onChange={(event) => onModelIdsChange(event.target.value)}
+                  placeholder="如 relay/alpha, relay/beta"
+                  aria-label="模型 ID"
+                />
+              </Field>
+            )}
+          </>
+        ) : (
+          <>
+            <input
+              ref={focusRef}
+              style={s.input}
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder="搜索 provider id…"
+              aria-label="搜索提供商"
+            />
+            <div style={{ ...s.pickerList, ...s.createList }} role="listbox" aria-label="可配置提供商">
+              {catalogStatus === "loading" ? (
+                <div style={{ ...s.pickerHint, padding: "8px" }}>正在读取宿主目录…</div>
+              ) : catalogStatus === "failed" ? (
+                <div style={s.err}>
+                  目录读取失败：{catalogError || "宿主未返回原因"}
+                  <button type="button" style={{ ...s.btnSmall, marginLeft: GAP.sm }} onClick={onRetryCatalog}>
+                    重试
+                  </button>
+                </div>
+              ) : rows.length === 0 ? (
+                <div style={{ ...s.pickerHint, padding: "8px" }}>没有匹配的提供商</div>
+              ) : rows.map((row) => {
+                const selected = selectedId === row.provider;
+                const rowStyle = row.configured
+                  ? { ...s.pickerRow, ...s.pickerRowDisabled }
+                  : selected
+                    ? { ...s.pickerRow, ...s.pickerRowSelected }
+                    : s.pickerRow;
+                return (
+                  <label key={row.provider} style={rowStyle}>
+                    <input
+                      type="radio"
+                      name="modelpilot-new-route-provider"
+                      disabled={row.configured}
+                      checked={selected}
+                      onChange={() => onSelectProvider(row.provider)}
+                      aria-label={row.provider}
+                    />
+                    <span style={s.pickerId}>{row.provider}</span>
+                    {row.displayName !== row.provider ? (
+                      <span style={s.pickerHint}>{row.displayName}</span>
+                    ) : null}
+                    <span style={s.pickerHint}>{row.configured ? "已配置" : "未配置"}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {error ? <div style={s.err}>{error}</div> : null}
+
+        <div style={s.pickerFooter}>
+          <span style={s.pickerHint}>{footerHint}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: GAP.sm }}>
+            <button
+              type="button"
+              style={busy ? { ...s.btn, opacity: 0.55, cursor: "not-allowed" } : s.btn}
+              disabled={busy}
+              onClick={onCancel}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              style={canCreate ? s.btnPrimary : { ...s.btn, opacity: 0.5, cursor: "not-allowed" }}
+              disabled={!canCreate}
+              onClick={onConfirm}
+            >
+              {busy ? "创建中…" : "创建路由"}
             </button>
           </span>
         </div>
@@ -1841,7 +2112,7 @@ function RouteSettingsCard({
 }
 
 /** 工作台界面。 */
-function Workbench({ configForms, discoverModels, credentialOps }) {
+function Workbench({ configForms, discoverModels, credentialOps, listConfigurableProviders }) {
   const scope = configForms.get(LLM_NS);
   const [snap, setSnap] = React.useState(() => scope.getSnapshot());
   React.useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope]);
@@ -1936,6 +2207,26 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
   // 两个默认值的「哪些模型会用到」清单各自折叠；按模型字段名存。
   const [routeDefaultUsageOpen, setRouteDefaultUsageOpen] = React.useState({ contextWindow: false, maxTokens: false });
 
+  // 新建路由（工单 #21）：目录读取、表单、校验与提交状态全部留在 Workbench，
+  // 弹窗组件保持无 hook；创建成功后用 revealCreatedRoute 让路由卡片自动展开。
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [createMode, setCreateMode] = React.useState("catalog");
+  const [createCatalog, setCreateCatalog] = React.useState({ status: "idle", entries: [], error: "" });
+  // 目录读取的重新触发序号：点「重试」时自增，effect 随之重新读取。
+  const [createReload, setCreateReload] = React.useState(0);
+  const [createQuery, setCreateQuery] = React.useState("");
+  const [createProviderId, setCreateProviderId] = React.useState("");
+  const [createBaseURL, setCreateBaseURL] = React.useState("");
+  const [createApi, setCreateApi] = React.useState(() => defaultProtocolChoice(apiChoices.choices));
+  const [createApiKeyEnv, setCreateApiKeyEnv] = React.useState("");
+  const [createModelIds, setCreateModelIds] = React.useState("");
+  const [createProviderIdTouched, setCreateProviderIdTouched] = React.useState(false);
+  const [createBaseURLTouched, setCreateBaseURLTouched] = React.useState(false);
+  const [createBusy, setCreateBusy] = React.useState(false);
+  const [createError, setCreateError] = React.useState("");
+  const createFocusRef = React.useRef(null);
+  const [revealCreatedRoute, setRevealCreatedRoute] = React.useState(null);
+
   // 密钥区块：describe 只看 configured / writable；明文只存在于 credentialDraft，
   // 保存成功后立即清空，失败时保留输入方便重试。绝不写入 localStorage。
   const [credential, setCredential] = React.useState({
@@ -1985,6 +2276,74 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
     connectionTestGeneration.current += 1;
     setConnectionTest({ status: "idle", tone: "", text: "" });
   }, [routeId]);
+
+  // 新建路由成功后，路由卡片自动展开并预填新路由的字段。等 providers 快照
+  // 里真的出现这条路由再展开：快照更新可能比 mutate 的 resolve 晚一帧。
+  React.useEffect(() => {
+    if (revealCreatedRoute === null || revealCreatedRoute !== routeId || route === undefined) return;
+    setRevealCreatedRoute(null);
+    setRouteFormState(routeFormFromProvider(route));
+    setRouteCardOpen(true);
+  }, [revealCreatedRoute, route, routeId]);
+
+  // 弹窗打开时读宿主目录。只读消费；失败时 custom 模式仍可用。
+  React.useEffect(() => {
+    if (!createOpen) return undefined;
+    let disposed = false;
+    setCreateCatalog({ status: "loading", entries: [], error: "" });
+    (async () => {
+      try {
+        const response = await listConfigurableProviders();
+        if (disposed) return;
+        if (Array.isArray(response)) {
+          setCreateCatalog({ status: "ready", entries: response, error: "" });
+          return;
+        }
+        if (response?.ok === true) {
+          setCreateCatalog({
+            status: "ready",
+            entries: Array.isArray(response.value) ? response.value : [],
+            error: "",
+          });
+          return;
+        }
+        setCreateCatalog({
+          status: "failed",
+          entries: [],
+          error: typeof response?.error?.message === "string" && response.error.message !== ""
+            ? response.error.message
+            : "宿主未返回原因",
+        });
+      } catch (error) {
+        if (!disposed) {
+          setCreateCatalog({
+            status: "failed",
+            entries: [],
+            error: String(error?.message ?? error),
+          });
+        }
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [createOpen, createReload, listConfigurableProviders]);
+
+  // 打开弹窗 / 切换来源后把焦点放到第一输入；Esc 关闭（提交中不关闭）。
+  React.useEffect(() => {
+    if (!createOpen) return;
+    const target = createFocusRef.current;
+    if (target !== null && typeof target.focus === "function") target.focus();
+  }, [createOpen, createMode]);
+
+  React.useEffect(() => {
+    if (!createOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && !createBusy) setCreateOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [createOpen, createBusy]);
 
   const credentialReference = routeFormState === null ? "" : credentialRefOf(routeFormState.apiKeyEnv);
 
@@ -2185,6 +2544,158 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
 
   // 至少两条才谈得上排序；只读 / 写入进行中也禁用，避免并发写同一数组。
   const canReorderModels = writable && !busy && routeModels.length > 1;
+
+  // ── 新建路由：目录行、表单校验与唯一一条 set op ──────────────────────
+  const createRows = React.useMemo(
+    () => routeCatalogRows(createCatalog.entries, { settingsNs: LLM_NS, existingIds: routes }),
+    [createCatalog.entries, routes],
+  );
+  const createVisibleRows = React.useMemo(
+    () => filterCatalogRows(createRows, createQuery),
+    [createRows, createQuery],
+  );
+  // 这里用整理后的 llm-pi-ai 目录行判断「宿主目录能不能描述这条路由」，
+  // 而不是原始跨命名空间列表：否则 deepseek 之类会被误判成可写。
+  const createPlan = React.useMemo(
+    () => buildRouteCreatePlan({
+      mode: createMode,
+      providerId: createProviderId,
+      baseURL: createBaseURL,
+      api: createApi,
+      apiKeyEnv: createApiKeyEnv,
+      modelIds: createModelIds,
+      catalog: createRows,
+      existingIds: routes,
+    }),
+    [
+      createMode,
+      createProviderId,
+      createBaseURL,
+      createApi,
+      createApiKeyEnv,
+      createModelIds,
+      createRows,
+      routes,
+    ],
+  );
+  const createCustom = createMode === "custom";
+  const createProviderText = createProviderId.trim();
+  const createCatalogKnown = createPlan.catalogKnown;
+  const createCatalogName =
+    createRows.find((row) => row.provider === createProviderText)?.displayName ?? createProviderText;
+  const createCanSubmit = !createBusy && createPlan.ok;
+  const createProviderIdError =
+    createProviderText !== "" || createProviderIdTouched ? createPlan.errors.providerId ?? "" : "";
+  // 空地址与非法地址都在本地拦住；打开自定义时先显示中性「必填」提示，
+  // 一旦开始填 provider id 或碰过这个输入框，就把宿主规则的原话变红。
+  const createBaseURLError =
+    createBaseURLTouched || (createCustom && createProviderText !== "")
+      ? createPlan.errors.baseURL ?? ""
+      : "";
+  const createModelsError =
+    createCustom &&
+    createProviderText !== "" &&
+    !createPlan.errors.providerId &&
+    !createCatalogKnown
+      ? createPlan.errors.models ?? ""
+      : "";
+  const createProviderIdHint = createProviderText === ""
+    ? createCustom
+      ? "必填；a-z、0-9、连字符"
+      : "从下方目录选择"
+    : createCatalogKnown
+      ? "目录已描述，可不写模型"
+      : "目录未描述，需至少一条模型";
+  const createProtocolChoices = React.useMemo(() => {
+    const choices = (apiChoices.choices ?? []).filter(
+      (choice) => typeof choice === "string" && choice !== "",
+    );
+    return choices.length > 0 ? choices : ["openai-completions"];
+  }, [apiChoices]);
+
+  function openCreateRoute() {
+    if (!writable) return;
+    setCreateOpen(true);
+    setCreateMode("catalog");
+    // 先放到「读取中」，避免 effect 尚未跑完时短暂显示「没有匹配的提供商」。
+    setCreateCatalog({ status: "loading", entries: [], error: "" });
+    setCreateQuery("");
+    setCreateProviderId("");
+    setCreateBaseURL("");
+    setCreateApi(defaultProtocolChoice(apiChoices.choices));
+    setCreateApiKeyEnv("");
+    setCreateModelIds("");
+    setCreateProviderIdTouched(false);
+    setCreateBaseURLTouched(false);
+    setCreateBusy(false);
+    setCreateError("");
+  }
+
+  function closeCreateRoute() {
+    if (createBusy) return;
+    setCreateOpen(false);
+  }
+
+  function changeCreateMode(next) {
+    if (next !== "catalog" && next !== "custom") return;
+    setCreateMode(next);
+    // 两种来源的 id 语义不同（目录选中的 id vs 手填 id）；切换时清掉，
+    // 避免在自定义里提交一条用户没有写过的目录 id。
+    setCreateProviderId("");
+    setCreateProviderIdTouched(false);
+    setCreateBaseURLTouched(false);
+    setCreateError("");
+  }
+
+  function changeCreateProviderId(value) {
+    setCreateProviderId(value);
+    setCreateProviderIdTouched(true);
+    setCreateError("");
+  }
+
+  function changeCreateBaseURL(value) {
+    setCreateBaseURL(value);
+    setCreateBaseURLTouched(true);
+    setCreateError("");
+  }
+
+  /** 唯一写入路径：先校验出 1 条 set，再调用宿主 mutate。 */
+  async function createRoute() {
+    if (createBusy) return;
+    const plan = buildRouteCreatePlan({
+      mode: createMode,
+      providerId: createProviderId,
+      baseURL: createBaseURL,
+      api: createApi,
+      apiKeyEnv: createApiKeyEnv,
+      modelIds: createModelIds,
+      catalog: createRows,
+      existingIds: routes,
+    });
+    if (!plan.ok) {
+      setCreateProviderIdTouched(true);
+      setCreateBaseURLTouched(true);
+      return;
+    }
+    setCreateBusy(true);
+    setCreateError("");
+    try {
+      const ok = await scope.mutate([plan.op]);
+      if (!ok) {
+        // 不清空表单：用户核对后可以原样重试（mutate 自带修订号围栏）。
+        setCreateError("创建被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试");
+        return;
+      }
+      setRevealCreatedRoute(plan.providerId);
+      setCreateOpen(false);
+      setRouteId(plan.providerId);
+      setToast({ tone: "good", text: `已创建路由 ${plan.providerId}` });
+    } catch (error) {
+      setCreateError(`创建异常：${error?.message ?? error}`);
+    } finally {
+      setCreateBusy(false);
+    }
+  }
 
   /** token 输入：合法值写入状态；非法值不落状态，回显最近一次合法值并给出错误。 */
   function changeTokenCount(event, current, setValue, setError) {
@@ -2869,19 +3380,41 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
       {!writable ? <div style={s.warn}>当前配置不可写（writable: false），仅只读预览；请检查是否处于只读连接或内存模式。</div> : null}
       {status === "loading" ? <div style={s.sub}>正在读取 DSH 配置…</div> : null}
       {status === "ready" && routes.length === 0 ? (
-        <div style={s.warn}>没有检测到已配置的 pi-ai 路由。请先在「模型」页添加一个 provider。</div>
+        <div style={s.warn}>
+          当前没有配置 pi-ai 路由。点「+ 新建路由」从宿主目录添加，或直接自定义一条。
+        </div>
       ) : null}
 
       <section style={s.sectionCard} aria-label="当前路由">
         <div style={s.sectionTitle}>当前路由</div>
         <div style={s.row}>
-          <Field label="路由 (provider)" hint="">
-            <select style={s.select} value={routeId} onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}>
-              {routes.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-          </Field>
+          <div style={{ ...s.field, minWidth: 220 }}>
+            <span style={s.label}>路由 (provider)</span>
+            <div style={s.routePickerRow}>
+              <select
+                style={{ ...s.select, flex: "1 1 auto", width: 0 }}
+                value={routeId}
+                onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}
+              >
+                {routes.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                style={writable
+                  ? s.newRouteButton
+                  : { ...s.newRouteButton, ...s.newRouteButtonDisabled }}
+                disabled={!writable}
+                onClick={openCreateRoute}
+                aria-label="新建路由"
+                title={writable ? "从宿主目录新建一条路由，或自定义" : "当前配置不可写，无法创建路由"}
+              >
+                + 新建路由
+              </button>
+            </div>
+            <div style={s.hintLine} />
+          </div>
           <Field label="模型 ID（原样写入）" hint="" style={{ flex: "0 1 190px" }}>
             <div style={s.comboBox}>
               <input
@@ -3376,6 +3909,61 @@ function Workbench({ configForms, discoverModels, credentialOps }) {
         />
       ) : null}
 
+      {createOpen ? (
+        <NewRouteDialog
+          mode={createMode}
+          catalogStatus={createCatalog.status}
+          catalogError={createCatalog.error}
+          catalogTotal={createRows.length}
+          query={createQuery}
+          rows={createVisibleRows}
+          selectedId={createProviderId}
+          providerId={createProviderId}
+          providerIdError={createProviderIdError}
+          providerIdHint={createProviderIdHint}
+          baseURL={createBaseURL}
+          baseURLError={createBaseURLError}
+          baseURLHint="必填，以 http:// 或 https:// 开头"
+          api={createApi}
+          apiChoices={createProtocolChoices}
+          apiKeyEnv={createApiKeyEnv}
+          modelIds={createModelIds}
+          modelsError={createModelsError}
+          modelsHint="逗号分隔；创建后可继续补字段"
+          catalogKnown={createCatalogKnown}
+          catalogProviderName={createCatalogName}
+          busy={createBusy}
+          error={createError}
+          canCreate={createCanSubmit}
+          focusRef={createFocusRef}
+          onModeChange={changeCreateMode}
+          onQueryChange={setCreateQuery}
+          onSelectProvider={(provider) => {
+            setCreateProviderId(provider);
+            setCreateError("");
+          }}
+          onProviderIdChange={changeCreateProviderId}
+          onProviderIdBlur={() => setCreateProviderIdTouched(true)}
+          onBaseURLChange={changeCreateBaseURL}
+          onBaseURLBlur={() => setCreateBaseURLTouched(true)}
+          onApiChange={(value) => {
+            setCreateApi(value);
+            setCreateError("");
+          }}
+          onApiKeyEnvChange={(value) => {
+            setCreateApiKeyEnv(value);
+            setCreateError("");
+          }}
+          onModelIdsChange={(value) => {
+            setCreateModelIds(value);
+            setCreateError("");
+          }}
+          onCancel={closeCreateRoute}
+          onConfirm={createRoute}
+          onRetryCatalog={() => setCreateReload((current) => current + 1)}
+        />
+      ) : null}
+
       {deleteTarget ? (
         <DeleteConfirmDialog
           routeId={routeId}
@@ -3399,6 +3987,8 @@ export function apply(ctx) {
     set: (ref, value) => ctx.remote.credentials.set(ref, value),
     unset: (ref) => ctx.remote.credentials.unset(ref),
   };
+  // 目录只读消费：宿主列出所有可声明的提供商（含未配置的），客户端不改写它。
+  const listConfigurableProviders = () => ctx.remote.llm.listConfigurableProviders();
   ctx.effect(
     () =>
       configForms.whileServed([LLM_NS], () =>
@@ -3409,7 +3999,7 @@ export function apply(ctx) {
               id: SECTION_ID,
               order: 12,
               label: () => "ModelPilot",
-              inject: () => ({ configForms, discoverModels, credentialOps }),
+              inject: () => ({ configForms, discoverModels, credentialOps, listConfigurableProviders }),
             },
             Workbench,
           ),
