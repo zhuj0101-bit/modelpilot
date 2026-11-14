@@ -23,11 +23,16 @@ import { describeModelRow, diffRow, formFromModel } from "../core/model-edit.js"
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
 import {
   CACHE_RETENTION_CHOICES,
+  ROUTE_DEFAULT_FIELDS,
   TRANSPORT_CHOICES,
   apiChoicesFromSchema,
   buildRouteDeleteOps,
   buildRouteEditOps,
+  countRouteDefaultUsers,
+  describeHostDefaultFallback,
+  describeRouteDefaultUsage,
   describeRouteSummary,
+  routeDefaultCountParts,
   routeDeleteBlockReason,
   routeFieldLabels,
   routeFormFromProvider,
@@ -239,6 +244,19 @@ const s = {
     cursor: "pointer", fontSize: 12, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
   },
   routeBody: { display: "flex", flexDirection: "column", gap: 10, marginTop: 8 },
+  // 路由默认值说明块：三行语义 + 每个字段的留空后果 / 实时计数。
+  // 字号沿用 fieldHint（工单 #34 3.1），整块只有 11px，避免抢字段的注意力。
+  routeDefaults: { display: "flex", flexDirection: "column", gap: 2, fontSize: 11, lineHeight: 1.55, opacity: 0.62 },
+  // 行内布局：让「3 个模型中有 <button>2 个</button> 会使用」保持一句话。
+  routeDefaultLine: { display: "block" },
+  // 计数里的「N 个」就地展开模型清单：不用 <details>，既有测试会精确断言
+  // details 清单等于投影预览的数量，折叠状态由 Workbench 持有。
+  usageToggle: {
+    padding: 0, border: "none", background: "transparent", color: "inherit",
+    font: "inherit", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2,
+  },
+  usageList: { display: "flex", flexDirection: "column", gap: 2, margin: "0 0 2px", paddingLeft: 14, listStyle: "none" },
+  usageItem: { fontSize: 11, lineHeight: 1.55, overflowWrap: "anywhere" },
   // 编辑表单顶部：填入默认模板 + 模板摘要 / 无模板说明。
   templateBar: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
   modelEditor: {
@@ -1036,12 +1054,14 @@ function RouteSettingsCard({
   open,
   form,
   confirmOpen,
+  usageOpen,
   onChange,
   onToggleOpen,
   onOpenConfirm,
   onCloseConfirm,
   onSave,
   onDelete,
+  onToggleUsage,
 }) {
   if (form === null) return null;
 
@@ -1057,9 +1077,32 @@ function RouteSettingsCard({
     Object.keys(errors).length === 0;
   const deleteBlocked = routeDeleteBlockReason(routeCount);
   const deleteDisabled = !writable || busy || deleteBlocked !== null || provider === undefined;
-  const modelCount = Array.isArray(provider?.models) ? provider.models.length : 0;
+  const routeModels = Array.isArray(provider?.models) ? provider.models : [];
+  const modelCount = routeModels.length;
   const apiChoicesList = Array.isArray(apiChoices?.choices) ? apiChoices.choices : [];
   const apiChoicesSource = apiChoices?.source === "schema" ? "schema" : "fallback";
+
+  // 路由默认值影响谁：按字段分别算，两个字段的受影响集合可能不同。
+  // 宿主没有把「已安装目录描述了哪些模型 id」交给设置客户端，而 Workbench 的
+  // catalogIds 是「路由当前对外提供的模型 id」（目录替换闸门用），把它当内置
+  // 目录会把每条模型都误判成「目录已给值」。因此这里不传 catalogIds：对
+  // ModelPilot 管理的自定义路由，内置目录确实为空；目录路由本身没有可枚举的
+  // models，计数行不显示。纯函数仍保留 catalogIds 入参，接上目录事实即可用。
+  const defaultUsage = countRouteDefaultUsers(routeModels);
+  const defaultRows = ROUTE_DEFAULT_FIELDS.map((field) => {
+    const raw = typeof form[field.key] === "string" ? form[field.key].trim() : "";
+    const usage = defaultUsage[field.modelField];
+    const blank = raw === "";
+    const valid = raw !== "" && isPositiveTokenCount(raw);
+    return {
+      ...field,
+      blank,
+      count: usage.count,
+      models: usage.models,
+      parts: blank || !valid ? null : routeDefaultCountParts(field.key, defaultUsage.total, usage.count),
+      expanded: usageOpen?.[field.modelField] === true,
+    };
+  });
 
   function update(field, value) {
     onChange({ [field]: value });
@@ -1183,9 +1226,47 @@ function RouteSettingsCard({
           </Field>
         </div>
 
-        <span style={s.sub}>
-          未声明窗口 / 输出上限的模型回落到这两个值；留空表示清空（回到宿主回落），数字必须是正整数。
-        </span>
+        <div style={s.routeDefaults} aria-label="路由默认值说明">
+          <span>未声明窗口 / 输出上限的模型回落到这两个值；已声明自己的模型不受影响。</span>
+          <span>回落顺序：模型自己 → 内置目录 → 这里。</span>
+          <span>注意：这里只影响请求参数，不影响 DSH 压缩阈值 —— 后者只认模型自己声明的那一项。</span>
+          {defaultRows.map((row) => (
+            <React.Fragment key={row.key}>
+              {row.blank ? (
+                <span>{describeHostDefaultFallback(row.key)}</span>
+              ) : row.parts === null ? null : (
+                <>
+                  <div style={s.routeDefaultLine}>
+                    <span>{row.parts.prefix}</span>
+                    {row.parts.countText === null ? null : (
+                      <button
+                        type="button"
+                        style={s.usageToggle}
+                        aria-expanded={row.expanded}
+                        aria-label={`${row.expanded ? "收起" : "展开"}使用${row.label}的 ${row.count} 个模型`}
+                        onClick={() => onToggleUsage(row.modelField)}
+                      >
+                        {row.parts.countText}
+                      </button>
+                    )}
+                    <span>{row.parts.suffix}</span>
+                  </div>
+                  {row.parts.countText !== null && row.expanded ? (
+                    <ul style={s.usageList} aria-label={`使用${row.label}的模型清单`}>
+                      {row.models.map((model, index) => (
+                        <li key={`${typeof model?.id === "string" ? model.id : "model"}:${index}`} style={s.usageItem}>
+                          <b>{typeof model?.id === "string" && model.id !== "" ? model.id : "（无 id）"}</b>
+                          {" —— "}
+                          {describeRouteDefaultUsage(model)}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
 
         <div style={s.row}>
           <Field label="缓存 (cacheRetention)" hint="留空 = 不声明">
@@ -1361,6 +1442,8 @@ function Workbench({ configForms, discoverModels }) {
   const [routeFormState, setRouteFormState] = React.useState(null);
   const [routeCardOpen, setRouteCardOpen] = React.useState(false);
   const [routeConfirmOpen, setRouteConfirmOpen] = React.useState(false);
+  // 两个默认值的「哪些模型会用到」清单各自折叠；按模型字段名存。
+  const [routeDefaultUsageOpen, setRouteDefaultUsageOpen] = React.useState({ contextWindow: false, maxTokens: false });
 
   // 首次挂载：有模板就填进表单。只跑一次，用户之后的手动编辑不被覆盖。
   const templateApplied = React.useRef(false);
@@ -1388,6 +1471,7 @@ function Workbench({ configForms, discoverModels }) {
   React.useEffect(() => {
     setRouteCardOpen(false);
     setRouteConfirmOpen(false);
+    setRouteDefaultUsageOpen({ contextWindow: false, maxTokens: false });
     setRouteFormState(routeFormFromProvider(route));
   }, [routeId]);
   const userRoute = routeId ? userProviders[routeId] : undefined;
@@ -1827,6 +1911,11 @@ function Workbench({ configForms, discoverModels }) {
     setRouteCardOpen((current) => !current);
   }
 
+  /** 就地展开 / 收起某个默认值的受影响模型清单（不弹窗）。 */
+  function toggleRouteDefaultUsage(modelField) {
+    setRouteDefaultUsageOpen((current) => ({ ...current, [modelField]: !current[modelField] }));
+  }
+
   async function confirmDeleteRoute() {
     await deleteRoute();
     setRouteConfirmOpen(false);
@@ -1986,12 +2075,14 @@ function Workbench({ configForms, discoverModels }) {
           open={routeCardOpen}
           form={routeFormState}
           confirmOpen={routeConfirmOpen}
+          usageOpen={routeDefaultUsageOpen}
           onChange={updateRouteForm}
           onToggleOpen={toggleRouteCard}
           onOpenConfirm={() => setRouteConfirmOpen(true)}
           onCloseConfirm={() => setRouteConfirmOpen(false)}
           onSave={saveRouteSettings}
           onDelete={confirmDeleteRoute}
+          onToggleUsage={toggleRouteDefaultUsage}
         />
       ) : null}
 
