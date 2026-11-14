@@ -137,27 +137,112 @@ function describePendingFields(row) {
  * useMemo 计算，好让 Set 的身份按路由文档保持稳定 —— 每次渲染都新建 Set
  * 会导致每敲一个键就重跑一次投影。 */
 
+// ── 设计变量 ──────────────────────────────────────────────────────────────
+// 样式对象只从这三组档位取值，不在下面散落硬编码数字：
+// 圆角三档（小控件 / 卡片 / 弹窗）、间距四档（紧邻 / 同组 / 跨组 / 区块）。
+// 字号全部走 DSH 字体 token；用 longhand 的 -font-size，因为 --dsw-font-*
+// 本身是 font 简写，不能直接赋给 font-size。
+const RADIUS = Object.freeze({ sm: 6, md: 10, lg: 14 });
+const GAP = Object.freeze({ xs: 4, sm: 8, md: 14, lg: 22 });
+const FONT = Object.freeze({
+  hint: "var(--dsw-font-xxxs-11-font-size, 11px)",         // 字段提示
+  caption: "var(--dsw-font-xxs-12-font-size, 12px)",       // 摘要、次要说明
+  body: "var(--dsw-font-xs-13-font-size, 13px)",           // 正文、输入框
+  label: "var(--dsw-font-xxs-strong-12-font-size, 12px)",  // 字段标签
+  section: "var(--dsw-font-s-strong-14-font-size, 14px)",  // 区块标题
+  title: "var(--dsw-font-base-strong-16-font-size, 16px)", // 页面标题
+});
+const ROW_HOVER_MS = 120;
+
+// 三个区块与内置设置页共用同一套卡片语言。fallback 链退到 bg-layer-1 /
+// border-l2：旧宿主或测试夹具只提供基础 token 时仍保持可读、可测。
+const CARD = Object.freeze({
+  display: "flex",
+  flexDirection: "column",
+  gap: GAP.sm,
+  padding: "12px 14px",
+  borderRadius: RADIUS.md,
+  border: "1px solid var(--dsw-alias-settings-card-stroke, var(--dsw-alias-border-l2, rgba(128,128,128,0.28)))",
+  background: "var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08)))",
+});
+
+// 输入框与 select 共用盒模型；select 只多出 appearance:none + 自绘箭头。
+const INPUT = Object.freeze({
+  padding: "6px 8px",
+  fontSize: FONT.body,
+  borderRadius: RADIUS.sm,
+  border: "1px solid var(--dsw-alias-border-l4, rgba(128,128,128,0.32))",
+  // 关键：不用 transparent。显式透明会让原生 <select> 弹出层退回平台浅色。
+  background: "var(--dsw-alias-bg-layer-1, transparent)",
+  color: "var(--dsw-alias-label-primary, inherit)",
+  fontFamily: "inherit",
+  minWidth: 0,
+  // 固定盒高：原生 select 与 input 的默认高度不同，同一行 flex-end
+  // 对齐时顶边会差 2px（验收判据 6）。
+  boxSizing: "border-box",
+  height: 29,
+  // 显式继承 color-scheme，保证原生下拉、复选框、滚动条都跟随宿主主题。
+  colorScheme: "inherit",
+});
+
+const SELECT = Object.freeze({
+  ...INPUT,
+  appearance: "none",
+  paddingRight: 28,
+  cursor: "pointer",
+  // appearance:none 后自绘 ▾：两条 currentColor 斜线，跟随主题文字色。
+  backgroundImage:
+    "linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%)",
+  backgroundPosition: "calc(100% - 15px) calc(50% + 1px), calc(100% - 10px) calc(50% + 1px)",
+  backgroundSize: "5px 5px, 5px 5px",
+  backgroundRepeat: "no-repeat",
+});
+
 const s = {
-  page: { display: "flex", flexDirection: "column", gap: 16, padding: "4px 2px 32px" },
-  h: { fontSize: 16, fontWeight: 600, margin: 0 },
-  sub: { fontSize: 12, opacity: 0.66, margin: 0, lineHeight: 1.55 },
-  row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" },
-  field: { display: "flex", flexDirection: "column", gap: 4, minWidth: 148 },
-  fieldHint: { fontSize: 11, lineHeight: 1.4, opacity: 0.62 },
-  fieldError: { fontSize: 11, lineHeight: 1.4, color: "var(--dsw-alias-state-error-primary, #e05252)" },
+  page: { display: "flex", flexDirection: "column", gap: GAP.md, padding: "4px 2px 32px" },
+  h: { fontSize: FONT.title, fontWeight: 600, margin: 0, letterSpacing: -0.2 },
+  sub: {
+    fontSize: FONT.caption, margin: 0, lineHeight: 1.6,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  row: { display: "flex", gap: GAP.md, flexWrap: "wrap", alignItems: "flex-end" },
+  field: { display: "flex", flexDirection: "column", gap: GAP.xs, minWidth: 148 },
+  fieldHint: {
+    fontSize: FONT.hint, lineHeight: 1.4,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  fieldError: { fontSize: FONT.hint, lineHeight: 1.4, color: "var(--dsw-alias-state-error-primary, #e05252)" },
   // 提示行始终占位：高度固定，内容出现/消失时字段高度不变（问题 3）。
-  hintLine: { minHeight: 16, height: 16, lineHeight: "16px", display: "flex", alignItems: "center" },
-  label: { fontSize: 11, opacity: 0.7, letterSpacing: 0.2 },
+  hintLine: { minHeight: 16, height: 16, lineHeight: "16px", display: "flex", alignItems: "center", gap: GAP.sm },
+  label: {
+    fontSize: FONT.label, fontWeight: 500, letterSpacing: 0.2,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  // 区块：标题 / 卡片 / 主操作行 / 次要操作行。三个区块共用同一套卡片语言。
+  sectionCard: CARD,
+  // 「新增模型」表单卡：fallback 用 bg-base，保证浅色主题下红色字段错误
+  // （state-error-primary）在卡片底色上仍有 ≥ 4.5 对比度；宿主提供
+  // settings-card-fill 时三个区块仍是同一套底色。
+  formCard: {
+    ...CARD,
+    background: "var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-base, rgba(128,128,128,0.04)))",
+  },
+  sectionTitle: { fontSize: FONT.section, fontWeight: 600, margin: 0, color: "var(--dsw-alias-label-primary, inherit)" },
+  primaryRow: { display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: GAP.xs },
+  linkRow: {
+    display: "flex", justifyContent: "flex-end", alignItems: "center",
+    flexWrap: "wrap", gap: GAP.md, marginTop: GAP.xs,
+  },
   comboBox: { position: "relative", display: "flex", alignItems: "stretch" },
   comboToggle: {
-    padding: "0 8px", fontSize: 11, cursor: "pointer", borderRadius: 6,
+    padding: "0 8px", fontSize: FONT.hint, cursor: "pointer", borderRadius: RADIUS.sm,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
     background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1))",
-    color: "inherit", fontFamily: "inherit", marginLeft: 4,
+    color: "inherit", fontFamily: "inherit", marginLeft: GAP.xs,
   },
   comboPanel: {
-    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
-    maxHeight: 220, overflowY: "auto", padding: 4, borderRadius: 8,
+    position: "absolute", top: `calc(100% + ${GAP.xs}px)`, left: 0, right: 0, zIndex: 20,
+    maxHeight: 220, overflowY: "auto", padding: GAP.xs, borderRadius: RADIUS.md,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
     // 不用系统色 Canvas：它在 Firefox / WebView 下不跟随 color-scheme。
     background: "var(--dsw-alias-bg-layer-1, Canvas)",
@@ -165,26 +250,16 @@ const s = {
   },
   comboItem: {
     display: "flex", alignItems: "center", justifyContent: "space-between",
-    width: "100%", padding: "5px 8px", fontSize: 12, borderRadius: 5,
+    width: "100%", padding: "5px 8px", fontSize: FONT.caption, borderRadius: RADIUS.sm,
     border: "none", background: "transparent", color: "inherit",
     fontFamily: "inherit", cursor: "pointer", textAlign: "left",
   },
   comboItemActive: { background: "var(--dsw-alias-interactive-bg-hover, rgba(90,140,230,0.22))" },
-  comboItemHint: { fontSize: 10, opacity: 0.6 },
-  input: {
-    padding: "6px 8px", fontSize: 13, borderRadius: 6,
-    border: "1px solid var(--dsw-alias-border-l4, rgba(128,128,128,0.32))",
-    // 关键：不用 transparent。显式透明会让原生 <select> 弹出层退回平台浅色。
-    background: "var(--dsw-alias-bg-layer-1, transparent)",
-    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit", minWidth: 0,
-    // 固定盒高：原生 select 与 input 的默认高度不同，同一行 flex-end
-    // 对齐时顶边会差 2px（验收判据 6）。
-    boxSizing: "border-box", height: 29,
-    // 显式继承 color-scheme，保证原生下拉、复选框、滚动条都跟随宿主主题。
-    colorScheme: "inherit",
-  },
+  comboItemHint: { fontSize: FONT.hint, opacity: 0.6 },
+  input: INPUT,
+  select: SELECT,
   pre: {
-    margin: 0, padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+    margin: 0, padding: GAP.sm, borderRadius: RADIUS.md, fontSize: FONT.caption, lineHeight: 1.5,
     background: "var(--dsw-alias-markdown-code-block, rgba(128,128,128,0.09))",
     overflowX: "auto",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -192,61 +267,74 @@ const s = {
   // 原始 JSON 只给需要核对的人看：原生 <details> 默认关闭，不占半屏。
   details: {
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
-    borderRadius: 8, padding: "6px 10px",
+    borderRadius: RADIUS.sm, padding: "6px 10px",
   },
   summary: {
-    cursor: "pointer", fontSize: 12, opacity: 0.8, userSelect: "none",
+    cursor: "pointer", fontSize: FONT.caption, opacity: 0.8, userSelect: "none",
   },
   // 多选确认后的「待写入」区块：先让人核对，再决定清空还是写入。
   pending: {
-    display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px",
-    borderRadius: 10,
+    display: "flex", flexDirection: "column", gap: GAP.sm, padding: "10px 12px",
+    borderRadius: RADIUS.md,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
     background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
   },
-  pendingHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
-  pendingTitle: { fontSize: 13, fontWeight: 600 },
-  pendingActions: { display: "flex", alignItems: "center", gap: 8 },
-  pendingList: { display: "flex", flexDirection: "column", gap: 6 },
-  pendingModel: { display: "flex", flexDirection: "column", gap: 2 },
+  pendingHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, flexWrap: "wrap" },
+  pendingTitle: { fontSize: FONT.body, fontWeight: 600 },
+  pendingActions: { display: "flex", alignItems: "center", gap: GAP.sm },
+  pendingList: { display: "flex", flexDirection: "column", gap: GAP.xs },
+  pendingModel: { display: "flex", flexDirection: "column", gap: GAP.xs },
   pendingName: {
-    fontSize: 12, fontWeight: 600,
+    fontSize: FONT.caption, fontWeight: 600,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     overflowWrap: "anywhere",
   },
-  pendingFields: { fontSize: 11, lineHeight: 1.55, opacity: 0.78, overflowWrap: "anywhere" },
+  pendingFields: { fontSize: FONT.hint, lineHeight: 1.55, opacity: 0.78, overflowWrap: "anywhere" },
   // 模型列表：一条一行，展开编辑时同一行内表单展开；同时只允许一条展开。
-  modelsPanel: {
-    display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
-    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
-  },
+  modelsPanel: { ...CARD, gap: GAP.xs },
   modelRow: {
-    display: "flex", flexDirection: "column", gap: 4,
+    display: "flex", flexDirection: "column", gap: GAP.xs,
     padding: "8px 0",
     borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2))",
+    transition: `background-color ${ROW_HOVER_MS}ms ease`,
   },
+  modelRowHover: { background: "var(--dsw-alias-interactive-bg-hover, rgba(90,140,230,0.22))" },
   modelRowFirst: { borderTop: "none", paddingTop: 0 },
-  modelRowHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
-  modelSummary: { fontSize: 11, lineHeight: 1.55, opacity: 0.72, overflowWrap: "anywhere" },
-  modelEmpty: { fontSize: 12, lineHeight: 1.6, opacity: 0.66 },
-  // 路由设置卡片：默认折叠，摘要行先给出三个最有用的值。
+  modelRowHead: { display: "flex", alignItems: "baseline", gap: GAP.sm, paddingRight: GAP.xs },
+  modelRowMeta: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, paddingRight: GAP.xs },
+  modelName: {
+    fontSize: FONT.caption, fontWeight: 600, overflowWrap: "anywhere",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  },
+  modelSummary: {
+    fontSize: FONT.hint, lineHeight: 1.55, overflowWrap: "anywhere", flex: "1 1 auto",
+    color: "var(--dsw-alias-label-tertiary, var(--dsw-alias-label-primary, inherit))",
+  },
+  modelEmpty: {
+    display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap",
+    fontSize: FONT.caption, lineHeight: 1.6,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  // 路由设置卡片：嵌在「当前路由」区块内，只留一条分隔线，不再叠一层卡片。
   routeCard: {
-    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
-    borderRadius: 10, padding: "8px 12px",
-    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
+    display: "flex", flexDirection: "column", gap: GAP.xs,
+    marginTop: GAP.sm, paddingTop: GAP.sm,
+    borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
+    background: "var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08)))",
   },
   routeSummary: {
-    display: "flex", alignItems: "center", gap: 6,
+    display: "flex", alignItems: "center", gap: GAP.xs,
     width: "100%", padding: 0, border: "none", background: "transparent",
-    color: "inherit", fontFamily: "inherit", textAlign: "left",
-    cursor: "pointer", fontSize: 12, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
+    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit", textAlign: "left",
+    cursor: "pointer", fontSize: FONT.caption, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
   },
-  routeBody: { display: "flex", flexDirection: "column", gap: 10, marginTop: 8 },
+  routeBody: { display: "flex", flexDirection: "column", gap: GAP.md, marginTop: GAP.sm },
   // 路由默认值说明块：三行语义 + 每个字段的留空后果 / 实时计数。
-  // 字号沿用 fieldHint（工单 #34 3.1），整块只有 11px，避免抢字段的注意力。
-  routeDefaults: { display: "flex", flexDirection: "column", gap: 2, fontSize: 11, lineHeight: 1.55, opacity: 0.62 },
+  // 字号沿用 FONT.hint（工单 #34 3.1），整块只有 11px，避免抢字段的注意力。
+  routeDefaults: {
+    display: "flex", flexDirection: "column", gap: GAP.xs,
+    fontSize: FONT.hint, lineHeight: 1.55, opacity: 0.62,
+  },
   // 行内布局：让「3 个模型中有 <button>2 个</button> 会使用」保持一句话。
   routeDefaultLine: { display: "block" },
   // 计数里的「N 个」就地展开模型清单：不用 <details>，既有测试会精确断言
@@ -255,84 +343,105 @@ const s = {
     padding: 0, border: "none", background: "transparent", color: "inherit",
     font: "inherit", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2,
   },
-  usageList: { display: "flex", flexDirection: "column", gap: 2, margin: "0 0 2px", paddingLeft: 14, listStyle: "none" },
-  usageItem: { fontSize: 11, lineHeight: 1.55, overflowWrap: "anywhere" },
+  usageList: { display: "flex", flexDirection: "column", gap: GAP.xs, margin: "0 0 2px", paddingLeft: 14, listStyle: "none" },
+  usageItem: { fontSize: FONT.hint, lineHeight: 1.55, overflowWrap: "anywhere" },
   // 编辑表单顶部：填入默认模板 + 模板摘要 / 无模板说明。
-  templateBar: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  templateBar: { display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap" },
   modelEditor: {
-    display: "flex", flexDirection: "column", gap: 10, marginTop: 6, padding: "10px 12px",
-    borderRadius: 8,
+    display: "flex", flexDirection: "column", gap: GAP.md, marginTop: GAP.xs, padding: "10px 12px",
+    borderRadius: RADIUS.sm,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
     background: "var(--dsw-alias-bg-base, rgba(128,128,128,0.04))",
   },
   compatibility: {
-    padding: "7px 9px", borderRadius: 7, fontSize: 11, lineHeight: 1.55,
+    padding: "7px 9px", borderRadius: RADIUS.sm, fontSize: FONT.hint, lineHeight: 1.55,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
     background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.08))",
   },
-  budget: { fontSize: 11, lineHeight: 1.55, color: "var(--dsw-alias-label-primary, inherit)" },
+  budget: { fontSize: FONT.hint, lineHeight: 1.55, color: "var(--dsw-alias-label-primary, inherit)" },
   budgetWarn: {
-    padding: "6px 9px", borderRadius: 7, fontSize: 11, lineHeight: 1.55,
+    padding: "6px 9px", borderRadius: RADIUS.sm, fontSize: FONT.hint, lineHeight: 1.55,
     color: "var(--dsw-alias-state-error-primary, #e05252)",
     background: "var(--dsw-alias-state-warn-tertiary, rgba(220,150,40,0.12))",
     border: "1px solid var(--dsw-alias-state-warn-secondary, rgba(220,150,40,0.34))",
   },
   budgetSuggestion: { marginTop: 2, opacity: 0.92 },
-  editorFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
+  editorFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, flexWrap: "wrap" },
   btnDanger: {
-    padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
+    padding: "7px 14px", fontSize: FONT.body, borderRadius: RADIUS.sm, cursor: "pointer",
     border: "1px solid var(--dsw-alias-state-error-primary, rgba(220,80,80,0.55))",
     // 实心错误色 + 前景反色：浅色下白字 / 深色下深字，两边都 ≥ 4.5。
     background: "var(--dsw-alias-state-error-primary, rgba(220,80,80,0.9))",
     color: "var(--dsw-alias-label-primary-foreground, #fff)", fontFamily: "inherit", fontWeight: 600,
   },
   warn: {
-    padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
+    padding: "8px 10px", borderRadius: RADIUS.sm, fontSize: FONT.caption, lineHeight: 1.55,
     background: "var(--dsw-alias-state-warn-tertiary, rgba(220,150,40,0.12))",
     border: "1px solid var(--dsw-alias-state-warn-secondary, rgba(220,150,40,0.34))",
   },
   err: {
-    padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
+    padding: "8px 10px", borderRadius: RADIUS.sm, fontSize: FONT.caption, lineHeight: 1.55,
     background: "var(--dsw-alias-state-error-secondary, rgba(220,80,80,0.12))",
     border: "1px solid var(--dsw-alias-state-error-primary, rgba(220,80,80,0.34))",
   },
   ok: {
-    padding: "8px 10px", borderRadius: 8, fontSize: 12, lineHeight: 1.55,
+    padding: "8px 10px", borderRadius: RADIUS.sm, fontSize: FONT.caption, lineHeight: 1.55,
     background: "var(--dsw-alias-state-success-secondary, rgba(80,170,110,0.12))",
     border: "1px solid var(--dsw-alias-state-success-primary, rgba(80,170,110,0.34))",
   },
   btn: {
-    padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
+    padding: "7px 14px", fontSize: FONT.body, borderRadius: RADIUS.sm, cursor: "pointer",
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.36))",
     background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.12))",
-    color: "inherit", fontFamily: "inherit",
+    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit",
   },
   btnSmall: {
-    padding: "3px 9px", fontSize: 11, borderRadius: 6, cursor: "pointer",
+    padding: "3px 9px", fontSize: FONT.hint, borderRadius: RADIUS.sm, cursor: "pointer",
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
     background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1))",
-    color: "inherit", fontFamily: "inherit",
+    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit",
   },
   btnLink: {
-    padding: 0, marginLeft: 8, fontSize: 11, cursor: "pointer",
-    border: "none", background: "transparent", color: "inherit",
-    textDecoration: "underline", fontFamily: "inherit", opacity: 0.75,
+    padding: "2px 0", margin: 0, fontSize: FONT.hint, cursor: "pointer",
+    border: "none", background: "transparent", color: "var(--dsw-alias-label-primary, inherit)",
+    textDecoration: "underline", fontFamily: "inherit", opacity: 0.8,
   },
-  levels: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 340px", minWidth: 280 },
+  levels: { display: "flex", flexDirection: "column", gap: GAP.xs, flex: "1 1 340px", minWidth: 280 },
+  // 七个推理档位是固定集合：不折行，窄容器下横向滚动，顺序始终可读。
+  levelChips: {
+    display: "flex", flexWrap: "nowrap", overflowX: "auto", overflowY: "hidden",
+    gap: GAP.xs, paddingBottom: 2, maxWidth: "100%",
+  },
+  levelChip: {
+    display: "inline-flex", alignItems: "center", gap: GAP.xs, flex: "0 0 auto",
+    padding: "3px 8px", borderRadius: RADIUS.sm, fontSize: FONT.hint, whiteSpace: "nowrap",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3))",
+    background: "transparent", color: "var(--dsw-alias-label-primary, inherit)", cursor: "pointer",
+  },
+  levelChipOn: {
+    background: "var(--dsw-alias-button-ghost-active-fill, var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1)))",
+    border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55)))",
+    fontWeight: 500,
+  },
+  chip: {
+    display: "inline-flex", alignItems: "center", gap: GAP.xs, padding: "3px 8px",
+    borderRadius: RADIUS.sm, fontSize: FONT.hint,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3))",
+    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1))",
+    color: "var(--dsw-alias-label-primary, inherit)",
+  },
+  chipOn: {
+    background: "var(--dsw-alias-button-ghost-active-fill, var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1)))",
+    border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55)))",
+  },
   btnPrimary: {
-    padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: "pointer",
+    padding: "7px 14px", fontSize: FONT.body, borderRadius: RADIUS.sm, cursor: "pointer",
     border: "1px solid var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55))",
     background: "var(--dsw-alias-button-primary-fill, rgba(90,140,230,0.22))",
     // 铺在 brand 底色上的前景色与「页面正文色」互为正反 —— 用 label-primary
     // 会在深浅两个主题下都得到 1.00 对比度（工单 #24 问题 1）。
     color: "var(--dsw-alias-label-primary-foreground, #fff)",
     fontFamily: "inherit", fontWeight: 600,
-  },
-  chip: {
-    display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px",
-    borderRadius: 999, fontSize: 11,
-    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3))",
-    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1))",
   },
   // 选择器弹窗：全部用 --dsw-* token 并带 fallback，深浅色都跟随宿主主题。
   // overlay 必须 fixed —— 设置页有滚动容器，absolute 会被裁掉。
@@ -345,27 +454,27 @@ const s = {
     width: "min(560px, calc(100vw - 32px))",
     maxHeight: "min(640px, calc(100vh - 64px))",
     display: "flex", flexDirection: "column",
-    borderRadius: 12, padding: 14, gap: 10,
+    borderRadius: RADIUS.lg, padding: GAP.md, gap: GAP.sm,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
     background: "var(--dsw-alias-bg-layer-1, Canvas)",
     color: "var(--dsw-alias-label-primary, inherit)",
     colorScheme: "inherit",
     boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
   },
-  pickerHeader: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 },
+  pickerHeader: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: GAP.sm },
   pickerList: {
     flex: "1 1 auto", overflowY: "auto", minHeight: 160,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
-    borderRadius: 8, padding: 4,
+    borderRadius: RADIUS.md, padding: GAP.xs,
   },
   pickerRow: {
-    display: "flex", alignItems: "center", gap: 8, padding: "5px 8px",
-    fontSize: 12, borderRadius: 5, cursor: "pointer",
+    display: "flex", alignItems: "center", gap: GAP.sm, padding: "5px 8px",
+    fontSize: FONT.caption, borderRadius: RADIUS.sm, cursor: "pointer",
   },
   pickerRowDisabled: { opacity: 0.45, cursor: "not-allowed" },
   pickerId: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  pickerHint: { fontSize: 10, opacity: 0.65 },
-  pickerFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
+  pickerHint: { fontSize: FONT.hint, opacity: 0.65 },
+  pickerFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, flexWrap: "wrap" },
 };
 
 function Field({ label, children, hint, error, style }) {
@@ -386,9 +495,14 @@ function Field({ label, children, hint, error, style }) {
  * 不用原生 datalist：datalist 会按当前输入值过滤候选项，选中一个之后
  * 其余的就不再可见（工单问题 1）。这里始终渲染完整候选列表。
  */
-function TokenCountField({ label, value, candidates, error, placeholder, ariaLabel, onChange }) {
+function TokenCountField({ label, value, candidates, error, placeholder, ariaLabel, closeSignal, onChange }) {
   const [open, setOpen] = React.useState(false);
   const boxRef = React.useRef(null);
+
+  // 选择器弹窗打开时收起候选面板：浮层不与弹窗并存（与旧版行为一致）。
+  React.useEffect(() => {
+    if (closeSignal) setOpen(false);
+  }, [closeSignal]);
 
   // 点击面板外部或按 Esc 关闭。
   React.useEffect(() => {
@@ -628,7 +742,7 @@ function ModelPicker({
         {!hasTemplate ? <div style={s.pickerHint}>未设置默认模板，将使用内置默认值</div> : null}
 
         {catalogWarning ? (
-          <label style={{ ...s.warn, display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
+          <label style={{ ...s.warn, display: "flex", gap: GAP.sm, alignItems: "flex-start", cursor: "pointer" }}>
             <input
               type="checkbox"
               checked={ackReplacement}
@@ -652,7 +766,7 @@ function ModelPicker({
           <span style={s.pickerHint}>
             将写入 {writableCount} 条模型；已跳过 {skippedExists} 条已存在、{skippedCasefold} 条仅大小写不同
           </span>
-          <span style={{ display: "flex", gap: 8 }}>
+          <span style={{ display: "flex", gap: GAP.sm }}>
             <button type="button" style={s.btn} onClick={onCancel}>取消</button>
             <button
               type="button"
@@ -736,6 +850,7 @@ function EditModelForm({
   onSave,
   onCancel,
   onDelete,
+  closeTokenPanels,
 }) {
   const changedFields = Object.keys(changed);
   const hasCompat = hasMeaningfulCompat(model?.compat);
@@ -781,6 +896,7 @@ function EditModelForm({
           error={errors.contextWindow}
           placeholder="如 131072"
           ariaLabel="编辑上下文窗口"
+          closeSignal={closeTokenPanels}
           onChange={(event) => onTokenChange(event, "contextWindow")}
         />
         <TokenCountField
@@ -790,27 +906,31 @@ function EditModelForm({
           error={errors.maxTokens}
           placeholder="如 8192"
           ariaLabel="编辑输出上限"
+          closeSignal={closeTokenPanels}
           onChange={(event) => onTokenChange(event, "maxTokens")}
         />
         <div style={s.levels}>
           <span style={s.label}>推理档位（多选）</span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {PI_AI_LEVELS.map((level) => (
-              <label key={level} style={{ ...s.chip, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={form.reasoningLevels.includes(level)}
-                  onChange={() => onToggleLevel(level)}
-                  aria-label={`编辑档位 ${level}`}
-                />
-                {level}
-              </label>
-            ))}
+          <div style={s.levelChips}>
+            {PI_AI_LEVELS.map((level) => {
+              const checked = form.reasoningLevels.includes(level);
+              return (
+                <label key={level} style={checked ? { ...s.levelChip, ...s.levelChipOn } : s.levelChip}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggleLevel(level)}
+                    aria-label={`编辑档位 ${level}`}
+                  />
+                  {level}
+                </label>
+              );
+            })}
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            <button type="button" style={s.btnSmall} onClick={() => onChange({ reasoningLevels: allReasoningLevels() })}>全选</button>
-            <button type="button" style={s.btnSmall} onClick={() => onChange({ reasoningLevels: [] })}>全不选</button>
-            <button type="button" style={s.btnSmall} onClick={() => onChange({ reasoningLevels: defaultReasoningLevels() })}>恢复默认</button>
+          <div style={s.levelChips}>
+            <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: allReasoningLevels() })}>全选</button>
+            <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: [] })}>全不选</button>
+            <button type="button" style={s.btnLink} onClick={() => onChange({ reasoningLevels: defaultReasoningLevels() })}>恢复默认</button>
           </div>
           {guard ? <div style={s.err}>{guard}</div> : null}
           {form.reasoningLevels.length === 0 ? (
@@ -822,7 +942,7 @@ function EditModelForm({
       <BudgetHint contextWindow={form.contextWindow} maxTokens={form.maxTokens} />
 
       <div style={s.row}>
-        <label style={{ ...s.chip, cursor: "pointer" }}>
+        <label style={form.inputText ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
           <input
             type="checkbox"
             checked={form.inputText}
@@ -830,7 +950,7 @@ function EditModelForm({
             aria-label="编辑输入模态 text"
           /> text
         </label>
-        <label style={{ ...s.chip, cursor: "pointer" }}>
+        <label style={form.inputImage ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
           <input
             type="checkbox"
             checked={form.inputImage}
@@ -867,7 +987,7 @@ function EditModelForm({
 
       <div style={s.editorFooter}>
         <span style={s.sub}>写入走宿主 configForms（修订号围栏 + 冲突自动重读）。</span>
-        <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ display: "flex", gap: GAP.sm, flexWrap: "wrap" }}>
           <button type="button" style={s.btn} onClick={onCancel} aria-label="取消编辑">取消</button>
           <button
             type="button"
@@ -967,7 +1087,7 @@ function ConfirmDialog({
         {children}
         <div style={s.pickerFooter}>
           <span style={s.pickerHint}>{footerHint}</span>
-          <span style={{ display: "flex", gap: 8 }}>
+          <span style={{ display: "flex", gap: GAP.sm }}>
             <button ref={cancelRef} type="button" style={s.btn} onClick={onCancel} aria-label={cancelAria}>取消</button>
             <button
               type="button"
@@ -1160,7 +1280,7 @@ function RouteSettingsCard({
             hint={apiChoicesSource === "schema" ? "选项来自宿主 schema" : "使用内置协议清单"}
           >
             <select
-              style={s.input}
+              style={s.select}
               value={form.api}
               onChange={(event) => update("api", event.target.value)}
               aria-label="路由协议"
@@ -1271,7 +1391,7 @@ function RouteSettingsCard({
         <div style={s.row}>
           <Field label="缓存 (cacheRetention)" hint="留空 = 不声明">
             <select
-              style={s.input}
+              style={s.select}
               value={form.cacheRetention}
               onChange={(event) => update("cacheRetention", event.target.value)}
               aria-label="路由缓存"
@@ -1287,7 +1407,7 @@ function RouteSettingsCard({
           </Field>
           <Field label="传输 (transport)" hint="留空 = 不声明">
             <select
-              style={s.input}
+              style={s.select}
               value={form.transport}
               onChange={(event) => update("transport", event.target.value)}
               aria-label="路由传输"
@@ -1321,7 +1441,7 @@ function RouteSettingsCard({
 
         <div style={s.editorFooter}>
           <span style={s.sub}>写入走宿主 configForms（修订号围栏 + 冲突自动重读）。</span>
-          <span style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ display: "flex", gap: GAP.sm, flexWrap: "wrap", alignItems: "center" }}>
             {deleteBlocked === null ? null : <span style={s.fieldHint}>{deleteBlocked}</span>}
             {provider === undefined ? <span style={s.fieldHint}>该路由已不存在</span> : null}
             <button
@@ -1436,6 +1556,8 @@ function Workbench({ configForms, discoverModels }) {
   const [editModelId, setEditModelId] = React.useState("");
   // 自绘删除确认的目标；null 表示弹窗关闭。
   const [deleteTarget, setDeleteTarget] = React.useState(null);
+  // 模型行 hover 反馈：纯展示状态，不参与任何投影 / 写入。
+  const [hoveredRow, setHoveredRow] = React.useState(null);
 
   // 路由设置卡片的状态放在 Workbench：卡片组件保持无 hook，测试用的轻量
   // 渲染器（按组件树展开函数调用而不隔离 hook 槽）才能安全地展开它。
@@ -1503,6 +1625,7 @@ function Workbench({ configForms, discoverModels }) {
     setEditForm(null);
     setEditModelId("");
     setDeleteTarget(null);
+    setHoveredRow(null);
   }, [routeId]);
 
   // ── 实时投影：与宿主引擎在单元测试里算出的结果完全一致 ──
@@ -2011,58 +2134,60 @@ function Workbench({ configForms, discoverModels }) {
         <div style={s.warn}>没有检测到已配置的 pi-ai 路由。请先在「模型」页添加一个 provider。</div>
       ) : null}
 
-      <div style={s.row}>
-        <Field label="路由 (provider)" hint="">
-          <select style={{ ...s.input, colorScheme: "inherit" }} value={routeId} onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}>
-            {routes.map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="模型 ID（原样写入）" hint="" style={{ flex: "0 1 190px" }}>
-          <div style={s.comboBox}>
-            <input
-              id="modelpilot-model-id"
-              style={{ ...s.input, flex: "1 1 0", width: 0 }}
-              value={modelId}
-              onChange={(e) => {
-                const next = e.target.value;
-                setModelId(next);
-                if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(next));
-              }}
-              placeholder="如 tflow/alpha-32b"
-              list={remoteModels.length > 0 ? "modelpilot-remote-models" : undefined}
-            />
-            <button
-              type="button"
-              style={fetchState === "loading" ? { ...s.comboToggle, opacity: 0.55, cursor: "not-allowed" } : s.comboToggle}
-              disabled={fetchState === "loading"}
-              onClick={fetchModels}
-              title="从当前路由的端点拉取模型列表"
-            >
-              {fetchState === "loading" ? "…" : "拉取"}
-            </button>
-          </div>
-          {remoteModels.length > 0 ? (
-            <datalist id="modelpilot-remote-models">
-              {remoteModels.map((id) => (
-                <option key={id} value={id} />
+      <section style={s.sectionCard} aria-label="当前路由">
+        <div style={s.sectionTitle}>当前路由</div>
+        <div style={s.row}>
+          <Field label="路由 (provider)" hint="">
+            <select style={s.select} value={routeId} onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}>
+              {routes.map((r) => (
+                <option key={r} value={r}>{r}</option>
               ))}
-            </datalist>
-          ) : null}
-        </Field>
-        <Field label="显示名（可选）" hint="">
-          <input
-            style={s.input}
-            value={displayName}
-            onChange={(e) => {
-              displayNameTouched.current = true;
-              setDisplayName(e.target.value);
-            }}
-            placeholder="留空则不写"
-          />
-        </Field>
-      </div>
+            </select>
+          </Field>
+          <Field label="模型 ID（原样写入）" hint="" style={{ flex: "0 1 190px" }}>
+            <div style={s.comboBox}>
+              <input
+                id="modelpilot-model-id"
+                style={{ ...s.input, flex: "1 1 0", width: 0 }}
+                value={modelId}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setModelId(next);
+                  if (!displayNameTouched.current) setDisplayName(displayNameFromModelId(next));
+                }}
+                placeholder="如 tflow/alpha-32b"
+                list={remoteModels.length > 0 ? "modelpilot-remote-models" : undefined}
+              />
+              <button
+                type="button"
+                style={fetchState === "loading" ? { ...s.comboToggle, opacity: 0.55, cursor: "not-allowed" } : s.comboToggle}
+                disabled={fetchState === "loading"}
+                onClick={fetchModels}
+                title="从当前路由的端点拉取模型列表"
+              >
+                {fetchState === "loading" ? "…" : "拉取"}
+              </button>
+            </div>
+            {remoteModels.length > 0 ? (
+              <datalist id="modelpilot-remote-models">
+                {remoteModels.map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
+            ) : null}
+          </Field>
+          <Field label="显示名（可选）" hint="">
+            <input
+              style={s.input}
+              value={displayName}
+              onChange={(e) => {
+                displayNameTouched.current = true;
+                setDisplayName(e.target.value);
+              }}
+              placeholder="留空则不写"
+            />
+          </Field>
+        </div>
 
       {routeId !== "" ? (
         <RouteSettingsCard
@@ -2085,26 +2210,41 @@ function Workbench({ configForms, discoverModels }) {
           onToggleUsage={toggleRouteDefaultUsage}
         />
       ) : null}
+      </section>
 
-      <div style={s.modelsPanel} aria-label="该路由的模型列表">
+      <section style={s.modelsPanel} aria-label="该路由的模型列表">
         <div style={s.pendingHeader}>
-          <span style={s.pendingTitle}>该路由的模型（{routeModels.length} 条）</span>
+          <span style={s.sectionTitle}>该路由的模型（{routeModels.length} 条）</span>
           <button type="button" style={s.btnSmall} onClick={focusCreateForm} aria-label="新增模型">
             + 新增
           </button>
         </div>
         {routeModels.length === 0 ? (
-          <div style={s.modelEmpty}>该路由没有模型。可在下方新增，或从端点拉取后批量添加。</div>
+          <div style={s.modelEmpty}>
+            <span>该路由没有模型。可在下方新增，或从端点拉取后批量添加。</span>
+            <button type="button" style={s.btnSmall} onClick={focusCreateForm} aria-label="新增模型（空列表）">
+              + 新增
+            </button>
+          </div>
         ) : routeModels.map((model, index) => {
           const modelKey = typeof model?.id === "string" && model.id !== "" ? model.id : `#${index}`;
+          const rowKey = `${modelKey}:${index}`;
+          const hovered = hoveredRow === rowKey;
           return (
             <div
-              key={`${modelKey}:${index}`}
-              style={index === 0 ? { ...s.modelRow, ...s.modelRowFirst } : s.modelRow}
+              key={rowKey}
+              style={index === 0
+                ? { ...s.modelRow, ...s.modelRowFirst, ...(hovered ? s.modelRowHover : null) }
+                : { ...s.modelRow, ...(hovered ? s.modelRowHover : null) }}
               aria-label={`模型 ${modelKey}`}
+              onMouseEnter={() => setHoveredRow(rowKey)}
+              onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
             >
               <div style={s.modelRowHead}>
-                <span style={s.pendingName}>{modelKey}</span>
+                <span style={s.modelName}>{modelKey}</span>
+              </div>
+              <div style={s.modelRowMeta}>
+                <span style={s.modelSummary}>{describeModelRow(model, humanizeTokenCount)}</span>
                 <button
                   type="button"
                   style={s.btnSmall}
@@ -2114,7 +2254,6 @@ function Workbench({ configForms, discoverModels }) {
                   编辑
                 </button>
               </div>
-              <span style={s.modelSummary}>{describeModelRow(model, humanizeTokenCount)}</span>
               {editingIndex === index && editForm !== null ? (
                 <EditModelForm
                   model={model}
@@ -2135,12 +2274,13 @@ function Workbench({ configForms, discoverModels }) {
                   onSave={saveEdit}
                   onCancel={closeEditor}
                   onDelete={requestDelete}
+                  closeTokenPanels={pickerOpen}
                 />
               ) : null}
             </div>
           );
         })}
-      </div>
+      </section>
 
       {fetchState === "failed" ? <div style={s.err}>拉取失败：{fetchError}</div> : null}
       {fetchState === "done" ? (
@@ -2151,58 +2291,65 @@ function Workbench({ configForms, discoverModels }) {
         </div>
       ) : null}
 
-      <div style={s.row}>
-        <TokenCountField
-          label="上下文窗口 (contextWindow)"
-          value={contextWindow}
-          candidates={CONTEXT_WINDOW_CANDIDATES}
-          error={contextWindowError}
-          placeholder="如 131072"
-          ariaLabel="上下文窗口"
-          onChange={(e) => changeTokenCount(e, contextWindow, setContextWindow, setContextWindowError)}
-        />
-        <TokenCountField
-          label="输出上限 (maxTokens)"
-          value={maxTokens}
-          candidates={MAX_TOKENS_CANDIDATES}
-          error={maxTokensError}
-          placeholder="如 8192"
-          ariaLabel="输出上限"
-          onChange={(e) => changeTokenCount(e, maxTokens, setMaxTokens, setMaxTokensError)}
-        />
-        <div style={s.levels}>
-          <span style={s.label}>推理档位（多选；全不选则不写 reasoningEfforts）</span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {PI_AI_LEVELS.map((level) => (
-              <label key={level} style={{ ...s.chip, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={reasoningLevels.includes(level)}
-                  onChange={() => setReasoningLevels((current) => toggleReasoningLevel(current, level))}
-                />
-                {level}
-              </label>
-            ))}
+      <section style={s.formCard} aria-label="新增模型">
+        <div style={s.sectionTitle}>新增模型</div>
+        <div style={s.row}>
+          <TokenCountField
+            label="上下文窗口 (contextWindow)"
+            value={contextWindow}
+            candidates={CONTEXT_WINDOW_CANDIDATES}
+            error={contextWindowError}
+            placeholder="如 131072"
+            ariaLabel="上下文窗口"
+            closeSignal={pickerOpen}
+            onChange={(e) => changeTokenCount(e, contextWindow, setContextWindow, setContextWindowError)}
+          />
+          <TokenCountField
+            label="输出上限 (maxTokens)"
+            value={maxTokens}
+            candidates={MAX_TOKENS_CANDIDATES}
+            error={maxTokensError}
+            placeholder="如 8192"
+            ariaLabel="输出上限"
+            closeSignal={pickerOpen}
+            onChange={(e) => changeTokenCount(e, maxTokens, setMaxTokens, setMaxTokensError)}
+          />
+          <div style={s.levels}>
+            <span style={s.label}>推理档位（多选；全不选则不写 reasoningEfforts）</span>
+            <div style={s.levelChips}>
+              {PI_AI_LEVELS.map((level) => {
+                const checked = reasoningLevels.includes(level);
+                return (
+                  <label key={level} style={checked ? { ...s.levelChip, ...s.levelChipOn } : s.levelChip}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => setReasoningLevels((current) => toggleReasoningLevel(current, level))}
+                    />
+                    {level}
+                  </label>
+                );
+              })}
+            </div>
+            <div style={s.levelChips}>
+              <button type="button" style={s.btnLink} onClick={() => setReasoningLevels(allReasoningLevels())}>全选</button>
+              <button type="button" style={s.btnLink} onClick={() => setReasoningLevels(noReasoningLevels())}>全不选</button>
+              <button type="button" style={s.btnLink} onClick={() => setReasoningLevels(defaultReasoningLevels())}>恢复默认</button>
+            </div>
+            {reasoningGuard ? <div style={s.err}>{reasoningGuard}</div> : null}
+            {reasoningLevels.length === 0 ? (
+              <span style={s.sub}>全不选：本次投影不写 reasoningEfforts，沿用目录能力事实。</span>
+            ) : null}
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            <button type="button" style={s.btnSmall} onClick={() => setReasoningLevels(allReasoningLevels())}>全选</button>
-            <button type="button" style={s.btnSmall} onClick={() => setReasoningLevels(noReasoningLevels())}>全不选</button>
-            <button type="button" style={s.btnSmall} onClick={() => setReasoningLevels(defaultReasoningLevels())}>恢复默认</button>
-          </div>
-          {reasoningGuard ? <div style={s.err}>{reasoningGuard}</div> : null}
-          {reasoningLevels.length === 0 ? (
-            <span style={s.sub}>全不选：本次投影不写 reasoningEfforts，沿用目录能力事实。</span>
-          ) : null}
         </div>
-      </div>
 
       <BudgetHint contextWindow={contextWindow} maxTokens={maxTokens} />
 
       <div style={s.row}>
-        <label style={{ ...s.chip, cursor: "pointer" }}>
+        <label style={inputText ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
           <input type="checkbox" checked={inputText} onChange={(e) => setInputText(e.target.checked)} /> text
         </label>
-        <label style={{ ...s.chip, cursor: "pointer" }}>
+        <label style={inputImage ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
           <input type="checkbox" checked={inputImage} onChange={(e) => setInputImage(e.target.checked)} /> image
         </label>
         <span style={{ ...s.chip, opacity: 0.75 }}>
@@ -2300,7 +2447,7 @@ function Workbench({ configForms, discoverModels }) {
           ))}
 
           {gate ? (
-            <label style={{ ...s.warn, display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
+            <label style={{ ...s.warn, display: "flex", gap: GAP.sm, alignItems: "flex-start", cursor: "pointer" }}>
               <input type="checkbox" checked={ackReplace} onChange={(e) => setAckReplace(e.target.checked)} style={{ marginTop: 2 }} />
               <span>
                 该路由是目录路由，写入 models 会<b>整体替换</b>它的模型目录，上列
@@ -2315,7 +2462,7 @@ function Workbench({ configForms, discoverModels }) {
         </>
       )}
 
-      <div style={s.row}>
+      <div style={s.primaryRow}>
         <button
           style={canApply ? s.btnPrimary : { ...s.btn, opacity: 0.5, cursor: "not-allowed" }}
           disabled={!canApply}
@@ -2323,8 +2470,11 @@ function Workbench({ configForms, discoverModels }) {
         >
           {busy ? "写入中…" : "写入 DSH 设置"}
         </button>
+      </div>
+      <div style={s.linkRow}>
         <button
-          style={s.btn}
+          type="button"
+          style={s.btnLink}
           onClick={() => {
             const form = templateToForm(template);
             displayNameTouched.current = false;
@@ -2346,7 +2496,7 @@ function Workbench({ configForms, discoverModels }) {
         </button>
         <button
           type="button"
-          style={s.btn}
+          style={s.btnLink}
           onClick={() => {
             const next = formToTemplate({ contextWindow, maxTokens, inputText, inputImage, reasoningLevels });
             if (next === null) {
@@ -2365,7 +2515,7 @@ function Workbench({ configForms, discoverModels }) {
         </button>
         <button
           type="button"
-          style={template === null ? { ...s.btn, opacity: 0.55, cursor: "not-allowed" } : s.btn}
+          style={template === null ? { ...s.btnSmall, opacity: 0.55, cursor: "not-allowed" } : s.btnSmall}
           disabled={template === null}
           onClick={() => {
             if (template === null) return;
@@ -2404,6 +2554,7 @@ function Workbench({ configForms, discoverModels }) {
           </>
         )}
       </div>
+      </section>
 
       {toast ? <div style={toast.tone === "good" ? s.ok : s.err}>{toast.text}</div> : null}
 
