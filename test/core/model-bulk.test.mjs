@@ -6,6 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  bulkFieldsNotice,
   planBulkDelete,
   planBulkFields,
   reasoningEffortsFromLevels,
@@ -339,4 +340,48 @@ test("summarizeBulkSelection：不改入参，非法 visibleIndexes 忽略", () 
   assert.equal(summary.count, 1);
   assert.deepEqual(models, snapshot);
   assert.deepEqual(summarizeBulkSelection(models, new Set([0]), undefined).hiddenCount, 1);
+});
+
+// ── 工单 #35：changed 只收真正发生变化的行 ──────────────────────────────────
+
+const partialModels = () => [
+  { id: "a", maxTokens: 8192 },
+  { id: "b", maxTokens: 8192 },
+  { id: "c", maxTokens: 4096 },
+];
+
+test("批量改字段：部分行已是目标值时 changed 只收真实变化的行", () => {
+  const result = planBulkFields(partialModels(), new Set([0, 1, 2]), { maxTokens: 8192 }, "r1");
+  assert.equal(result.status, "ok");
+  assert.equal(result.changed.length, 1, "只有 c 需要写盘");
+  assert.deepEqual(result.changed, [{ index: 2, id: "c" }]);
+  assert.equal(result.ops.length, 1, "仍然只有一条 set 整数组");
+});
+
+test("批量改字段：全部行都变化时 changed 收齐所有选中行", () => {
+  const result = planBulkFields(partialModels(), new Set([0, 1, 2]), { maxTokens: 16384 }, "r1");
+  assert.equal(result.status, "ok");
+  assert.deepEqual(result.changed.map((row) => row.id), ["a", "b", "c"]);
+});
+
+test("批量改字段：全部已是目标值才返回 no-change", () => {
+  const result = planBulkFields(partialModels(), new Set([0, 1]), { maxTokens: 8192 }, "r1");
+  assert.equal(result.status, "no-change");
+  assert.deepEqual(result.changed, []);
+  assert.deepEqual(result.ops, []);
+});
+
+test("批量改字段：changed 保持下标升序，带 index 与 id", () => {
+  const result = planBulkFields(partialModels(), new Set([2, 0]), { maxTokens: 2048 }, "r1");
+  assert.deepEqual(result.changed, [
+    { index: 0, id: "a" },
+    { index: 2, id: "c" },
+  ]);
+});
+
+test("批量改字段提示：部分变化时写真实改动条数与已是目标值的条数", () => {
+  assert.equal(bulkFieldsNotice(1, 3), "已批量更新 1 条模型（3 条中 2 条已是目标值）");
+  assert.equal(bulkFieldsNotice(3, 3), "已批量更新 3 条模型");
+  assert.equal(bulkFieldsNotice(1, 1), "已批量更新 1 条模型");
+  assert.equal(bulkFieldsNotice(0, 2), "已批量更新 0 条模型（2 条中 2 条已是目标值）");
 });

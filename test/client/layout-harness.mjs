@@ -63,6 +63,12 @@ export const SHIM_SOURCE = String.raw`
       readSlot(i, init);
       const set = (next) => {
         const value = typeof next === "function" ? next(store.slots[i]) : next;
+        if (store.unmounted) {
+          // 与 React 的开发期警告同一语义：卸载后仍有人 setState（通常是
+          // 没清掉的定时器）。夹具据此断言卸载真的清理了副作用。
+          console.error("Warning: Can't perform a React state update on an unmounted component.");
+          return;
+        }
         if (Object.is(value, store.slots[i])) return;
         store.slots[i] = value;
         schedule();
@@ -249,6 +255,7 @@ export const SHIM_SOURCE = String.raw`
   function mount(component, props) {
     rootComponent = component;
     rootProps = props;
+    for (const store of hookStores.values()) store.unmounted = false;
     if (rendering) {
       dirty = true;
       return;
@@ -272,7 +279,33 @@ export const SHIM_SOURCE = String.raw`
     if (!rendering && rootComponent !== null) mount(rootComponent, rootProps);
   }
 
+  /**
+   * 卸载根组件：跑完 effect 清理函数并清空 DOM。真实 React 在卸载时也会
+   * 调用清理，这样「收起页面后定时器还在 setState」就能被测试抓到。
+   */
+  function unmount() {
+    rootComponent = null;
+    rootProps = null;
+    for (const store of hookStores.values()) {
+      store.unmounted = true;
+      for (const effect of store.effects) {
+        if (!effect) continue;
+        if (typeof effect.cleanup === "function") {
+          try {
+            effect.cleanup();
+          } catch (error) {
+            console.error(error);
+          }
+          effect.cleanup = undefined;
+        }
+      }
+    }
+    const root = document.getElementById("root");
+    if (root) root.replaceChildren();
+  }
+
   window.__renderComponent = mount;
+  window.__unmountComponent = unmount;
   window.__ModuleLoader__ = {
     load: ({ factory }) => {
       const require = (spec) => {
@@ -764,8 +797,13 @@ export function findChrome() {
   return null;
 }
 
-/** 在 headless Chrome 里加载页面，读回 <pre id="result"> 里的 JSON。 */
-export function runPageProbe(chrome, html) {
+/**
+ * 在 headless Chrome 里加载页面，读回 <pre id="result"> 里的 JSON。
+ *
+ * virtualTimeBudget 控制虚拟时间预算；需要等待自动消失等定时器时调大它，
+ * 页面里的 setTimeout 会以虚拟时间快进，不会真的等那么久。
+ */
+export function runPageProbe(chrome, html, virtualTimeBudget = 10000) {
   const dir = mkdtempSync(join(tmpdir(), "modelpilot-page-"));
   const page = join(dir, "index.html");
   writeFileSync(page, html);
@@ -779,7 +817,7 @@ export function runPageProbe(chrome, html) {
         "--disable-dev-shm-usage",
         "--allow-file-access-from-files",
         "--window-size=1440,1000",
-        "--virtual-time-budget=10000",
+        `--virtual-time-budget=${virtualTimeBudget}`,
         "--dump-dom",
         pathToFileURL(page).href,
       ],
