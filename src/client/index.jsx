@@ -3262,10 +3262,16 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     .join("\u0000");
   // 工单 #31：搜索命中跨组时，命中的组自动展开，未命中的组收起。只在搜索词
   // 或模型 id 序列变化时调整折叠状态；用户随后仍可手动折叠 / 展开。
+  //
+  // 工单 #34：区分「搜索词变空」与「模型增删」。前者把搜索态的折叠恢复为
+  // 全部展开；后者不碰折叠状态，交给下面的清理 effect 只剔除消失的分组。
+  const previousModelQuery = React.useRef(modelQuery);
   React.useEffect(() => {
     const query = modelQuery.trim();
+    const wasSearching = previousModelQuery.current.trim() !== "";
+    previousModelQuery.current = modelQuery;
     if (query === "") {
-      setCollapsedGroups((current) => (current.size === 0 ? current : new Set()));
+      if (wasSearching) setCollapsedGroups((current) => (current.size === 0 ? current : new Set()));
       return;
     }
     setCollapsedGroups((current) => {
@@ -3281,6 +3287,24 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       return next;
     });
   }, [modelQuery, routeModelIdKey]);
+  // 工单 #34：分组消失时剔除它的折叠 key。只删已不存在的 key，现存分组的
+  // 折叠状态保留；同名分组重建时因此默认展开，用户能看到刚新增的模型。
+  // modelGroups 由 routeModels 派生，id 序列（routeModelIdKey）覆盖其变化。
+  React.useEffect(() => {
+    const keys = new Set(modelGroups.map((group) => group.key));
+    setCollapsedGroups((current) => {
+      if (current.size === 0) return current;
+      let changed = false;
+      const next = new Set();
+      for (const key of current) {
+        if (keys.has(key)) next.add(key);
+        else changed = true;
+      }
+      return changed ? next : current;
+    });
+    // modelGroups 随 routeModels 重算，id 序列稳定键覆盖它的变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeModelIdKey]);
   // 全选复选框的三态：可见行里已选 / 半选 / 未选。半选必须在 effect 里写
   // input.indeterminate —— React 没有这个属性。
   const selectedVisibleCount = React.useMemo(() => {
@@ -5096,13 +5120,13 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                           </span>
                         );
                         return (
+                          // 工单 #34：div 映射到 ARIA generic 角色，ARIA 1.2 禁止
+                          // 它拥有可访问名；摘要不再挂行级 aria-label，而是由行内
+                          // 的 sr-only 节点（紧凑）/ 可见摘要（详细）提供。
                           <div
                             key={rowKey}
                             data-model-key={modelKey}
                             style={rowStyle}
-                            // 工单 #32：摘要进可访问名；紧凑 / 详细两种密度下一致。
-                            aria-label={`模型 ${modelKey}。${rowSummary.text}`}
-                            {...(compact ? {} : { title: modelKey })}
                             onMouseEnter={() => setHoveredRow(rowKey)}
                             onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
                             onDragOver={(event) => updateModelDragOver(event, index)}

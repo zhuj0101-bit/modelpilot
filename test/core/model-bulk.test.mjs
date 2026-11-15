@@ -172,6 +172,68 @@ test("三个字段可以组合：仍然只有一次 set，一个 models 数组",
   assert.deepEqual(result.changed.map((row) => row.index), [0, 1, 2]);
 });
 
+test("批量改字段：2000 条模型选中 1000 条，未选中项保持同一引用且顺序不变", () => {
+  // 工单 #34 问题三：批量改字段仍返回完整的 models 数组（不删未选中项），
+  // 只有选中的 1000 条被拷贝；另外确认这 1000 条的字段已改、其余字段原样。
+  const models = Array.from({ length: 2000 }, (_, index) => ({
+    id: `perf/model-${index}`,
+    name: `perf/model-${index}`,
+    contextWindow: 131072,
+    maxTokens: 1024 + index,
+    input: ["text"],
+    futureHostField: { index },
+  }));
+  const selected = new Set();
+  for (let index = 0; index < 2000; index += 2) selected.add(index);
+
+  const result = planBulkFields(models, selected, { maxTokens: 32768 }, route);
+  assert.equal(result.status, "ok");
+  const op = setOp(result);
+  assert.equal(op.value.length, 2000, "批量改字段不改变条数");
+  assert.equal(op.value.map((model) => model.id).join(","), models.map((model) => model.id).join(","), "顺序不变");
+
+  let selectedCopies = 0;
+  for (let index = 0; index < 2000; index += 1) {
+    if (selected.has(index)) {
+      assert.notEqual(op.value[index], models[index], `选中的第 ${index} 条是新对象`);
+      assert.equal(op.value[index].maxTokens, 32768);
+      assert.equal(op.value[index].contextWindow, 131072, "未改字段原样");
+      assert.deepEqual(op.value[index].input, ["text"], "未改字段原样");
+      assert.deepEqual(op.value[index].futureHostField, { index }, "宿主未来字段原样");
+      selectedCopies += 1;
+    } else {
+      assert.equal(op.value[index], models[index], `未选中的第 ${index} 条必须保持同一引用`);
+    }
+  }
+  assert.equal(selectedCopies, 1000);
+  assert.equal(result.changed.length, 1000);
+  assert.deepEqual(result.changed.map((row) => row.index), [...selected].sort((left, right) => left - right));
+  assert.equal(models[1].maxTokens, 1025, "不修改入参数组");
+  assert.equal(models[1999].maxTokens, 3023);
+});
+
+test("批量改字段：选中判断用 Set.has，不再对每个模型线性扫 indexes", () => {
+  // 工单 #34 问题三：indexes.includes(index) 在 1000 选 2000 时约 100 万次
+  // 比较；这里直接观察 Array.prototype.includes 的调用次数。maxTokens 分支
+  // 不经过 MODALITIES / PI_AI_LEVELS 的 includes，基线会正好调用 2000 次。
+  const models = Array.from({ length: 2000 }, (_, index) => ({ id: `perf/${index}`, maxTokens: 1024 }));
+  const indexes = Array.from({ length: 1000 }, (_, index) => index * 2);
+  const original = Array.prototype.includes;
+  let calls = 0;
+  Array.prototype.includes = function (...args) {
+    calls += 1;
+    return original.apply(this, args);
+  };
+  let result;
+  try {
+    result = planBulkFields(models, new Set(indexes), { maxTokens: 4096 }, route);
+  } finally {
+    Array.prototype.includes = original;
+  }
+  assert.equal(result.status, "ok");
+  assert.equal(calls, 0, "每个模型不再线性扫描一遍 indexes");
+});
+
 test("批量改字段：值本来就相同时返回 no-change，不写盘", () => {
   const models = modelsFixture();
   const result = planBulkFields(models, new Set([0]), { maxTokens: 32768 }, route);

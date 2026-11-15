@@ -162,7 +162,9 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   const result = { scheme: styleOf(document.documentElement).colorScheme };
   result.initial = {
     countText: panelText().split("\n")[0],
-    summaries: [...document.querySelectorAll('[aria-label^="模型 jxf"], [aria-label^="模型 tx"]')]
+    // 工单 #34：行容器不再挂 aria-label（generic 角色不可命名），按稳定的
+    // data-model-key 取行；详细模式下摘要仍可见。
+    summaries: [...document.querySelectorAll('[data-model-key^="jxf/"], [data-model-key^="tx/"]')]
       .map((row) => row.innerText),
     // 工单 #31：组内摘要相同时提到组头，行内不再重复。
     groupSummary: [...document.querySelectorAll('[aria-label^="模型分组 "]')]

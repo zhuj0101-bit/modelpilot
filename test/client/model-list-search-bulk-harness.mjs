@@ -136,7 +136,7 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
   window.__renderComponent(Workbench, spec.inject());
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  // 工单 #32：行 aria-label 现在含摘要，机械读取用稳定的 data-model-key。
+  // 工单 #34：行容器不再挂 aria-label，机械读取用稳定的 data-model-key。
   const rows = () => [...document.querySelectorAll("[data-model-key]")];
   const listOrder = () => rows().map((row) => row.getAttribute("data-model-key"));
   const panel = () => document.querySelector('[aria-label="该路由的模型列表"]');
