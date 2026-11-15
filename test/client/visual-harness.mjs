@@ -111,7 +111,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   const card = (label) => document.querySelector('section[aria-label="' + label + '"]');
   const buttons = () => [...document.querySelectorAll("button")];
   const buttonByText = (text) => buttons().find((element) => element.textContent.trim() === text);
-  const row = (id) => document.querySelector('[aria-label="模型 ' + id + '"]');
+  const row = (id) => document.querySelector('[data-model-key="' + id + '"]');
 
   const currentCard = card("当前路由");
   const modelsCard = card("该路由的模型列表");

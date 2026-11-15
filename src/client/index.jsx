@@ -47,6 +47,7 @@ import { planBulkDelete, planBulkFields, sameIdSequence } from "../core/model-bu
 import {
   DENSITY_COMPACT,
   DENSITY_DETAILED,
+  groupKeyOf,
   groupModelRows,
   groupedOrdinalOf,
   readModelListDensity,
@@ -450,6 +451,12 @@ const s = {
   modelRowCompact: { padding: "4px 0" },
   modelNameCompact: {
     whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0,
+  },
+  // 工单 #32：视觉隐藏但读屏可读。不能用 display:none —— 那会把摘要一起
+  // 从可访问树里删掉；clip + 1px 是标准的 sr-only 写法。
+  srOnly: {
+    position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
+    overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
   },
   // 「详细 / 紧凑」切换：右上角的分段按钮，默认紧凑。
   modelDensity: {
@@ -3596,6 +3603,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }
 
   // ── 模型排序（工单 #19）：拖动 + 键盘，松手 / 按键即写盘 ──────────────
+  // 工单 #32：两种排序共用同一个分组规则 —— 只允许在本组内换位。
+
+  /** 按 models 数组的绝对下标取分组键；分组算法仍由 groupKeyOf 决定。 */
+  function groupKeyOfIndex(index) {
+    return groupKeyOf(routeModels[index]?.id);
+  }
 
   /** 拖动手柄按下：只记来源，不改列表；拖拽数据用 text/plain 兼容 Firefox。 */
   function beginModelDrag(event, index) {
@@ -3615,12 +3628,25 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setDragState({ from: index, over: null, edge: null });
   }
 
-  /** 拖动经过某一行：按指针在行的上半 / 下半决定插入线画在行前还是行后。 */
+  /**
+   * 拖动经过某一行：按指针在行的上半 / 下半决定插入线画在行前还是行后。
+   * 工单 #32：落点跨组时不进 dragState.over —— 不画插入线，指针也显示禁止
+   * 放置；仍然 preventDefault，让松手能收到 drop 并给出明确的拒绝提示。
+   */
   function updateModelDragOver(event, index) {
     if (dragState === null) return;
     event.preventDefault();
+    const crossGroup = groupKeyOfIndex(dragState.from) !== groupKeyOfIndex(index);
     if (event.dataTransfer !== null && event.dataTransfer !== undefined) {
-      event.dataTransfer.dropEffect = "move";
+      event.dataTransfer.dropEffect = crossGroup ? "none" : "move";
+    }
+    if (crossGroup) {
+      setDragState((current) => (
+        current === null || current.over === null
+          ? current
+          : { ...current, over: null, edge: null }
+      ));
+      return;
     }
     const rect = event.currentTarget.getBoundingClientRect();
     const edge = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
@@ -3639,6 +3665,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   /**
    * 松手：把「行前 / 行后插入点」换算成移除来源后的目标下标，再立即写盘。
    * 拖回原位（to === from）不产生任何写入。
+   * 工单 #32：跨组拖动直接丢弃 —— 分组视图的组间顺序由 id 前缀决定，按
+   * 绝对下标重排只会悄悄改变组内顺序，既不是用户拖到的位置也会写脏数据。
    */
   function handleModelDrop(event, index) {
     if (dragState === null) return;
@@ -3647,18 +3675,23 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     dragCancelled.current = false;
     setDragState(null);
     if (cancelled) return;
+    const from = dragState.from;
+    if (groupKeyOfIndex(from) !== groupKeyOfIndex(index)) {
+      setToast({ tone: "bad", text: "只能在同一分组内调整顺序；跨分组无法排序" });
+      return;
+    }
     const rect = event.currentTarget.getBoundingClientRect();
     const edge = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
     const slot = index + (edge === "after" ? 1 : 0);
-    const to = slot > dragState.from ? slot - 1 : slot;
-    if (to === dragState.from) return;
-    void moveModelTo(dragState.from, to);
+    const to = slot > from ? slot - 1 : slot;
+    if (to === from) return;
+    void moveModelTo(from, to);
   }
 
   /**
    * 手柄聚焦后的方向键：在本组内 ↑ / ↓ 一位、Home / End 组内首 / 末位，
-   * 每次立即写盘。分组视图下组间顺序由 id 前缀决定，把行挪到别的组名次
-   * 不会在界面上产生位移；因此键盘排序限制在当前组，拖动仍按绝对下标换算。
+   * 每次立即写盘。工单 #32 之后拖动与键盘共用这条分组规则：组间顺序由
+   * id 前缀决定，把行挪到别的组名次不会在界面上产生位移。
    */
   function handleModelHandleKey(event, index) {
     if (!canReorderModels) return;
@@ -4952,8 +4985,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                       return (
                         <div
                           key={rowKey}
+                          data-model-key={modelKey}
                           style={rowStyle}
-                          aria-label={`模型 ${modelKey}`}
+                          // 工单 #32：摘要进可访问名；紧凑 / 详细两种密度下一致。
+                          aria-label={`模型 ${modelKey}。${rowSummary.text}`}
                           {...(compact ? {} : { title: modelKey })}
                           onMouseEnter={() => setHoveredRow(rowKey)}
                           onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
@@ -5006,6 +5041,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                             >
                               {row.shortId}
                             </span>
+                            {compact ? (
+                              // 视觉隐藏、读屏可读；鼠标用户仍看短 ID 的 title。
+                              <span style={s.srOnly} data-modelpilot-sr-summary="">{rowSummary.text}</span>
+                            ) : null}
                             {compact ? actions : null}
                           </div>
                           {compact ? null : (

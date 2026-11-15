@@ -17,7 +17,7 @@ export const DENSITY_KEY = "modelpilot.model-list-density.v1";
  * - standalone（无 `/` → 「其他」组，排最后）
  * 组内顺序故意与字母序不同，用来确认组内保持 models 数组顺序。
  */
-const GROUPING_ROUTE_SOURCE = String.raw`
+export const GROUPING_ROUTE_SOURCE = String.raw`
   const sharedSummary = {
     contextWindow: 131072,
     maxTokens: 8192,
@@ -106,8 +106,10 @@ ${GROUPING_ROUTE_SOURCE}
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const DENSITY_KEY = ${JSON.stringify(DENSITY_KEY)};
-  const rows = () => [...document.querySelectorAll('[aria-label^="模型 "]')];
-  const listOrder = () => rows().map((row) => row.getAttribute("aria-label").slice(3));
+  // 工单 #32：行 aria-label 现在含摘要；结构断言用稳定属性，视觉文本排除
+  // 视觉隐藏的 sr-only 摘要节点。
+  const rows = () => [...document.querySelectorAll("[data-model-key]")];
+  const listOrder = () => rows().map((row) => row.getAttribute("data-model-key"));
   const groupButtons = () => [...document.querySelectorAll('[aria-label^="模型分组 "]')];
   const groupKeys = () => groupButtons().map((button) => button.children[1].textContent);
   const groupCounts = () => groupButtons().map((button) => button.children[2].textContent);
@@ -118,13 +120,20 @@ ${GROUPING_ROUTE_SOURCE}
     return summary?.textContent ?? "";
   });
   const groupButton = (key) => groupButtons().find((button) => button.children[1].textContent === key);
-  const rowOf = (id) => document.querySelector('[aria-label="模型 ' + id + '"]');
+  const rowOf = (id) => document.querySelector('[data-model-key="' + id + '"]');
   const handle = (index) => document.getElementById("modelpilot-model-handle-" + index);
   const nameOf = (id) => rowOf(id)?.querySelector('span[id^="modelpilot-model-name-"]') ?? null;
   const rowSummary = (id) => [...(rowOf(id)?.querySelectorAll("span") ?? [])]
+    .filter((span) => !span.hasAttribute("data-modelpilot-sr-summary"))
     .map((span) => span.textContent)
     .find((text) => text.includes("窗口")) ?? "";
-  const rowText = (id) => rowOf(id)?.innerText ?? "";
+  const rowText = (id) => {
+    const row = rowOf(id);
+    if (row === null) return "";
+    const visible = row.cloneNode(true);
+    visible.querySelectorAll("[data-modelpilot-sr-summary]").forEach((node) => node.remove());
+    return visible.innerText;
+  };
   const find = (label) => document.querySelector('[aria-label="' + label + '"]');
   const click = (element) => element.click();
   const setText = (element, value) => {
