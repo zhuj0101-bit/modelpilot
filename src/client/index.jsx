@@ -31,7 +31,15 @@ import {
   describeRouteDeleteDialog,
   routeDeleteKeyState,
   routeDeleteRemovesKey,
+  routesSharingKeyRef,
 } from "../core/route-delete.js";
+import {
+  KEY_RENAME_STATE,
+  describeKeyRenameDialog,
+  keyRenameRemovesOldKey,
+  keyRenameState,
+  keyRenameTarget,
+} from "../core/key-rename.js";
 import {
   describeTemplate,
   formToTemplate,
@@ -2077,6 +2085,35 @@ function DeleteRouteDialog({ routeId, modelCount, keyRef, keyState, sharedBy, er
 }
 
 /**
+ * 改密钥引用名的二次确认（工单 #37）：旧引用有存储的密钥、可写、且没有别的
+ * 路由共用时才会弹出 —— 说明保存前会删除旧密钥且无法恢复，并提醒新引用还
+ * 没有密钥、保存后需要重新填写。
+ *
+ * 文案全部来自 {@link describeKeyRenameDialog}，页脚沿用与删除路由一致的
+ * 「先删密钥再写配置」说明。只出现引用名，不出现任何密钥内容。
+ */
+function KeyRenameDialog({ oldRef, newRef, busy, onCancel, onConfirm }) {
+  const copy = describeKeyRenameDialog({ oldRef, newRef });
+  return (
+    <ConfirmDialog
+      ariaLabel="修改密钥引用名确认"
+      title={copy.title}
+      badge="二次确认"
+      cancelAria="取消修改密钥引用名"
+      confirmAria="确认修改密钥引用名"
+      confirmLabel={copy.confirmLabel}
+      busyLabel="保存中…"
+      footerHint={copy.hint}
+      busy={busy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <p style={s.sub}>{copy.body}</p>
+    </ConfirmDialog>
+  );
+}
+
+/**
  * 清除密钥的二次确认：复用同一套自绘确认外壳（与删除模型 / 删除路由一致）。
  * 文案只出现引用名，不出现任何密钥内容 —— 客户端本来也拿不到明文。
  */
@@ -2273,6 +2310,7 @@ function RouteSettingsCard({
   open,
   form,
   confirmOpen,
+  renameConfirm,
   usageOpen,
   credential,
   deletePlan,
@@ -2283,6 +2321,8 @@ function RouteSettingsCard({
   onCloseConfirm,
   onSave,
   onDelete,
+  onCancelRename,
+  onConfirmRename,
   onToggleUsage,
   onTestConnection,
   onCredentialDraftChange,
@@ -2712,6 +2752,16 @@ function RouteSettingsCard({
         />
       ) : null}
 
+      {open && renameConfirm !== null ? (
+        <KeyRenameDialog
+          oldRef={renameConfirm.oldRef}
+          newRef={renameConfirm.newRef}
+          busy={busy}
+          onCancel={onCancelRename}
+          onConfirm={onConfirmRename}
+        />
+      ) : null}
+
       {open && credential.confirmOpen ? (
         <ClearCredentialDialog
           reference={credentialReference}
@@ -2869,6 +2919,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const [routeFormState, setRouteFormState] = React.useState(null);
   const [routeCardOpen, setRouteCardOpen] = React.useState(false);
   const [routeConfirmOpen, setRouteConfirmOpen] = React.useState(false);
+  // 改密钥引用名的二次确认（工单 #37）：只有「旧密钥已配置、可写、且没有别的
+  // 路由共用」才打开。value 里带着待保存的表单与新旧引用名；确认后按
+  // 「先删旧密钥，成功后再写配置」执行，取消则一条配置都不写。
+  const [renameConfirm, setRenameConfirm] = React.useState(null);
   // 删除路由前对「这条路由的密钥」做一次只读 describe（工单 #26）：弹窗文案
   // 与按钮文字按真实状态分两套，绝不在状态未定时把配置删掉。generation 作废
   // 上一轮（上一个引用名 / 上一次打开）的迟到结果。
@@ -2964,6 +3018,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   React.useEffect(() => {
     setRouteCardOpen(false);
     setRouteConfirmOpen(false);
+    setRenameConfirm(null);
     setRouteDefaultUsageOpen({ contextWindow: false, maxTokens: false, input: false });
     setRouteFormState(routeFormFromProvider(route));
     connectionTestGeneration.current += 1;
@@ -4530,6 +4585,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }
 
   function toggleRouteCard() {
+    // 收起卡片时确认弹窗一并消失：不能留一个看不见却仍挂着的待确认状态。
+    if (routeCardOpen) setRenameConfirm(null);
     setRouteCardOpen((current) => !current);
   }
 
@@ -4558,11 +4615,59 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setRouteConfirmOpen(false);
   }
 
+  /** 只读 describe 一个引用名；失败 / 异常统一折成 error 状态，调用方按「读不到」处理。 */
+  async function probeCredentialRef(ref) {
+    try {
+      const response = await credentialOps.describe([ref]);
+      if (response?.ok !== true) {
+        return {
+          status: "error",
+          configured: false,
+          writable: false,
+          error: credentialErrorMessage(response, "未返回原因"),
+        };
+      }
+      const info = response.value?.[ref];
+      return {
+        status: "ready",
+        configured: info?.configured === true,
+        writable: info?.writable !== false,
+        error: "",
+      };
+    } catch (error) {
+      return {
+        status: "error",
+        configured: false,
+        writable: false,
+        error: String(error?.message ?? error),
+      };
+    }
+  }
+
+  /** 确认改引用名：带着弹窗打开时的那份表单，按「先删旧密钥再写配置」重跑一次保存。 */
+  async function confirmKeyRename() {
+    if (renameConfirm === null) return;
+    const pending = renameConfirm;
+    try {
+      await saveRouteSettings(pending.form, { confirmRename: true });
+    } finally {
+      // 无论删密钥 / 写配置成功还是失败，弹窗都必须关掉：失败原因在 toast 里。
+      setRenameConfirm(null);
+    }
+  }
+
   /**
    * 保存路由设置：先按最新快照重算 ops（路由若已被别处删除就拒绝写入），
    * 再走与模型写入相同的修订号围栏。返回新表单供卡片重新预填。
+   *
+   * 工单 #37：改引用名可能让旧密钥变成界面上再也看不到的永久孤儿。apiKeyEnv
+   * 真的变化时先只读 describe 旧引用：
+   * - 已配置 + 可写 + 独占 → 先弹二次确认，确认后先 unset 旧密钥、成功后才
+   *   写配置；unset 失败就中止保存，一条配置都不写；
+   * - 没有存储的密钥 → 照常保存；
+   * - 共用 / 环境变量提供 / 读不到 → 照常保存但不删旧密钥，toast 说明原因。
    */
-  async function saveRouteSettings(form) {
+  async function saveRouteSettings(form, options = {}) {
     const latestProviders = providersOf(scope.getSnapshot());
     const plan = buildRouteEditOps(routeId, form, latestProviders[routeId], { modalities: modalChoiceValues });
     if (plan.warnings.length > 0) {
@@ -4577,20 +4682,95 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       setToast({ tone: "bad", text: "没有字段发生变化；未生成写入操作" });
       return { ok: false, form };
     }
+
+    // 旧引用只在「apiKeyEnv 真的变了、且新旧引用名都非空且不同」时才可能变孤儿；
+    // 首次设置 / 清空引用名不算改名，不碰凭据存储。
+    const rename = plan.changed.includes("apiKeyEnv")
+      ? keyRenameTarget(routeId, latestProviders, form.apiKeyEnv)
+      : { oldRef: "", newRef: "", changed: false };
+    let renameState = KEY_RENAME_STATE.unchanged;
+    let renameSharedBy = [];
+    if (rename.changed) {
+      // 共用判定复用删除路由那一套（精确相等，不做前缀 / 通配匹配）。
+      renameSharedBy = routesSharingKeyRef(routeId, latestProviders, rename.oldRef);
+      const probe = await probeCredentialRef(rename.oldRef);
+      renameState = keyRenameState({
+        ...rename,
+        status: probe.status,
+        configured: probe.configured,
+        writable: probe.writable,
+        sharedBy: renameSharedBy,
+      });
+      if (keyRenameRemovesOldKey(renameState) && options.confirmRename !== true) {
+        // 先不写任何东西：确认弹窗说清会删掉哪个旧密钥，确认后才走下面的写入。
+        setRenameConfirm({ form, oldRef: rename.oldRef, newRef: rename.newRef });
+        setToast(null);
+        return { ok: false, form };
+      }
+    }
+
     setBusy(true);
     setToast(null);
+    let keyRemoved = false;
+
+    /** 保存成功后对旧密钥去留的补充说明（没有改名 / 没有存储的密钥时为空）。 */
+    function renameToastSuffix() {
+      if (keyRemoved) return `，并删除旧密钥 ${rename.oldRef}`;
+      if (renameState === KEY_RENAME_STATE.shared) {
+        return `；旧密钥 ${rename.oldRef} 仍被 ${renameSharedBy.join("、")} 使用，已保留`;
+      }
+      if (renameState === KEY_RENAME_STATE.readonly) {
+        return `；旧引用 ${rename.oldRef} 由环境变量提供，无法删除`;
+      }
+      if (renameState === KEY_RENAME_STATE.unknown) {
+        return `；旧引用 ${rename.oldRef} 的状态未能确认，可能仍保留在凭据存储中`;
+      }
+      return "";
+    }
+
     try {
+      if (keyRenameRemovesOldKey(renameState)) {
+        // 弹窗打开后旧引用可能已被别处清除 / 改成只读：确认时重新 describe，
+        // 读不到就中止，绝不在状态未定时先删密钥。
+        const recheck = await probeCredentialRef(rename.oldRef);
+        if (recheck.status !== "ready") {
+          const message = `无法确认旧密钥 ${rename.oldRef} 的状态：${recheck.error || "未返回原因"}；路由配置未改动`;
+          setToast({ tone: "bad", text: message });
+          return { ok: false, form };
+        }
+        if (recheck.configured) {
+          const removed = await credentialOps.unset(rename.oldRef);
+          if (removed?.ok !== true) {
+            const message = `删除旧密钥失败：${credentialErrorMessage(removed, "凭据服务拒绝删除")}；路由配置未改动`;
+            setToast({ tone: "bad", text: message });
+            return { ok: false, form };
+          }
+          keyRemoved = true;
+        }
+      }
       const ok = await scope.mutate(plan.ops);
       if (!ok) {
-        setToast({ tone: "bad", text: "保存被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试" });
+        // 密钥已经删掉（顺序在前），配置没写成 —— 必须把这件事说清楚。
+        setToast({
+          tone: "bad",
+          text: keyRemoved
+            ? `保存被系统拒绝（配置已变化或校验失败）；旧密钥 ${rename.oldRef} 已删除，路由配置未改动，请核对后重试`
+            : "保存被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试",
+        });
         return { ok: false, form };
       }
       const nextForm = routeFormFromProvider(providersOf(scope.getSnapshot())[routeId]);
       setRouteFormState(nextForm);
-      setToast({ tone: "good", text: `已保存路由设置 ${routeId}（${plan.ops.length} 条 op）` });
+      setToast({ tone: "good", text: `已保存路由设置 ${routeId}（${plan.ops.length} 条 op）${renameToastSuffix()}` });
       return { ok: true, form: nextForm };
     } catch (error) {
-      setToast({ tone: "bad", text: `保存异常：${error?.message ?? error}` });
+      const message = String(error?.message ?? error);
+      setToast({
+        tone: "bad",
+        text: keyRemoved
+          ? `保存异常：${message}；旧密钥 ${rename.oldRef} 已删除，路由配置未改动，请核对后重试`
+          : `保存异常：${message}`,
+      });
       return { ok: false, form };
     } finally {
       setBusy(false);
@@ -4818,6 +4998,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           open={routeCardOpen}
           form={routeFormState}
           confirmOpen={routeConfirmOpen}
+          renameConfirm={renameConfirm}
           usageOpen={routeDefaultUsageOpen}
           deletePlan={deletePlan}
           credential={{
@@ -4835,6 +5016,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           onCloseConfirm={() => setRouteConfirmOpen(false)}
           onSave={saveRouteSettings}
           onDelete={confirmDeleteRoute}
+          onCancelRename={() => setRenameConfirm(null)}
+          onConfirmRename={confirmKeyRename}
           onToggleUsage={toggleRouteDefaultUsage}
           onTestConnection={testConnection}
           onCredentialDraftChange={changeCredentialDraft}
