@@ -1,3 +1,5 @@
+// 状态：已实现、有单测，**尚未接入**运行路径（等 P1-07 工作台接线）。
+// 当前唯一调用方：test/core/profile-repository.test.mjs。
 // P1-06：ProfileRepository —— 我们命名空间里的 StoredField 三态用户档案
 // （DESIGN-v2 §10；a.md §3.B）。底层是一个普通对象门面，由宿主接到插件
 // 自己的设置命名空间；测试里用夹具驱动。

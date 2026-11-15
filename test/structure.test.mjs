@@ -2,16 +2,61 @@
 // 对照宿主实际的加载预期验证包形态：package.json 字段、cordis.patch.yml 的单条
 // 插入形式、Config 的 volatile 标记，以及 docs/p0-evidence-notes.md N7 中
 // 实测的 peer 范围矩阵。
+// 工单 #36 起同时守护 src/core 的未接线白名单（见文件下方的
+// 「零引用核心模块必须与未接线白名单一致」）。
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { hostRequire } from "../scripts/host-anchor.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const importLocal = (p) => import(pathToFileURL(p).href);
+
+// ── 未接线核心模块守护（工单 #36） ─────────────────────────────────────────
+//
+// src/core 下有些 P1 预置件已实现、有单测，但 src/ 内没有任何运行路径引用
+// 它们。读代码的人只看文件名和 P1 编号，会以为它们在生产路径上；接线后若
+// 忘记更新文档 / 白名单，也会让状态继续失真。本用例把「零引用」这件事变成
+// 显式白名单：实际零引用集合必须与白名单完全相等。
+//
+// 未接线白名单：每条都写明等哪个工单接线。
+const UNWIRED_CORE_MODULES = Object.freeze([
+  // 等 P1-07（工作台屏 A 骨架 + 双入口）接线：身份解析器五级链（P1-01）。
+  "identity.js",
+  // 等 P1-07 接线：候选引擎八级字段合成（P1-02）。
+  "candidates.js",
+  // 等 P1-07 接线：应用服务 prepare/commit 与指纹撤销（P1-04/P1-05）。
+  "apply-service.js",
+  // 等 P1-07 接线：三态用户档案仓库（P1-06）。
+  "profile-repository.js",
+]);
+
+const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs"]);
+
+/** 递归列出 src/ 下所有 JS 源码。 */
+function listSourceFiles(dir) {
+  const files = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...listSourceFiles(full));
+    else if (SOURCE_EXTENSIONS.has(extname(entry.name))) files.push(full);
+  }
+  return files;
+}
+
+/** 去掉注释，避免把注释里的 import 当成真实引用。 */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\\])\/\/.*$/gm, "$1");
+}
+
+/** 提取 import / export-from / 动态 import / require 的模块说明符。 */
+function importSpecifiers(source) {
+  const pattern = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\brequire\s*\(\s*)["']([^"'\n]+)["']/g;
+  return [...stripComments(source).matchAll(pattern)].map((match) => match[1]);
+}
 
 test("package.json 结构", () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -115,4 +160,34 @@ test("宿主侧在 apply 内不声明动态导入（生命周期安全）", () =
   // Config 必须满足 0.2.2 的 volatileForm()：至少 1 个 volatile 顶层字段。
   const volatileCount = (source.match(/\.volatile\(\)/g) || []).length;
   assert.ok(volatileCount >= 4, `expected >=4 volatile data lines, saw ${volatileCount}`);
+});
+
+test("零引用核心模块必须与未接线白名单一致", () => {
+  const coreDir = join(root, "src", "core");
+  const coreModules = readdirSync(coreDir).filter((name) => name.endsWith(".js")).sort();
+  const referencedBy = new Map(coreModules.map((name) => [name, new Set()]));
+
+  for (const file of listSourceFiles(join(root, "src"))) {
+    for (const specifier of importSpecifiers(readFileSync(file, "utf8"))) {
+      if (!specifier.startsWith(".")) continue;
+      const target = resolve(dirname(file), specifier);
+      // 只统计 src/core/*.js 的直接引用；模块引用自身不算。
+      if (dirname(target) !== coreDir || target === file) continue;
+      referencedBy.get(basename(target))?.add(file);
+    }
+  }
+
+  const zeroReference = coreModules.filter((name) => referencedBy.get(name).size === 0);
+  const whitelist = [...UNWIRED_CORE_MODULES].sort();
+  assert.deepEqual(
+    zeroReference,
+    whitelist,
+    [
+      "零引用核心模块必须与未接线白名单一致。",
+      `实际零引用：${zeroReference.join(", ") || "（无）"}`,
+      `白名单：${whitelist.join(", ") || "（空）"}`,
+      "新增未接线模块请登记到 UNWIRED_CORE_MODULES 并注明等哪个工单；",
+      "接线后请把模块从白名单删除。",
+    ].join("\n"),
+  );
 });
