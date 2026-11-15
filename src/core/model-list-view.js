@@ -1,6 +1,10 @@
 // 工单 #31：长模型列表的纯视图规则 —— 按 id 前缀分组、组内短名、
 // 摘要去重，以及「详细 / 紧凑」密度偏好。
 //
+// 工单 #39：再加「平铺 / 分组」视图偏好。分组是读长列表的辅助视图，
+// 排序是写顺序的操作 —— 平铺视图恢复全局拖动 / 键盘排序，分组视图保持
+// 组内排序。视图偏好只存 localStorage，绝不写配置。
+//
 // 这里不碰 React / DOM / 配置：分组是纯视图，models 数组顺序属于用户
 // （工单 #19 拖出来的），任何函数都不会改写入参，也不会生成 settingsOps。
 
@@ -176,6 +180,53 @@ export function writeModelListDensity(storage, density) {
   if (!storage || typeof storage.setItem !== "function") return false;
   try {
     storage.setItem(DENSITY_STORAGE_KEY, density);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── 工单 #39：平铺 / 分组视图 ──────────────────────────────────────────────
+//
+// 分组视图的组顺序由 id 前缀决定（字母序），拖动只能改组内顺序；平铺视图
+// 按 models 数组顺序渲染，拖动 / 键盘恢复全局语义。两个视图读的是同一份
+// models 数组，切换视图绝不改写配置。
+
+/** 平铺视图：没有组头，按 models 数组顺序逐条渲染，可全局排序。 */
+export const VIEW_FLAT = "flat";
+
+/** 分组视图：按 id 前缀折叠，组内排序；默认值，保持工单 #31 的观感。 */
+export const VIEW_GROUPED = "grouped";
+
+/** 视图偏好同样是全局前端偏好，结构变化时换版本号。 */
+export const VIEW_STORAGE_KEY = "modelpilot.model-list-view.v1";
+
+/**
+ * 读取视图偏好；读不到、被禁用或值非法时回落 grouped。
+ * @param {Pick<Storage,"getItem">|undefined} storage
+ * @returns {"flat"|"grouped"}
+ */
+export function readModelListView(storage) {
+  if (!storage || typeof storage.getItem !== "function") return VIEW_GROUPED;
+  try {
+    const value = storage.getItem(VIEW_STORAGE_KEY);
+    return value === VIEW_FLAT ? VIEW_FLAT : VIEW_GROUPED;
+  } catch {
+    return VIEW_GROUPED;
+  }
+}
+
+/**
+ * 写入视图偏好；成功返回 true，非法值或存储不可用时返回 false。
+ * @param {Pick<Storage,"setItem">|undefined} storage
+ * @param {unknown} view
+ * @returns {boolean}
+ */
+export function writeModelListView(storage, view) {
+  if (view !== VIEW_FLAT && view !== VIEW_GROUPED) return false;
+  if (!storage || typeof storage.setItem !== "function") return false;
+  try {
+    storage.setItem(VIEW_STORAGE_KEY, view);
     return true;
   } catch {
     return false;

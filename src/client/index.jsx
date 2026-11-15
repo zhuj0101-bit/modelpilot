@@ -76,14 +76,18 @@ import {
 import {
   DENSITY_COMPACT,
   DENSITY_DETAILED,
+  VIEW_FLAT,
+  VIEW_GROUPED,
   groupCountText,
   groupKeyOf,
   groupModelRows,
   groupedOrdinalOf,
   readModelListDensity,
+  readModelListView,
   selectAllCheckboxState,
   sharedSummaryText,
   writeModelListDensity,
+  writeModelListView,
 } from "../core/model-list-view.js";
 import {
   CACHE_RETENTION_CHOICES,
@@ -492,18 +496,19 @@ const s = {
     position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
     overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
   },
-  // 「详细 / 紧凑」切换：右上角的分段按钮，默认紧凑。
-  modelDensity: {
+  // 「平铺 / 分组」「详细 / 紧凑」两组分段按钮共用同一形态（工单 #39 复用
+  // 工单 #31 密度开关的既有外形）。
+  segmented: {
     display: "inline-flex", alignItems: "center", borderRadius: RADIUS.sm,
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
     overflow: "hidden",
   },
-  modelDensityButton: {
+  segmentedButton: {
     padding: "3px 8px", margin: 0, border: "none", background: "transparent",
     color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
     font: "inherit", fontSize: FONT.hint, cursor: "pointer",
   },
-  modelDensityButtonOn: {
+  segmentedButtonOn: {
     background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.12))",
     color: "var(--dsw-alias-label-primary, inherit)", fontWeight: 600,
   },
@@ -2908,6 +2913,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   // 工单 #31：列表密度的全局前端偏好；读不到 / 非法值一律回落 compact。
   const [modelDensity, setModelDensity] = React.useState(() => readModelListDensity(storage));
 
+  // 工单 #39：平铺 / 分组的全局前端偏好；读不到 / 非法值一律回落 grouped。
+  // 视图只改渲染与拖动语义，不写配置；折叠状态仍由 collapsedGroups 单独保存。
+  const [modelView, setModelView] = React.useState(() => readModelListView(storage));
+
   // 行内编辑：同时只允许一条展开。editModelId 是打开编辑时的 id，
   // 用于 projectPiAi(update) 的 stale-index 校验（防止配置被别处改动）。
   const [editingIndex, setEditingIndex] = React.useState(null);
@@ -3334,19 +3343,26 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     }
     return ordinals;
   }, [modelGroups]);
+  /** 一行的展示描述：完整 id（缺 id 时用下标兜底）、显示名、序号与摘要。 */
+  const describeModelRow = (index, { shortId, ordinal }) => {
+    const model = routeModels[index];
+    const rawId = model?.id;
+    const modelKey = typeof rawId === "string" && rawId !== "" ? rawId : `#${index}`;
+    return {
+      index,
+      model,
+      modelKey,
+      shortId: shortId === "" ? modelKey : shortId,
+      ordinal,
+      summary: describeModelRowSource(model, humanizeTokenCount, route),
+    };
+  };
   const groupViews = React.useMemo(
     () => modelGroups.map((group) => {
-      const rows = group.rows.map((row) => {
-        const rawId = row.model?.id;
-        const modelKey = typeof rawId === "string" && rawId !== "" ? rawId : `#${row.index}`;
-        return {
-          ...row,
-          modelKey,
-          shortId: row.shortId === "" ? modelKey : row.shortId,
-          ordinal: groupedOrdinals.get(row.index) ?? row.index + 1,
-          summary: describeModelRowSource(row.model, humanizeTokenCount, route),
-        };
-      });
+      const rows = group.rows.map((row) => describeModelRow(row.index, {
+        shortId: row.shortId,
+        ordinal: groupedOrdinals.get(row.index) ?? row.index + 1,
+      }));
       return {
         key: group.key,
         rows,
@@ -3369,8 +3385,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     return matched;
   }, [groupViews, modelQuery]);
   const matchingIndexSet = React.useMemo(() => new Set(matchingModelIndexes), [matchingModelIndexes]);
-  // 组头折叠只看视图状态；visibleModelIndexes 只含「展开且命中筛选」的行，
-  // 全选与底部计数都以它为准。
+  // 组头折叠只看视图状态；分组视图的可见行只含「展开且命中筛选」的行。
   const modelGroupsVisible = React.useMemo(
     () => groupViews.map((group) => {
       const matchingRows = group.rows.filter((row) => matchingIndexSet.has(row.index));
@@ -3382,9 +3397,27 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     }),
     [groupViews, matchingIndexSet, collapsedGroups],
   );
-  const visibleModelIndexes = modelGroupsVisible.flatMap((group) => (
+  const groupedVisibleModelIndexes = modelGroupsVisible.flatMap((group) => (
     group.expanded ? group.matchingRows.map((row) => row.index) : []
   ));
+  // 工单 #39：平铺视图没有折叠，可见行就是命中筛选的全部行，按 models 数组顺序。
+  // 全选、隐藏选中与底部计数都以最终的 visibleModelIndexes 为准，两种视图共用。
+  const flatVisibleModelIndexes = React.useMemo(
+    () => routeModels.map((model, index) => index).filter((index) => matchingIndexSet.has(index)),
+    [routeModels, matchingIndexSet],
+  );
+  const visibleModelIndexes = modelView === VIEW_FLAT
+    ? flatVisibleModelIndexes
+    : groupedVisibleModelIndexes;
+  // 平铺行：序号就是数组下标 + 1；显示完整 id（没有组前缀要去掉）。
+  // 行本身仍由同一个 renderModelRow 渲染，分组 / 平铺不复制 JSX。
+  const flatModelRows = React.useMemo(
+    () => flatVisibleModelIndexes.map((index) => describeModelRow(index, {
+      shortId: "",
+      ordinal: index + 1,
+    })),
+    [flatVisibleModelIndexes, routeModels, route],
+  );
   const matchingModelCount = matchingModelIndexes.length;
   const routeModelIdKey = routeModels
     .map((model) => (typeof model?.id === "string" ? model.id : `#${model?.id}`))
@@ -3802,6 +3835,16 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     writeModelListDensity(storage, next);
   }
 
+  /**
+   * 工单 #39：平铺 / 分组也是全局前端偏好，写 localStorage；非法值不改变界面。
+   * 切换视图不碰 collapsedGroups —— 折叠状态留给分组视图，切回来时原样恢复。
+   */
+  function changeModelView(next) {
+    if (next !== VIEW_FLAT && next !== VIEW_GROUPED) return;
+    setModelView(next);
+    writeModelListView(storage, next);
+  }
+
   /** 工单 #31：折叠 / 展开一个分组。纯视图状态，不写配置。 */
   function toggleModelGroup(key) {
     setCollapsedGroups((current) => {
@@ -3833,11 +3876,20 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }
 
   // ── 模型排序（工单 #19）：拖动 + 键盘，松手 / 按键即写盘 ──────────────
-  // 工单 #32：两种排序共用同一个分组规则 —— 只允许在本组内换位。
+  // 工单 #32：分组视图只允许在本组内换位。
+  // 工单 #39：平铺视图恢复全局语义 —— 跨组也允许，Home / End 到全表首末位。
 
   /** 按 models 数组的绝对下标取分组键；分组算法仍由 groupKeyOf 决定。 */
   function groupKeyOfIndex(index) {
     return groupKeyOf(routeModels[index]?.id);
+  }
+
+  /**
+   * 这次落点是否要被分组规则拒绝：只有分组视图才有组边界。
+   * 平铺视图的排序键是数组位置本身，跨组拖动就是用户想要的全局排序。
+   */
+  function crossGroupBlocked(from, index) {
+    return modelView === VIEW_GROUPED && groupKeyOfIndex(from) !== groupKeyOfIndex(index);
   }
 
   /** 拖动手柄按下：只记来源，不改列表；拖拽数据用 text/plain 兼容 Firefox。 */
@@ -3860,13 +3912,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
 
   /**
    * 拖动经过某一行：按指针在行的上半 / 下半决定插入线画在行前还是行后。
-   * 工单 #32：落点跨组时不进 dragState.over —— 不画插入线，指针也显示禁止
-   * 放置；仍然 preventDefault，让松手能收到 drop 并给出明确的拒绝提示。
+   * 工单 #32：分组视图落点跨组时不进 dragState.over —— 不画插入线，指针也
+   * 显示禁止放置；仍然 preventDefault，让松手能收到 drop 并给出明确的拒绝提示。
+   * 工单 #39：平铺视图没有组边界，跨组落点照常画插入线。
    */
   function updateModelDragOver(event, index) {
     if (dragState === null) return;
     event.preventDefault();
-    const crossGroup = groupKeyOfIndex(dragState.from) !== groupKeyOfIndex(index);
+    const crossGroup = crossGroupBlocked(dragState.from, index);
     if (event.dataTransfer !== null && event.dataTransfer !== undefined) {
       event.dataTransfer.dropEffect = crossGroup ? "none" : "move";
     }
@@ -3895,46 +3948,59 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   /**
    * 松手：把「行前 / 行后插入点」换算成移除来源后的目标下标，再立即写盘。
    * 拖回原位（to === from）不产生任何写入。
-   * 工单 #32：跨组拖动直接丢弃 —— 分组视图的组间顺序由 id 前缀决定，按
-   * 绝对下标重排只会悄悄改变组内顺序，既不是用户拖到的位置也会写脏数据。
+   * 工单 #32：分组视图跨组拖动直接丢弃 —— 组间顺序由 id 前缀决定，按绝对
+   * 下标重排只会悄悄改变组内顺序，既不是用户拖到的位置也会写脏数据。
+   * 工单 #39：平铺视图没有这层拒绝，跨组落点就是真正的全局位置。
    */
   function handleModelDrop(event, index) {
     if (dragState === null) return;
     event.preventDefault();
     const cancelled = dragCancelled.current;
     dragCancelled.current = false;
-    setDragState(null);
-    if (cancelled) return;
     const from = dragState.from;
-    if (groupKeyOfIndex(from) !== groupKeyOfIndex(index)) {
-      setToast({ tone: "bad", text: "只能在同一分组内调整顺序；跨分组无法排序" });
-      return;
-    }
+    // 先读落点几何，再清 dragState：清状态触发的重渲染会换掉落点节点，
+    // 之后读 event.currentTarget 可能已经不在文档里（几何全 0）。
     const rect = event.currentTarget.getBoundingClientRect();
     const edge = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
     const slot = index + (edge === "after" ? 1 : 0);
     const to = slot > from ? slot - 1 : slot;
+    setDragState(null);
+    if (cancelled) return;
+    if (crossGroupBlocked(from, index)) {
+      setToast({ tone: "bad", text: "只能在同一分组内调整顺序；跨分组无法排序" });
+      return;
+    }
     if (to === from) return;
     void moveModelTo(from, to);
   }
 
   /**
-   * 手柄聚焦后的方向键：在本组内 ↑ / ↓ 一位、Home / End 组内首 / 末位，
-   * 每次立即写盘。工单 #32 之后拖动与键盘共用这条分组规则：组间顺序由
-   * id 前缀决定，把行挪到别的组名次不会在界面上产生位移。
+   * 手柄聚焦后的方向键，每次立即写盘。
+   * 分组视图（工单 #32）：↑ / ↓ 在本组内一位、Home / End 组内首 / 末位 ——
+   * 组间顺序由 id 前缀决定，把行挪到别的组名次不会在界面上产生位移。
+   * 平铺视图（工单 #39）：Home / End 是整张表的首 / 末位，↑ / ↓ 跨组也连续。
    */
   function handleModelHandleKey(event, index) {
     if (!canReorderModels) return;
-    const group = modelGroupsVisible.find((item) => item.rows.some((row) => row.index === index));
-    if (group === undefined || !group.expanded) return;
-    const ordinal = group.rows.findIndex((row) => row.index === index);
-    if (ordinal < 0) return;
     let to;
-    if (event.key === "ArrowUp") to = group.rows[Math.max(ordinal - 1, 0)].index;
-    else if (event.key === "ArrowDown") to = group.rows[Math.min(ordinal + 1, group.rows.length - 1)].index;
-    else if (event.key === "Home") to = group.rows[0].index;
-    else if (event.key === "End") to = group.rows[group.rows.length - 1].index;
-    else return;
+    if (modelView === VIEW_FLAT) {
+      const last = routeModels.length - 1;
+      if (event.key === "ArrowUp") to = Math.max(index - 1, 0);
+      else if (event.key === "ArrowDown") to = Math.min(index + 1, last);
+      else if (event.key === "Home") to = 0;
+      else if (event.key === "End") to = last;
+      else return;
+    } else {
+      const group = modelGroupsVisible.find((item) => item.rows.some((row) => row.index === index));
+      if (group === undefined || !group.expanded) return;
+      const ordinal = group.rows.findIndex((row) => row.index === index);
+      if (ordinal < 0) return;
+      if (event.key === "ArrowUp") to = group.rows[Math.max(ordinal - 1, 0)].index;
+      else if (event.key === "ArrowDown") to = group.rows[Math.min(ordinal + 1, group.rows.length - 1)].index;
+      else if (event.key === "Home") to = group.rows[0].index;
+      else if (event.key === "End") to = group.rows[group.rows.length - 1].index;
+      else return;
+    }
     event.preventDefault();
     if (to === index) return;
     void moveModelTo(index, to, { focusHandle: true });
@@ -3967,7 +4033,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       typeof latestModels[from]?.id === "string" && latestModels[from].id !== ""
         ? latestModels[from].id
         : `第 ${from + 1} 个模型`;
-    const movedOrdinal = Array.isArray(result.models) ? groupedOrdinalOf(result.models, to) : to + 1;
+    // 分组视图按组阅读顺序报位次；平铺视图的位次就是数组下标 + 1。
+    const movedOrdinal = modelView === VIEW_FLAT
+      ? to + 1
+      : Array.isArray(result.models)
+        ? groupedOrdinalOf(result.models, to)
+        : to + 1;
     setBusy(true);
     setToast(null);
     try {
@@ -4915,6 +4986,157 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     writable: credential.writable,
     error: credential.error,
   };
+
+  /**
+   * 渲染一行模型（工单 #39）：分组视图与平铺视图共用这一份 JSX，调用方只决定
+   * 显示名、序号、位置与组头摘要。position 是它在所在容器里的位置（首行不加
+   * 上边框）；sharedSummary 是组头已经展示过的摘要，平铺视图没有组头，传 null。
+   */
+  function renderModelRow(row, position, sharedSummary) {
+    const { index, modelKey, model } = row;
+    const rowSummary = row.summary;
+    const rowKey = `${modelKey}:${index}`;
+    const compact = modelDensity === DENSITY_COMPACT;
+    const hovered = hoveredRow === rowKey;
+    const dragging = dragState !== null && dragState.from === index;
+    const rowStyle = {
+      ...s.modelRow,
+      ...(compact ? s.modelRowCompact : null),
+      ...(position === 0 ? s.modelRowFirst : null),
+      ...(hovered ? s.modelRowHover : null),
+      ...(dragging ? s.modelRowDragging : null),
+    };
+    // 工单 #31：紧凑与详细共用同一组操作按钮；紧凑时放在标题行，
+    // 详细时放在摘要行，避免紧凑模式多占一行。
+    const actions = (
+      <span style={s.modelRowActions}>
+        <button
+          type="button"
+          // 工单 #27：摘要单行省略时按钮保持原宽，窄容器下不把「编辑」挤成两行。
+          style={{ ...s.btnSmall, flexShrink: 0 }}
+          onClick={() => openEditor(index)}
+          aria-label={`编辑模型 ${modelKey}`}
+        >
+          编辑
+        </button>
+        <button
+          type="button"
+          style={busy || !writable
+            ? { ...s.btnSmall, flexShrink: 0, ...s.btnDisabled }
+            : { ...s.btnSmall, flexShrink: 0 }}
+          disabled={busy || !writable}
+          onClick={() => requestRowDelete(index, model)}
+          aria-label={`删除模型 ${modelKey}`}
+          title="删除模型（需要二次确认）"
+        >
+          删除
+        </button>
+      </span>
+    );
+    return (
+      // 工单 #34：div 映射到 ARIA generic 角色，ARIA 1.2 禁止
+      // 它拥有可访问名；摘要不再挂行级 aria-label，而是由行内
+      // 的 sr-only 节点（紧凑）/ 可见摘要（详细）提供。
+      <div
+        key={rowKey}
+        data-model-key={modelKey}
+        style={rowStyle}
+        onMouseEnter={() => setHoveredRow(rowKey)}
+        onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
+        onDragOver={(event) => updateModelDragOver(event, index)}
+        onDrop={(event) => handleModelDrop(event, index)}
+      >
+        {dragState !== null && dragState.over === index ? (
+          <div
+            title="插入位置"
+            aria-hidden="true"
+            style={dragState.edge === "after"
+              ? { ...s.dropLine, ...s.dropLineAfter }
+              : { ...s.dropLine, ...s.dropLineBefore }}
+          />
+        ) : null}
+        <div style={compact ? { ...s.modelRowHead, ...s.modelRowHeadCompact } : s.modelRowHead}>
+          <input
+            type="checkbox"
+            style={s.modelCheckbox}
+            checked={modelSelected.has(index)}
+            disabled={busy || !writable}
+            onChange={() => toggleModelSelected(index)}
+            aria-label={`选择模型 ${modelKey}`}
+          />
+          <button
+            type="button"
+            id={`modelpilot-model-handle-${index}`}
+            draggable={canReorderModels}
+            disabled={!canReorderModels}
+            style={canReorderModels ? s.modelHandle : { ...s.modelHandle, ...s.modelHandleDisabled }}
+            aria-label={`拖动排序 第 ${row.ordinal} 位`}
+            title={canReorderModels
+              ? modelView === VIEW_FLAT
+                ? "拖动排序；聚焦后可用 ↑ / ↓ / Home / End 移动"
+                : "拖动排序；聚焦后可用 ↑ / ↓ / Home / End 在本组内移动"
+              : modelQuery.trim() !== ""
+                ? "筛选状态下不可排序；清空搜索后才能拖动"
+                : routeModels.length <= 1
+                  ? "只有一个模型，无法排序"
+                  : "当前不可排序（配置只读或正在写入）"}
+            onDragStart={(event) => beginModelDrag(event, index)}
+            onDragEnd={endModelDrag}
+            onKeyDown={(event) => handleModelHandleKey(event, index)}
+          >
+            ⠿
+          </button>
+          <span style={s.modelIndex}>{row.ordinal}</span>
+          <span
+            id={`modelpilot-model-name-${index}`}
+            style={compact ? { ...s.modelName, ...s.modelNameCompact } : s.modelName}
+            {...(compact ? { title: `${modelKey}\n${rowSummary.title}` } : {})}
+          >
+            {row.shortId}
+          </span>
+          {compact ? (
+            // 视觉隐藏、读屏可读；鼠标用户仍看短 ID 的 title。
+            <span style={s.srOnly} data-modelpilot-sr-summary="">{rowSummary.text}</span>
+          ) : null}
+          {compact ? actions : null}
+        </div>
+        {compact ? null : (
+          <div style={s.modelRowMeta}>
+            {sharedSummary === null ? (
+              <span style={s.modelSummary} title={rowSummary.title}>{rowSummary.text}</span>
+            ) : null}
+            {actions}
+          </div>
+        )}
+        {editingIndex === index && editForm !== null ? (
+          <EditModelForm
+            model={model}
+            modelId={editModelId}
+            form={editForm}
+            template={template}
+            errors={editErrors}
+            formError={editFormError}
+            projection={editProjection}
+            changed={editDiff}
+            canSave={editCanSave}
+            busy={busy}
+            writable={writable}
+            guard={editGuard}
+            onChange={updateEditForm}
+            onTokenChange={changeEditToken}
+            onToggleLevel={toggleEditLevel}
+            onApiValueChange={changeEditApiValue}
+            onFillTemplate={fillEditTemplate}
+            onSave={saveEdit}
+            onCancel={closeEditor}
+            onDelete={requestDelete}
+            closeTokenPanels={pickerOpen}
+          />
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div style={s.page}>
       <div>
@@ -5082,12 +5304,39 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             <button type="button" style={s.btnSmall} onClick={focusCreateForm} aria-label="新增模型">
               + 新增
             </button>
-            <div style={s.modelDensity} role="group" aria-label="列表密度">
+            {/* 工单 #39：平铺 / 分组开关放在密度开关左边，形态与密度一致。 */}
+            <div style={s.segmented} role="group" aria-label="列表视图">
+              <button
+                type="button"
+                style={modelView === VIEW_FLAT
+                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
+                  : s.segmentedButton}
+                aria-pressed={modelView === VIEW_FLAT}
+                aria-label="平铺视图"
+                title="平铺：可自由拖动排序"
+                onClick={() => changeModelView(VIEW_FLAT)}
+              >
+                平铺
+              </button>
+              <button
+                type="button"
+                style={modelView === VIEW_GROUPED
+                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
+                  : s.segmentedButton}
+                aria-pressed={modelView === VIEW_GROUPED}
+                aria-label="分组视图"
+                title="分组：按 id 前缀折叠，组内排序"
+                onClick={() => changeModelView(VIEW_GROUPED)}
+              >
+                分组
+              </button>
+            </div>
+            <div style={s.segmented} role="group" aria-label="列表密度">
               <button
                 type="button"
                 style={modelDensity === DENSITY_DETAILED
-                  ? { ...s.modelDensityButton, ...s.modelDensityButtonOn }
-                  : s.modelDensityButton}
+                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
+                  : s.segmentedButton}
                 aria-pressed={modelDensity === DENSITY_DETAILED}
                 aria-label="详细视图"
                 title="显示每条模型的完整摘要"
@@ -5098,8 +5347,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               <button
                 type="button"
                 style={modelDensity === DENSITY_COMPACT
-                  ? { ...s.modelDensityButton, ...s.modelDensityButtonOn }
-                  : s.modelDensityButton}
+                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
+                  : s.segmentedButton}
                 aria-pressed={modelDensity === DENSITY_COMPACT}
                 aria-label="紧凑视图"
                 title="只显示短 ID，摘要移到悬停提示"
@@ -5323,6 +5572,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               清空搜索
             </button>
           </div>
+        ) : modelView === VIEW_FLAT ? (
+          // 工单 #39：平铺视图没有组头，行按 models 数组顺序逐条渲染；
+          // 行仍是同一个 renderModelRow，序号就是数组下标 + 1。
+          <div style={s.modelGroups}>
+            {flatModelRows.map((row, position) => renderModelRow(row, position, null))}
+          </div>
         ) : (
           <div style={s.modelGroups}>
             {modelGroupsVisible.map((group) => {
@@ -5349,149 +5604,9 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                   </div>
                   {group.expanded ? (
                     <div style={s.modelGroupRows}>
-                      {group.matchingRows.map((row, position) => {
-                        const { index, modelKey } = row;
-                        const model = routeModels[index];
-                        const rowSummary = row.summary;
-                        const rowKey = `${modelKey}:${index}`;
-                        const compact = modelDensity === DENSITY_COMPACT;
-                        const hovered = hoveredRow === rowKey;
-                        const dragging = dragState !== null && dragState.from === index;
-                        const rowStyle = {
-                          ...s.modelRow,
-                          ...(compact ? s.modelRowCompact : null),
-                          ...(position === 0 ? s.modelRowFirst : null),
-                          ...(hovered ? s.modelRowHover : null),
-                          ...(dragging ? s.modelRowDragging : null),
-                        };
-                        // 工单 #31：紧凑与详细共用同一组操作按钮；紧凑时放在标题行，
-                        // 详细时放在摘要行，避免紧凑模式多占一行。
-                        const actions = (
-                          <span style={s.modelRowActions}>
-                            <button
-                              type="button"
-                              // 工单 #27：摘要单行省略时按钮保持原宽，窄容器下不把「编辑」挤成两行。
-                              style={{ ...s.btnSmall, flexShrink: 0 }}
-                              onClick={() => openEditor(index)}
-                              aria-label={`编辑模型 ${modelKey}`}
-                            >
-                              编辑
-                            </button>
-                            <button
-                              type="button"
-                              style={busy || !writable
-                                ? { ...s.btnSmall, flexShrink: 0, ...s.btnDisabled }
-                                : { ...s.btnSmall, flexShrink: 0 }}
-                              disabled={busy || !writable}
-                              onClick={() => requestRowDelete(index, model)}
-                              aria-label={`删除模型 ${modelKey}`}
-                              title="删除模型（需要二次确认）"
-                            >
-                              删除
-                            </button>
-                          </span>
-                        );
-                        return (
-                          // 工单 #34：div 映射到 ARIA generic 角色，ARIA 1.2 禁止
-                          // 它拥有可访问名；摘要不再挂行级 aria-label，而是由行内
-                          // 的 sr-only 节点（紧凑）/ 可见摘要（详细）提供。
-                          <div
-                            key={rowKey}
-                            data-model-key={modelKey}
-                            style={rowStyle}
-                            onMouseEnter={() => setHoveredRow(rowKey)}
-                            onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
-                            onDragOver={(event) => updateModelDragOver(event, index)}
-                            onDrop={(event) => handleModelDrop(event, index)}
-                          >
-                            {dragState !== null && dragState.over === index ? (
-                              <div
-                                title="插入位置"
-                                aria-hidden="true"
-                                style={dragState.edge === "after"
-                                  ? { ...s.dropLine, ...s.dropLineAfter }
-                                  : { ...s.dropLine, ...s.dropLineBefore }}
-                              />
-                            ) : null}
-                            <div style={compact ? { ...s.modelRowHead, ...s.modelRowHeadCompact } : s.modelRowHead}>
-                              <input
-                                type="checkbox"
-                                style={s.modelCheckbox}
-                                checked={modelSelected.has(index)}
-                                disabled={busy || !writable}
-                                onChange={() => toggleModelSelected(index)}
-                                aria-label={`选择模型 ${modelKey}`}
-                              />
-                              <button
-                                type="button"
-                                id={`modelpilot-model-handle-${index}`}
-                                draggable={canReorderModels}
-                                disabled={!canReorderModels}
-                                style={canReorderModels ? s.modelHandle : { ...s.modelHandle, ...s.modelHandleDisabled }}
-                                aria-label={`拖动排序 第 ${row.ordinal} 位`}
-                                title={canReorderModels
-                                  ? "拖动排序；聚焦后可用 ↑ / ↓ / Home / End 在本组内移动"
-                                  : modelQuery.trim() !== ""
-                                    ? "筛选状态下不可排序；清空搜索后才能拖动"
-                                    : routeModels.length <= 1
-                                      ? "只有一个模型，无法排序"
-                                      : "当前不可排序（配置只读或正在写入）"}
-                                onDragStart={(event) => beginModelDrag(event, index)}
-                                onDragEnd={endModelDrag}
-                                onKeyDown={(event) => handleModelHandleKey(event, index)}
-                              >
-                                ⠿
-                              </button>
-                              <span style={s.modelIndex}>{row.ordinal}</span>
-                              <span
-                                id={`modelpilot-model-name-${index}`}
-                                style={compact ? { ...s.modelName, ...s.modelNameCompact } : s.modelName}
-                                {...(compact ? { title: `${modelKey}\n${rowSummary.title}` } : {})}
-                              >
-                                {row.shortId}
-                              </span>
-                              {compact ? (
-                                // 视觉隐藏、读屏可读；鼠标用户仍看短 ID 的 title。
-                                <span style={s.srOnly} data-modelpilot-sr-summary="">{rowSummary.text}</span>
-                              ) : null}
-                              {compact ? actions : null}
-                            </div>
-                            {compact ? null : (
-                              <div style={s.modelRowMeta}>
-                                {group.sharedSummary === null ? (
-                                  <span style={s.modelSummary} title={rowSummary.title}>{rowSummary.text}</span>
-                                ) : null}
-                                {actions}
-                              </div>
-                            )}
-                            {editingIndex === index && editForm !== null ? (
-                              <EditModelForm
-                                model={model}
-                                modelId={editModelId}
-                                form={editForm}
-                                template={template}
-                                errors={editErrors}
-                                formError={editFormError}
-                                projection={editProjection}
-                                changed={editDiff}
-                                canSave={editCanSave}
-                                busy={busy}
-                                writable={writable}
-                                guard={editGuard}
-                                onChange={updateEditForm}
-                                onTokenChange={changeEditToken}
-                                onToggleLevel={toggleEditLevel}
-                                onApiValueChange={changeEditApiValue}
-                                onFillTemplate={fillEditTemplate}
-                                onSave={saveEdit}
-                                onCancel={closeEditor}
-                                onDelete={requestDelete}
-                                closeTokenPanels={pickerOpen}
-                              />
-                            ) : null}
-                          </div>
-                        );
-                      })}
+                      {group.matchingRows.map((row, position) => (
+                        renderModelRow(row, position, group.sharedSummary)
+                      ))}
                     </div>
                   ) : null}
                 </div>
