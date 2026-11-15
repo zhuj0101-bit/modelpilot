@@ -146,10 +146,11 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     hint: styleOf(summary).fontSize,
   };
 
-  // ── 模型行 hover：底色变化 + 120ms 过渡 + 编辑按钮内缩 ──
+  // ── 模型行 hover：底色变化 + 120ms 过渡 + 行内操作按钮内缩 ──
   const firstRow = row("jxf/dsv4.1-flash");
   const beforeHover = styleOf(firstRow).backgroundColor;
-  const editInset = rect(firstRow).right - rect(firstRow.querySelector('[aria-label^="编辑模型"]')).right;
+  // 工单 #28 起「编辑」右侧多了「删除」，行内操作组的右缘才是贴边的那一侧。
+  const actionInset = rect(firstRow).right - rect(firstRow.querySelector('[aria-label="删除模型 jxf/dsv4.1-flash"]')).right;
   const transitionDuration = styleOf(firstRow).transitionDuration;
   firstRow.dispatchEvent(new MouseEvent("mouseenter"));
   const hovered = row("jxf/dsv4.1-flash");
@@ -157,7 +158,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   hovered.dispatchEvent(new MouseEvent("mouseleave"));
   const afterLeave = styleOf(row("jxf/dsv4.1-flash")).backgroundColor;
   result.hover = { beforeHover, afterHover, afterLeave, transitionDuration };
-  result.editInset = editInset;
+  result.actionInset = actionInset;
 
   // ── 四个原生 select：appearance:none、同高、同箭头 ──
   document.querySelector('[aria-label="展开路由设置"]').click();
