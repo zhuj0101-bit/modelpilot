@@ -220,7 +220,7 @@ test("读取失败文案：正文写「无法确认是否存在存储的密钥�
     keyState: ROUTE_DELETE_KEY_STATE.unknown,
   });
   assert.match(copy.body, /无法确认是否存在存储的密钥，因此只会删除配置/);
-  assert.match(copy.hint, /TEST_RELAY_API_KEY 可能仍保留在宿主的凭据存储中/);
+  assert.match(copy.hint, /TEST_RELAY_API_KEY 可能仍保留在凭据存储中/);
   assert.equal(copy.confirmLabel, "删除路由");
   assert.equal(copy.confirmDisabled, false);
 });
@@ -233,7 +233,7 @@ test("读取失败文案：提示行带上宿主失败原因，便于排查", ()
     keyState: ROUTE_DELETE_KEY_STATE.unknown,
     error: "凭据服务不可用",
   });
-  assert.match(copy.hint, /密钥 TEST_RELAY_API_KEY 可能仍保留在宿主的凭据存储中（凭据服务不可用）/);
+  assert.match(copy.hint, /密钥 TEST_RELAY_API_KEY 可能仍保留在凭据存储中（凭据服务不可用）/);
   const withoutReason = describeRouteDeleteDialog({
     routeId: "test-relay",
     modelCount: 1,

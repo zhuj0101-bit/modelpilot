@@ -148,7 +148,7 @@ for (const scheme of ["light", "dark"]) {
     const result = await probe(scheme);
     assert.equal(result.stale.message, true);
     assert.equal(result.stale.saveDisabled, true);
-    assert.match(result.stale.opCount, /保存将写入的 settingsOps（0 条）/);
+    assert.match(result.stale.opCount, /将写入的配置项（0 条）/);
   });
 
   test(`${scheme} 主题：删到 0 条显示空态且不崩`, async (t) => {

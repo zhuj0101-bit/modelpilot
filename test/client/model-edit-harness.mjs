@@ -172,7 +172,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     maxTokens: byAria("编辑输出上限").value,
     name: byAria("编辑显示名").value,
     saveDisabled: byAria("保存修改").disabled,
-    compatNotice: document.body.innerText.includes("该模型还声明了 compat 字段"),
+    compatNotice: document.body.innerText.includes("该模型还有额外配置"),
     editorOpen: byAria("编辑表单 jxf/dsv4.1-flash") !== null,
   };
   result.edit.zeroHint = document.body.innerText.includes("可用上下文 800,000（零损失 ✓）");
@@ -184,7 +184,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     summary: wireDetails?.querySelector("summary")?.textContent ?? "",
     highValue: byAria("编辑 API 参数值 high")?.value ?? "",
     noOffInput: byAria("编辑 API 参数值 off") === null,
-    helpText: wireDetails?.textContent.includes("默认与档位名相同；如有不同，以模型提供商的 API 文档为准") ?? false,
+    helpText: wireDetails?.textContent.includes("默认与档位名相同；如有不同，以模型提供商的文档为准") ?? false,
   };
   // 只改 API 参数值（档位集合不变）也必须被识别为改动。
   setValue(byAria("编辑 API 参数值 high"), "max");
@@ -237,7 +237,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   result.switch = {
     firstEditorGone: byAria("编辑表单 jxf/dsv4.1-flash") === null,
     secondEditorOpen: byAria("编辑表单 jxf/dsv4.1-pro") !== null,
-    compatNotice: document.body.innerText.includes("该模型还声明了 compat 字段，保存时会原样保留"),
+    compatNotice: document.body.innerText.includes("该模型还有额外配置，保存时会原样保留"),
     saveDisabled: byAria("保存修改").disabled,
     name: byAria("编辑显示名").value,
   };
@@ -251,7 +251,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
       background: styleOf(byAria("编辑表单 jxf/dsv4.1-pro")).backgroundColor,
     },
     compatibility: (() => {
-      const node = [...document.querySelectorAll("div")].find((element) => element.textContent.startsWith("ⓘ 该模型还声明了 compat"));
+      const node = [...document.querySelectorAll("div")].find((element) => element.textContent.startsWith("ⓘ 该模型还有额外配置"));
       return node === undefined ? null : {
         background: styleOf(node).backgroundColor,
         color: styleOf(node).color,
@@ -305,7 +305,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   // ── 4b. 非推理模型（reasoningEfforts:false）：档位组与 API 参数值都不显示 ──
   byAria("编辑模型 tx/deepseek-v4.1-flash").click();
   result.nonReasoning = {
-    note: document.body.innerText.includes("声明为非推理模型（reasoningEfforts: false）"),
+    note: document.body.innerText.includes("声明为非推理模型，不显示推理档位"),
     noChips: byAria("编辑档位 off") === null,
     noGroupLabel: !(byAria("编辑表单 tx/deepseek-v4.1-flash")?.innerText ?? "").includes("推理档位（多选）"),
     noApiValues: byAria("编辑自定义 API 参数值") === null,
@@ -322,7 +322,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     message: document.body.innerText.includes("已失效"),
     saveDisabled: byAria("保存修改").disabled,
     opCount: (() => {
-      const summary = [...document.querySelectorAll("summary")].find((element) => element.textContent.includes("保存将写入的 settingsOps"));
+      const summary = [...document.querySelectorAll("summary")].find((element) => element.textContent.includes("将写入的配置项"));
       return summary?.textContent ?? "";
     })(),
   };
