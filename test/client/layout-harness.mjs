@@ -162,6 +162,7 @@ export const SHIM_SOURCE = String.raw`
     if (
       key === "role" ||
       key.startsWith("aria-") ||
+      key.startsWith("data-") ||
       key === "type" ||
       key === "id" ||
       key === "placeholder" ||

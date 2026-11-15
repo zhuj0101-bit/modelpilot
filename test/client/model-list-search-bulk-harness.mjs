@@ -136,8 +136,9 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
   window.__renderComponent(Workbench, spec.inject());
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const rows = () => [...document.querySelectorAll('[aria-label^="模型 "]')];
-  const listOrder = () => rows().map((row) => row.getAttribute("aria-label").slice(3));
+  // 工单 #32：行 aria-label 现在含摘要，机械读取用稳定的 data-model-key。
+  const rows = () => [...document.querySelectorAll("[data-model-key]")];
+  const listOrder = () => rows().map((row) => row.getAttribute("data-model-key"));
   const panel = () => document.querySelector('[aria-label="该路由的模型列表"]');
   const panelText = () => panel()?.innerText ?? "";
   const search = () => document.getElementById("modelpilot-model-search");
@@ -151,7 +152,7 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
   const find = (label) => document.querySelector('[aria-label="' + label + '"]');
   const selectedIds = () => rows()
     .filter((row) => row.querySelector('input[type="checkbox"][aria-label^="选择模型 "]')?.checked === true)
-    .map((row) => row.getAttribute("aria-label").slice(3));
+    .map((row) => row.getAttribute("data-model-key"));
   const footerText = () => {
     const match = panelText().match(/显示 \d+ \/ \d+ 条/);
     return match === null ? "" : match[0];

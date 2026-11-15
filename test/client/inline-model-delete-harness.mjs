@@ -95,7 +95,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     editLabels: [...document.querySelectorAll('[aria-label^="编辑模型"]')].map((element) => element.getAttribute("aria-label")),
     deleteLabels: [...document.querySelectorAll('[aria-label^="删除模型 "]')].map((element) => element.getAttribute("aria-label")),
     rows: modelIds.map((id) => {
-      const modelRow = byAria("模型 " + id);
+      const modelRow = document.querySelector('[data-model-key="' + id + '"]');
       const edit = modelRow?.querySelector('[aria-label="编辑模型 ' + id + '"]');
       const remove = modelRow?.querySelector('[aria-label="删除模型 ' + id + '"]');
       return {

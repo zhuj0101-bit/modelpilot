@@ -104,13 +104,14 @@ export const MODEL_REORDER_PROBE_SOURCE = String.raw`
   window.__renderComponent(Workbench, spec.inject());
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const rows = () => [...document.querySelectorAll('[aria-label^="模型 "]')];
-  const listOrder = () => rows().map((row) => row.getAttribute("aria-label").slice(3));
-  const rowByModel = (id) => rows().find((row) => row.getAttribute("aria-label") === "模型 " + id);
+  // 工单 #32：行 aria-label 现在含摘要，机械读取用稳定的 data-model-key。
+  const rows = () => [...document.querySelectorAll("[data-model-key]")];
+  const listOrder = () => rows().map((row) => row.getAttribute("data-model-key"));
+  const rowByModel = (id) => document.querySelector('[data-model-key="' + id + '"]');
   const handleByIndex = (index) => document.getElementById("modelpilot-model-handle-" + index);
   const ordinals = () => rows().map((row) => (row.querySelector("span")?.textContent ?? "").trim());
   const positions = () => rows().map((row) => ({
-    id: row.getAttribute("aria-label").slice(3),
+    id: row.getAttribute("data-model-key"),
     ordinal: (row.querySelector("span")?.textContent ?? "").trim(),
   }));
   const panelText = () => document.querySelector('[aria-label="该路由的模型列表"]')?.innerText ?? "";

@@ -98,7 +98,7 @@ ${MODEL_ROW_ROUTE_SOURCE}
 
   const styleOf = (element) => getComputedStyle(element);
   const panel = document.querySelector('[aria-label="该路由的模型列表"]');
-  const rowOf = (id) => document.querySelector('[aria-label="模型 ' + id + '"]');
+  const rowOf = (id) => document.querySelector('[data-model-key="' + id + '"]');
   const summaryOf = (id) => rowOf(id)?.querySelector("span[title]") ?? null;
   const readRow = (id) => {
     const row = rowOf(id);
