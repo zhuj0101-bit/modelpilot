@@ -61,6 +61,8 @@ export const VISUAL_PROBE_SOURCE = String.raw`
 (async () => {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
+  // 工单 #31 默认紧凑；本夹具继续测量详细模式的摘要 / 字号 / 对比度。
+  window.localStorage.setItem("modelpilot.model-list-density.v1", "detailed");
 
 ${MODEL_EDIT_ROUTE_SOURCE}
   const providers = { "preview-chat": route };
@@ -136,7 +138,8 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   };
 
   // ── 五级字号：页面标题 / 区块标题 / 字段标签 / 正文 / 提示 ──
-  const summary = [...row("jxf/dsv4.1-flash").querySelectorAll("span")]
+  // 工单 #31：组内摘要相同时会提到组头，因此在模型卡片内找这段 tertiary 文案。
+  const summary = [...modelsCard.querySelectorAll("span")]
     .find((element) => element.textContent.includes("窗口 1M"));
   result.fonts = {
     title: styleOf(document.querySelector("h2")).fontSize,

@@ -22,6 +22,8 @@ export const MODEL_REORDER_PROBE_SOURCE = String.raw`
   try {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
+  // 工单 #31 默认紧凑；本夹具验证 #19 的拖动 / 键盘行为，用详细模式保持行结构稳定。
+  window.localStorage.setItem("modelpilot.model-list-density.v1", "detailed");
 
   const route = {
     id: "preview-chat",
@@ -38,8 +40,8 @@ export const MODEL_REORDER_PROBE_SOURCE = String.raw`
         futureHostField: { keep: ["exactly", "these"] },
       },
       { id: "jxf/dsv4.1-pro", name: "jxf/dsv4.1-pro", contextWindow: 1000000, maxTokens: 32768, input: ["text"] },
-      { id: "tx/deepseek-v4.1-flash", name: "tx/deepseek-v4.1-flash", contextWindow: 128000, maxTokens: 8192, input: ["text"] },
-      { id: "qwen/complete", name: "qwen/complete", contextWindow: 262144, maxTokens: 8192, input: ["text"] },
+      { id: "jxf/tx-deepseek-v4.1-flash", name: "jxf/tx-deepseek-v4.1-flash", contextWindow: 128000, maxTokens: 8192, input: ["text"] },
+      { id: "jxf/qwen-complete", name: "jxf/qwen-complete", contextWindow: 262144, maxTokens: 8192, input: ["text"] },
     ],
   };
   const singleRoute = {
@@ -161,7 +163,7 @@ export const MODEL_REORDER_PROBE_SOURCE = String.raw`
     insertLine: document.querySelector('[title="插入位置"]') !== null,
     mutations: mutations.length,
   };
-  dragOver(rowByModel("tx/deepseek-v4.1-flash"), firstDrag, 0.75);
+  dragOver(rowByModel("jxf/tx-deepseek-v4.1-flash"), firstDrag, 0.75);
   const line = document.querySelector('[title="插入位置"]');
   result.dragOver = {
     insertLine: line !== null,
@@ -173,7 +175,7 @@ export const MODEL_REORDER_PROBE_SOURCE = String.raw`
 
   // ── 2. 拖动中按 Esc：不写盘，顺序保持 ──
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  dropOn(rowByModel("tx/deepseek-v4.1-flash"), firstDrag, 0.75);
+  dropOn(rowByModel("jxf/tx-deepseek-v4.1-flash"), firstDrag, 0.75);
   result.escape = {
     mutations: mutations.length,
     order: listOrder(),
@@ -182,8 +184,8 @@ export const MODEL_REORDER_PROBE_SOURCE = String.raw`
 
   // ── 3. 拖动第一条到第三条之后：松手立即一次 mutate，整数组重写 ──
   const secondDrag = dragStart(handleByIndex(0));
-  dragOver(rowByModel("tx/deepseek-v4.1-flash"), secondDrag, 0.75);
-  dropOn(rowByModel("tx/deepseek-v4.1-flash"), secondDrag, 0.75);
+  dragOver(rowByModel("jxf/tx-deepseek-v4.1-flash"), secondDrag, 0.75);
+  dropOn(rowByModel("jxf/tx-deepseek-v4.1-flash"), secondDrag, 0.75);
   await sleep(30);
   result.drop = {
     mutations: mutations.length,

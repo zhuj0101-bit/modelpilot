@@ -49,6 +49,8 @@ export const MODEL_ROW_PROBE_SOURCE = String.raw`
   try {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
+  // 工单 #31 默认紧凑；本夹具验证详细模式的摘要来源标注。
+  window.localStorage.setItem("modelpilot.model-list-density.v1", "detailed");
 
 ${MODEL_ROW_ROUTE_SOURCE}
   const providers = { "preview-chat": route };
