@@ -10,15 +10,20 @@ import {
   DENSITY_DETAILED,
   DENSITY_STORAGE_KEY,
   OTHER_GROUP,
+  VIEW_FLAT,
+  VIEW_GROUPED,
+  VIEW_STORAGE_KEY,
   groupCountText,
   groupKeyOf,
   groupModelRows,
   groupedOrdinalOf,
   readModelListDensity,
+  readModelListView,
   selectAllCheckboxState,
   sharedSummaryText,
   shortIdOf,
   writeModelListDensity,
+  writeModelListView,
 } from "../../src/core/model-list-view.js";
 
 test("groupKeyOf：第一段前缀；空 / 无斜杠 / 斜杠开头归到「其他」", () => {
@@ -156,4 +161,47 @@ test("selectAllCheckboxState：全选 / 半选 / 未选三态与 aria 文案", (
   assert.deepEqual(selectAllCheckboxState(8, 9), { all: true, some: false, label: "已全选 8 条" }, "超出上限按全选");
   assert.deepEqual(selectAllCheckboxState(8, -1), { all: false, some: false, label: "全选" });
   assert.deepEqual(selectAllCheckboxState("8", 3), { all: false, some: false, label: "全选" });
+});
+
+// ── 工单 #39：平铺 / 分组视图偏好 ──────────────────────────────────────────
+
+test("视图偏好：默认 grouped；flat 可写入；非法值回落 grouped", () => {
+  const memory = new Map();
+  const storage = {
+    getItem: (key) => (memory.has(key) ? memory.get(key) : null),
+    setItem: (key, value) => memory.set(key, value),
+  };
+  assert.equal(readModelListView(storage), VIEW_GROUPED, "默认分组，不改变现有用户的第一眼观感");
+  assert.equal(writeModelListView(storage, VIEW_FLAT), true);
+  assert.equal(memory.get(VIEW_STORAGE_KEY), VIEW_FLAT);
+  assert.equal(readModelListView(storage), VIEW_FLAT);
+  assert.equal(writeModelListView(storage, VIEW_GROUPED), true);
+  assert.equal(readModelListView(storage), VIEW_GROUPED);
+  memory.set(VIEW_STORAGE_KEY, "grid");
+  assert.equal(readModelListView(storage), VIEW_GROUPED, "非法值回落分组");
+  memory.set(VIEW_STORAGE_KEY, "FLAT");
+  assert.equal(readModelListView(storage), VIEW_GROUPED, "大小写不宽容");
+  assert.equal(writeModelListView(storage, "grid"), false, "非法值不写入");
+  assert.equal(memory.get(VIEW_STORAGE_KEY), "FLAT", "非法写入被丢弃，存储保持原值");
+  assert.equal(writeModelListView(storage, undefined), false);
+  assert.equal(writeModelListView(storage, true), false);
+});
+
+test("视图偏好：没有 storage / 读写抛异常时安静回落 grouped", () => {
+  assert.equal(readModelListView(undefined), VIEW_GROUPED);
+  assert.equal(readModelListView({}), VIEW_GROUPED);
+  assert.equal(writeModelListView(undefined, VIEW_FLAT), false);
+  assert.equal(writeModelListView({}, VIEW_FLAT), false);
+  const throwing = {
+    getItem: () => { throw new Error("denied"); },
+    setItem: () => { throw new Error("denied"); },
+  };
+  assert.equal(readModelListView(throwing), VIEW_GROUPED);
+  assert.equal(writeModelListView(throwing, VIEW_FLAT), false);
+});
+
+test("视图偏好 key 与密度 key 相互独立", () => {
+  assert.equal(VIEW_STORAGE_KEY, "modelpilot.model-list-view.v1");
+  assert.notEqual(VIEW_STORAGE_KEY, DENSITY_STORAGE_KEY);
+  assert.notEqual(VIEW_FLAT, VIEW_GROUPED);
 });
