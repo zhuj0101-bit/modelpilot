@@ -43,14 +43,16 @@ import {
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
 import { describeModelRowSource, diffRow, formFromModel } from "../core/model-edit.js";
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
-import { planBulkDelete, planBulkFields, sameIdSequence } from "../core/model-bulk.js";
+import { planBulkDelete, planBulkFields, sameIdSequence, summarizeBulkSelection } from "../core/model-bulk.js";
 import {
   DENSITY_COMPACT,
   DENSITY_DETAILED,
+  groupCountText,
   groupKeyOf,
   groupModelRows,
   groupedOrdinalOf,
   readModelListDensity,
+  selectAllCheckboxState,
   sharedSummaryText,
   writeModelListDensity,
 } from "../core/model-list-view.js";
@@ -1968,6 +1970,47 @@ function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
 }
 
 /**
+ * 批量删除的二次确认（工单 #33）。
+ *
+ * 与单条删除一样复用 ConfirmDialog 的 Esc / Tab 行为；正文点名最多 5 条被删
+ * 模型，并单独说明其中有多少条当前不可见（折叠分组或搜索过滤），避免用户在
+ * 看不见行的情况下误删。文案里的 N 与批量栏的「已选 N 条」来自同一份选择。
+ */
+function BulkDeleteConfirmDialog({ routeId, count, ids, hiddenCount, busy, onCancel, onConfirm }) {
+  const shown = ids.slice(0, 5);
+  const remaining = ids.length - shown.length;
+  return (
+    <ConfirmDialog
+      ariaLabel="批量删除模型确认"
+      title={`删除 ${count} 条模型`}
+      badge="二次确认"
+      cancelAria="取消批量删除"
+      confirmAria="确认批量删除"
+      confirmLabel="批量删除"
+      busyLabel="删除中…"
+      footerHint="模型条目计数会立即同步。"
+      busy={busy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <p style={s.sub}>
+        确定要从 <b>{routeId}</b> 删除以下 {count} 条模型吗？
+      </p>
+      <p style={s.sub} data-modelpilot-bulk-delete-ids="">
+        {shown.join("、")}
+      </p>
+      {remaining > 0 ? <p style={s.sub}>……另有 {remaining} 条</p> : null}
+      {hiddenCount > 0 ? (
+        <p style={s.sub}>其中 {hiddenCount} 条位于折叠或未显示的行，当前不可见。</p>
+      ) : null}
+      <p style={s.sub}>
+        批量删除会立即重写该路由的模型清单；此操作无法撤销。
+      </p>
+    </ConfirmDialog>
+  );
+}
+
+/**
  * 删除整条路由的二次确认：写明模型条数与不可撤销，并按密钥的真实状态
  * 说明会不会一并删除密钥（工单 #26）。
  *
@@ -2765,6 +2808,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   // 批量改字段的表单；null = 收起（初始 / 切换路由 / 写入成功后都回到收起）。
   const [bulkForm, setBulkForm] = React.useState(null);
   const [bulkError, setBulkError] = React.useState("");
+  // 批量删除的二次确认；打开后不写盘，确认才走一次 mutate。
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
 
   // 路由设置卡片的状态放在 Workbench：卡片组件保持无 hook，测试用的轻量
   // 渲染器（按组件树展开函数调用而不隔离 hook 槽）才能安全地展开它。
@@ -3236,8 +3281,25 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       return next;
     });
   }, [modelQuery, routeModelIdKey]);
-  const allVisibleSelected =
-    visibleModelIndexes.length > 0 && visibleModelIndexes.every((index) => modelSelected.has(index));
+  // 全选复选框的三态：可见行里已选 / 半选 / 未选。半选必须在 effect 里写
+  // input.indeterminate —— React 没有这个属性。
+  const selectedVisibleCount = React.useMemo(() => {
+    let count = 0;
+    for (const index of visibleModelIndexes) {
+      if (modelSelected.has(index)) count += 1;
+    }
+    return count;
+  }, [visibleModelIndexes, modelSelected]);
+  const selectAllState = selectAllCheckboxState(visibleModelIndexes.length, selectedVisibleCount);
+  const selectAllRef = React.useRef(null);
+  // 每次渲染后都写一次：真 React 复用 DOM 节点，半选状态可能残留；测试夹具
+  // 会重建节点，只有无依赖的 effect 才能保证新节点也拿到正确值。
+  React.useEffect(() => {
+    if (selectAllRef.current !== null) selectAllRef.current.indeterminate = selectAllState.some;
+  });
+  // 隐藏选中 = 已勾选但当前不在可见集合里（折叠分组或搜索过滤）。批量栏与
+  // 删除确认都读同一份摘要，数字不会各说各话。
+  const bulkSelectionSummary = summarizeBulkSelection(routeModels, modelSelected, visibleModelIndexes);
   const bulkPatch = bulkForm === null ? null : bulkPatchFromForm(bulkForm);
   const bulkLivePlan = bulkPatch === null ? null : planBulkFields(routeModels, modelSelected, bulkPatch, routeId);
   const bulkDeleteBlocked = routeModels.length > 0 && modelSelected.size >= routeModels.length;
@@ -3272,6 +3334,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setCollapsedGroups(new Set());
     setBulkForm(null);
     setBulkError("");
+    setBulkDeleteOpen(false);
   }, [routeId]);
 
   // 模型增删改（含别处改配置）后下标全变：清空选择与批量表单，避免继续
@@ -3290,6 +3353,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       setBulkError("");
     }
   }, [modelSelected, bulkForm]);
+
+  // 选择被清空（取消选择 / 列表变化 / 写盘成功）时关闭批量删除确认，
+  // 避免弹窗还写着已经不存在的目标。
+  React.useEffect(() => {
+    if (bulkDeleteOpen && modelSelected.size === 0) setBulkDeleteOpen(false);
+  }, [bulkDeleteOpen, modelSelected]);
 
   // 键盘移动后行的 key 会变，手柄被重建、焦点丢失；写盘成功后把焦点还给
   // 新位置的手柄，保证可以连续按方向键。
@@ -3808,6 +3877,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setModelSelected(new Set());
     setBulkForm(null);
     setBulkError("");
+    setBulkDeleteOpen(false);
   }
 
   function openBulkFields() {
@@ -3854,13 +3924,34 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     return latestModels;
   }
 
-  /** 批量删除：一次 mutate、一条 set 重写整数组，要么全成要么全不成。 */
-  async function bulkDeleteSelected() {
-    if (busy || !writable || modelSelected.size === 0) return;
+  /** 取消所有当前不可见（折叠分组或搜索过滤）的选中行，保留可见选择。 */
+  function clearHiddenModelSelection() {
+    if (busy || !writable) return;
+    const hidden = new Set(bulkSelectionSummary.hiddenIndexes);
+    if (hidden.size === 0) return;
+    setModelSelected((current) => {
+      const next = new Set([...current].filter((index) => !hidden.has(index)));
+      return next.size === current.size ? current : next;
+    });
+  }
+
+  /** 打开批量删除的二次确认；打开本身不写盘。 */
+  function requestBulkDelete() {
+    if (busy || !writable || modelSelected.size === 0 || bulkDeleteBlocked) return;
+    setBulkDeleteOpen(true);
+  }
+
+  /** 批量删除：确认后一次 mutate、一条 set 重写整数组，要么全成要么全不成。 */
+  async function confirmBulkDelete() {
+    if (!bulkDeleteOpen || busy || !writable || modelSelected.size === 0) return;
     const latestModels = latestModelsForBulk();
-    if (latestModels === null) return;
+    if (latestModels === null) {
+      setBulkDeleteOpen(false);
+      return;
+    }
     const plan = planBulkDelete(latestModels, modelSelected, routeId);
     if (plan.status !== "ok") {
+      setBulkDeleteOpen(false);
       setToast({ tone: "bad", text: plan.message });
       return;
     }
@@ -3869,6 +3960,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     try {
       const ok = await scope.mutate(plan.ops);
       if (ok) {
+        setBulkDeleteOpen(false);
         setToast({ tone: "good", text: `已删除 ${plan.removed.length} 条模型` });
         clearModelSelection();
         closeEditor();
@@ -4726,15 +4818,33 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           <div style={s.bulkBar} role="group" aria-label="模型批量操作">
             <label style={s.bulkLabel}>
               <input
+                ref={selectAllRef}
                 type="checkbox"
-                checked={allVisibleSelected}
+                data-modelpilot-select-all=""
+                checked={selectAllState.all}
                 disabled={busy || !writable || visibleModelIndexes.length === 0}
                 onChange={(event) => selectAllVisible(event.target.checked)}
-                aria-label="全选模型"
+                aria-label={selectAllState.label}
               />
               全选
             </label>
             <span style={s.bulkCount}>已选 {modelSelected.size} 条</span>
+            {bulkSelectionSummary.hiddenCount > 0 ? (
+              <>
+                <span style={s.bulkCount} data-modelpilot-hidden-selection="">
+                  其中 {bulkSelectionSummary.hiddenCount} 条未显示（折叠分组或搜索过滤）
+                </span>
+                <button
+                  type="button"
+                  style={busy || !writable ? { ...s.btnLink, ...s.btnDisabled } : s.btnLink}
+                  disabled={busy || !writable}
+                  onClick={clearHiddenModelSelection}
+                  aria-label="取消这些选择"
+                >
+                  取消这些选择
+                </button>
+              </>
+            ) : null}
             {bulkDeleteBlocked ? <span style={s.bulkCount}>不能删除全部模型；至少保留一条模型</span> : null}
             <div style={s.bulkActions}>
               <button
@@ -4754,7 +4864,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                   ? { ...s.btnSmall, ...s.btnDisabled }
                   : s.btnSmall}
                 disabled={busy || !writable || modelSelected.size === 0 || bulkDeleteBlocked}
-                onClick={bulkDeleteSelected}
+                onClick={requestBulkDelete}
                 aria-label="批量删除"
                 title={bulkDeleteBlocked ? "不能删除全部模型；至少保留一条模型" : "删除选中的模型"}
               >
@@ -4919,173 +5029,177 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           </div>
         ) : (
           <div style={s.modelGroups}>
-            {modelGroupsVisible.map((group) => (
-              <div key={group.key} style={s.modelGroup} data-model-group={group.key}>
-                <div style={s.modelGroupHeader}>
-                  <button
-                    type="button"
-                    style={s.modelGroupToggle}
-                    onClick={() => toggleModelGroup(group.key)}
-                    aria-expanded={group.expanded}
-                    aria-label={`模型分组 ${group.key}（${group.rows.length} 条）`}
-                    title={group.expanded ? "折叠分组" : "展开分组"}
-                  >
-                    <span aria-hidden="true" style={s.modelGroupCaret}>{group.expanded ? "▼" : "▶"}</span>
-                    <span style={s.modelGroupName}>{group.key}</span>
-                    <span style={s.modelGroupCount}>({group.rows.length})</span>
-                  </button>
-                  {group.sharedSummary !== null ? (
-                    <span style={s.modelGroupSummary}>{group.sharedSummary}</span>
-                  ) : null}
-                </div>
-                {group.expanded ? (
-                  <div style={s.modelGroupRows}>
-                    {group.matchingRows.map((row, position) => {
-                      const { index, modelKey } = row;
-                      const model = routeModels[index];
-                      const rowSummary = row.summary;
-                      const rowKey = `${modelKey}:${index}`;
-                      const compact = modelDensity === DENSITY_COMPACT;
-                      const hovered = hoveredRow === rowKey;
-                      const dragging = dragState !== null && dragState.from === index;
-                      const rowStyle = {
-                        ...s.modelRow,
-                        ...(compact ? s.modelRowCompact : null),
-                        ...(position === 0 ? s.modelRowFirst : null),
-                        ...(hovered ? s.modelRowHover : null),
-                        ...(dragging ? s.modelRowDragging : null),
-                      };
-                      // 工单 #31：紧凑与详细共用同一组操作按钮；紧凑时放在标题行，
-                      // 详细时放在摘要行，避免紧凑模式多占一行。
-                      const actions = (
-                        <span style={s.modelRowActions}>
-                          <button
-                            type="button"
-                            // 工单 #27：摘要单行省略时按钮保持原宽，窄容器下不把「编辑」挤成两行。
-                            style={{ ...s.btnSmall, flexShrink: 0 }}
-                            onClick={() => openEditor(index)}
-                            aria-label={`编辑模型 ${modelKey}`}
-                          >
-                            编辑
-                          </button>
-                          <button
-                            type="button"
-                            style={busy || !writable
-                              ? { ...s.btnSmall, flexShrink: 0, ...s.btnDisabled }
-                              : { ...s.btnSmall, flexShrink: 0 }}
-                            disabled={busy || !writable}
-                            onClick={() => requestRowDelete(index, model)}
-                            aria-label={`删除模型 ${modelKey}`}
-                            title="删除模型（需要二次确认）"
-                          >
-                            删除
-                          </button>
-                        </span>
-                      );
-                      return (
-                        <div
-                          key={rowKey}
-                          data-model-key={modelKey}
-                          style={rowStyle}
-                          // 工单 #32：摘要进可访问名；紧凑 / 详细两种密度下一致。
-                          aria-label={`模型 ${modelKey}。${rowSummary.text}`}
-                          {...(compact ? {} : { title: modelKey })}
-                          onMouseEnter={() => setHoveredRow(rowKey)}
-                          onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
-                          onDragOver={(event) => updateModelDragOver(event, index)}
-                          onDrop={(event) => handleModelDrop(event, index)}
-                        >
-                          {dragState !== null && dragState.over === index ? (
-                            <div
-                              title="插入位置"
-                              aria-hidden="true"
-                              style={dragState.edge === "after"
-                                ? { ...s.dropLine, ...s.dropLineAfter }
-                                : { ...s.dropLine, ...s.dropLineBefore }}
-                            />
-                          ) : null}
-                          <div style={compact ? { ...s.modelRowHead, ...s.modelRowHeadCompact } : s.modelRowHead}>
-                            <input
-                              type="checkbox"
-                              style={s.modelCheckbox}
-                              checked={modelSelected.has(index)}
-                              disabled={busy || !writable}
-                              onChange={() => toggleModelSelected(index)}
-                              aria-label={`选择模型 ${modelKey}`}
-                            />
+            {modelGroupsVisible.map((group) => {
+              const searching = modelQuery.trim() !== "";
+              const countText = groupCountText(group.rows.length, group.matchingRows.length, searching);
+              return (
+                <div key={group.key} style={s.modelGroup} data-model-group={group.key}>
+                  <div style={s.modelGroupHeader}>
+                    <button
+                      type="button"
+                      style={s.modelGroupToggle}
+                      onClick={() => toggleModelGroup(group.key)}
+                      aria-expanded={group.expanded}
+                      aria-label={`模型分组 ${group.key}（${countText} 条）`}
+                      title={group.expanded ? "折叠分组" : "展开分组"}
+                    >
+                      <span aria-hidden="true" style={s.modelGroupCaret}>{group.expanded ? "▼" : "▶"}</span>
+                      <span style={s.modelGroupName}>{group.key}</span>
+                      <span style={s.modelGroupCount}>({countText})</span>
+                    </button>
+                    {group.sharedSummary !== null ? (
+                      <span style={s.modelGroupSummary}>{group.sharedSummary}</span>
+                    ) : null}
+                  </div>
+                  {group.expanded ? (
+                    <div style={s.modelGroupRows}>
+                      {group.matchingRows.map((row, position) => {
+                        const { index, modelKey } = row;
+                        const model = routeModels[index];
+                        const rowSummary = row.summary;
+                        const rowKey = `${modelKey}:${index}`;
+                        const compact = modelDensity === DENSITY_COMPACT;
+                        const hovered = hoveredRow === rowKey;
+                        const dragging = dragState !== null && dragState.from === index;
+                        const rowStyle = {
+                          ...s.modelRow,
+                          ...(compact ? s.modelRowCompact : null),
+                          ...(position === 0 ? s.modelRowFirst : null),
+                          ...(hovered ? s.modelRowHover : null),
+                          ...(dragging ? s.modelRowDragging : null),
+                        };
+                        // 工单 #31：紧凑与详细共用同一组操作按钮；紧凑时放在标题行，
+                        // 详细时放在摘要行，避免紧凑模式多占一行。
+                        const actions = (
+                          <span style={s.modelRowActions}>
                             <button
                               type="button"
-                              id={`modelpilot-model-handle-${index}`}
-                              draggable={canReorderModels}
-                              disabled={!canReorderModels}
-                              style={canReorderModels ? s.modelHandle : { ...s.modelHandle, ...s.modelHandleDisabled }}
-                              aria-label={`拖动排序 第 ${row.ordinal} 位`}
-                              title={canReorderModels
-                                ? "拖动排序；聚焦后可用 ↑ / ↓ / Home / End 在本组内移动"
-                                : modelQuery.trim() !== ""
-                                  ? "筛选状态下不可排序；清空搜索后才能拖动"
-                                  : routeModels.length <= 1
-                                    ? "只有一个模型，无法排序"
-                                    : "当前不可排序（配置只读或正在写入）"}
-                              onDragStart={(event) => beginModelDrag(event, index)}
-                              onDragEnd={endModelDrag}
-                              onKeyDown={(event) => handleModelHandleKey(event, index)}
+                              // 工单 #27：摘要单行省略时按钮保持原宽，窄容器下不把「编辑」挤成两行。
+                              style={{ ...s.btnSmall, flexShrink: 0 }}
+                              onClick={() => openEditor(index)}
+                              aria-label={`编辑模型 ${modelKey}`}
                             >
-                              ⠿
+                              编辑
                             </button>
-                            <span style={s.modelIndex}>{row.ordinal}</span>
-                            <span
-                              id={`modelpilot-model-name-${index}`}
-                              style={compact ? { ...s.modelName, ...s.modelNameCompact } : s.modelName}
-                              {...(compact ? { title: `${modelKey}\n${rowSummary.title}` } : {})}
+                            <button
+                              type="button"
+                              style={busy || !writable
+                                ? { ...s.btnSmall, flexShrink: 0, ...s.btnDisabled }
+                                : { ...s.btnSmall, flexShrink: 0 }}
+                              disabled={busy || !writable}
+                              onClick={() => requestRowDelete(index, model)}
+                              aria-label={`删除模型 ${modelKey}`}
+                              title="删除模型（需要二次确认）"
                             >
-                              {row.shortId}
-                            </span>
-                            {compact ? (
-                              // 视觉隐藏、读屏可读；鼠标用户仍看短 ID 的 title。
-                              <span style={s.srOnly} data-modelpilot-sr-summary="">{rowSummary.text}</span>
+                              删除
+                            </button>
+                          </span>
+                        );
+                        return (
+                          <div
+                            key={rowKey}
+                            data-model-key={modelKey}
+                            style={rowStyle}
+                            // 工单 #32：摘要进可访问名；紧凑 / 详细两种密度下一致。
+                            aria-label={`模型 ${modelKey}。${rowSummary.text}`}
+                            {...(compact ? {} : { title: modelKey })}
+                            onMouseEnter={() => setHoveredRow(rowKey)}
+                            onMouseLeave={() => setHoveredRow((current) => (current === rowKey ? null : current))}
+                            onDragOver={(event) => updateModelDragOver(event, index)}
+                            onDrop={(event) => handleModelDrop(event, index)}
+                          >
+                            {dragState !== null && dragState.over === index ? (
+                              <div
+                                title="插入位置"
+                                aria-hidden="true"
+                                style={dragState.edge === "after"
+                                  ? { ...s.dropLine, ...s.dropLineAfter }
+                                  : { ...s.dropLine, ...s.dropLineBefore }}
+                              />
                             ) : null}
-                            {compact ? actions : null}
-                          </div>
-                          {compact ? null : (
-                            <div style={s.modelRowMeta}>
-                              {group.sharedSummary === null ? (
-                                <span style={s.modelSummary} title={rowSummary.title}>{rowSummary.text}</span>
+                            <div style={compact ? { ...s.modelRowHead, ...s.modelRowHeadCompact } : s.modelRowHead}>
+                              <input
+                                type="checkbox"
+                                style={s.modelCheckbox}
+                                checked={modelSelected.has(index)}
+                                disabled={busy || !writable}
+                                onChange={() => toggleModelSelected(index)}
+                                aria-label={`选择模型 ${modelKey}`}
+                              />
+                              <button
+                                type="button"
+                                id={`modelpilot-model-handle-${index}`}
+                                draggable={canReorderModels}
+                                disabled={!canReorderModels}
+                                style={canReorderModels ? s.modelHandle : { ...s.modelHandle, ...s.modelHandleDisabled }}
+                                aria-label={`拖动排序 第 ${row.ordinal} 位`}
+                                title={canReorderModels
+                                  ? "拖动排序；聚焦后可用 ↑ / ↓ / Home / End 在本组内移动"
+                                  : modelQuery.trim() !== ""
+                                    ? "筛选状态下不可排序；清空搜索后才能拖动"
+                                    : routeModels.length <= 1
+                                      ? "只有一个模型，无法排序"
+                                      : "当前不可排序（配置只读或正在写入）"}
+                                onDragStart={(event) => beginModelDrag(event, index)}
+                                onDragEnd={endModelDrag}
+                                onKeyDown={(event) => handleModelHandleKey(event, index)}
+                              >
+                                ⠿
+                              </button>
+                              <span style={s.modelIndex}>{row.ordinal}</span>
+                              <span
+                                id={`modelpilot-model-name-${index}`}
+                                style={compact ? { ...s.modelName, ...s.modelNameCompact } : s.modelName}
+                                {...(compact ? { title: `${modelKey}\n${rowSummary.title}` } : {})}
+                              >
+                                {row.shortId}
+                              </span>
+                              {compact ? (
+                                // 视觉隐藏、读屏可读；鼠标用户仍看短 ID 的 title。
+                                <span style={s.srOnly} data-modelpilot-sr-summary="">{rowSummary.text}</span>
                               ) : null}
-                              {actions}
+                              {compact ? actions : null}
                             </div>
-                          )}
-                          {editingIndex === index && editForm !== null ? (
-                            <EditModelForm
-                              model={model}
-                              modelId={editModelId}
-                              form={editForm}
-                              template={template}
-                              errors={editErrors}
-                              projection={editProjection}
-                              changed={editDiff}
-                              canSave={editCanSave}
-                              busy={busy}
-                              writable={writable}
-                              guard={editGuard}
-                              onChange={updateEditForm}
-                              onTokenChange={changeEditToken}
-                              onToggleLevel={toggleEditLevel}
-                              onApiValueChange={changeEditApiValue}
-                              onFillTemplate={fillEditTemplate}
-                              onSave={saveEdit}
-                              onCancel={closeEditor}
-                              onDelete={requestDelete}
-                              closeTokenPanels={pickerOpen}
-                            />
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-              </div>
-            ))}
+                            {compact ? null : (
+                              <div style={s.modelRowMeta}>
+                                {group.sharedSummary === null ? (
+                                  <span style={s.modelSummary} title={rowSummary.title}>{rowSummary.text}</span>
+                                ) : null}
+                                {actions}
+                              </div>
+                            )}
+                            {editingIndex === index && editForm !== null ? (
+                              <EditModelForm
+                                model={model}
+                                modelId={editModelId}
+                                form={editForm}
+                                template={template}
+                                errors={editErrors}
+                                projection={editProjection}
+                                changed={editDiff}
+                                canSave={editCanSave}
+                                busy={busy}
+                                writable={writable}
+                                guard={editGuard}
+                                onChange={updateEditForm}
+                                onTokenChange={changeEditToken}
+                                onToggleLevel={toggleEditLevel}
+                                onApiValueChange={changeEditApiValue}
+                                onFillTemplate={fillEditTemplate}
+                                onSave={saveEdit}
+                                onCancel={closeEditor}
+                                onDelete={requestDelete}
+                                closeTokenPanels={pickerOpen}
+                              />
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
         {modelQuery.trim() !== "" && routeModels.length > 0 ? (
@@ -5466,6 +5580,18 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           busy={busy}
           onCancel={() => setDeleteTarget(null)}
           onConfirm={confirmDelete}
+        />
+      ) : null}
+
+      {bulkDeleteOpen ? (
+        <BulkDeleteConfirmDialog
+          routeId={routeId}
+          count={bulkSelectionSummary.count}
+          ids={bulkSelectionSummary.ids}
+          hiddenCount={bulkSelectionSummary.hiddenCount}
+          busy={busy}
+          onCancel={() => setBulkDeleteOpen(false)}
+          onConfirm={confirmBulkDelete}
         />
       ) : null}
     </div>

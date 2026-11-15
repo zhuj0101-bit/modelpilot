@@ -10,10 +10,12 @@ import {
   DENSITY_DETAILED,
   DENSITY_STORAGE_KEY,
   OTHER_GROUP,
+  groupCountText,
   groupKeyOf,
   groupModelRows,
   groupedOrdinalOf,
   readModelListDensity,
+  selectAllCheckboxState,
   sharedSummaryText,
   shortIdOf,
   writeModelListDensity,
@@ -132,4 +134,26 @@ test("密度偏好：没有 storage / 读写抛异常时安静回落 compact", (
   };
   assert.equal(readModelListDensity(throwing), DENSITY_COMPACT);
   assert.equal(writeModelListDensity(throwing, DENSITY_DETAILED), false);
+});
+
+// ── 工单 #33：组头计数与全选三态 ────────────────────────────────────────────
+
+test("groupCountText：无搜索只写总数，搜索中写命中数/总数（含 0 命中）", () => {
+  assert.equal(groupCountText(3, 1, false), "3");
+  assert.equal(groupCountText(3, 1, true), "1/3");
+  assert.equal(groupCountText(3, 0, true), "0/3");
+  assert.equal(groupCountText(0, 0, true), "0/0");
+  assert.equal(groupCountText(3, 9, true), "3/3", "命中数不会超过总数");
+  assert.equal(groupCountText(-1, -2, true), "0/0", "非法输入安静回落 0");
+  assert.equal(groupCountText("3", 1, true), "0/0");
+});
+
+test("selectAllCheckboxState：全选 / 半选 / 未选三态与 aria 文案", () => {
+  assert.deepEqual(selectAllCheckboxState(8, 8), { all: true, some: false, label: "已全选 8 条" });
+  assert.deepEqual(selectAllCheckboxState(8, 3), { all: false, some: true, label: "已选 3 / 8 条" });
+  assert.deepEqual(selectAllCheckboxState(8, 0), { all: false, some: false, label: "全选" });
+  assert.deepEqual(selectAllCheckboxState(0, 0), { all: false, some: false, label: "全选" });
+  assert.deepEqual(selectAllCheckboxState(8, 9), { all: true, some: false, label: "已全选 8 条" }, "超出上限按全选");
+  assert.deepEqual(selectAllCheckboxState(8, -1), { all: false, some: false, label: "全选" });
+  assert.deepEqual(selectAllCheckboxState("8", 3), { all: false, some: false, label: "全选" });
 });

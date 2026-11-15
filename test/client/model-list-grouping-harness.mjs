@@ -135,6 +135,7 @@ ${GROUPING_ROUTE_SOURCE}
     return visible.innerText;
   };
   const find = (label) => document.querySelector('[aria-label="' + label + '"]');
+  const selectAll = () => document.querySelector("[data-modelpilot-select-all]");
   const click = (element) => element.click();
   const setText = (element, value) => {
     element.value = value;
@@ -174,6 +175,7 @@ ${GROUPING_ROUTE_SOURCE}
   const snapshotState = () => ({
     groups: groupKeys(),
     counts: groupCounts(),
+    groupAria: groupButtons().map((button) => button.getAttribute("aria-label")),
     expanded: groupExpanded(),
     headerSummaries: groupSummary(),
     order: listOrder(),
@@ -230,7 +232,7 @@ ${GROUPING_ROUTE_SOURCE}
   click(groupButton("acme"));
   await sleep(10);
   result.collapsed = snapshotState();
-  click(find("全选模型"));
+  click(selectAll());
   await sleep(10);
   result.collapsedSelectAll = snapshotState();
   click(find("取消选择"));
@@ -264,7 +266,7 @@ ${GROUPING_ROUTE_SOURCE}
   click(groupButton("jxf"));
   await sleep(10);
   result.searchManualCollapse = snapshotState();
-  click(find("全选模型"));
+  click(selectAll());
   await sleep(10);
   result.searchSelectAll = snapshotState();
   click(find("取消选择"));

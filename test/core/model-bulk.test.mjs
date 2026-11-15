@@ -10,6 +10,7 @@ import {
   planBulkFields,
   reasoningEffortsFromLevels,
   sameIdSequence,
+  summarizeBulkSelection,
 } from "../../src/core/model-bulk.js";
 
 const route = "preview-chat";
@@ -227,4 +228,53 @@ test("批量操作不改入参：models 数组与选中行都保持原对象", (
   planBulkDelete(models, new Set([1]), route);
   planBulkFields(models, new Set([0, 2]), { maxTokens: 4096, input: ["image"], reasoningLevels: ["low"] }, route);
   assert.deepEqual(models, snapshot);
+});
+
+// ── 工单 #33：批量删除前的可见性摘要 ────────────────────────────────────────
+
+test("summarizeBulkSelection：按绝对下标升序给出 id，并点名不可见条数", () => {
+  const models = modelsFixture();
+  const summary = summarizeBulkSelection(models, new Set([2, 0]), [0]);
+  assert.deepEqual(summary, {
+    count: 2,
+    ids: ["jxf/dsv4.1-flash", "tx/deepseek-v4.1-flash"],
+    hiddenCount: 1,
+    hiddenIndexes: [2],
+  });
+});
+
+test("summarizeBulkSelection：全部可见时 hiddenCount 为 0", () => {
+  const summary = summarizeBulkSelection(modelsFixture(), new Set([1, 3]), [0, 1, 2, 3]);
+  assert.equal(summary.count, 2);
+  assert.equal(summary.hiddenCount, 0);
+  assert.deepEqual(summary.hiddenIndexes, []);
+});
+
+test("summarizeBulkSelection：缺失 id 回落序号，与 planBulkDelete 文案一致", () => {
+  const models = [{ id: "a/one" }, {}, { id: "" }];
+  const summary = summarizeBulkSelection(models, new Set([1, 2]), []);
+  assert.deepEqual(summary.ids, ["第 2 个模型", ""]);
+  const plan = planBulkDelete(models, new Set([1, 2]), route);
+  assert.equal(plan.status, "ok");
+  assert.deepEqual(plan.removed, summary.ids, "确认框与真正删除的 id 来自同一规则");
+});
+
+test("summarizeBulkSelection：越界 / 非法下标按失效处理，返回空摘要", () => {
+  assert.deepEqual(summarizeBulkSelection(modelsFixture(), new Set([0, 9]), [0]), {
+    count: 0,
+    ids: [],
+    hiddenCount: 0,
+    hiddenIndexes: [],
+  });
+  assert.deepEqual(summarizeBulkSelection(modelsFixture(), new Set([1.5]), []).ids, []);
+});
+
+test("summarizeBulkSelection：不改入参，非法 visibleIndexes 忽略", () => {
+  const models = modelsFixture();
+  const snapshot = JSON.parse(JSON.stringify(models));
+  const summary = summarizeBulkSelection(models, new Set([0]), [0, 99, -1, 1.5, "1"]);
+  assert.equal(summary.hiddenCount, 0);
+  assert.equal(summary.count, 1);
+  assert.deepEqual(models, snapshot);
+  assert.deepEqual(summarizeBulkSelection(models, new Set([0]), undefined).hiddenCount, 1);
 });

@@ -152,6 +152,14 @@ for (const scheme of ["light", "dark"]) {
     ]);
     assert.equal(result.search.footer, "显示 3 / 9 条");
     assert.equal(result.search.mutations, 0, "搜索只影响视图");
+    // 工单 #33：搜索时组头显示命中数/总数，0 命中的组不能继续显示总数。
+    assert.deepEqual(result.search.counts, ["(1/3)", "(1/3)", "(1/2)", "(0/1)"]);
+    assert.deepEqual(result.search.groupAria, [
+      "模型分组 acme（1/3 条）",
+      "模型分组 jxf（1/3 条）",
+      "模型分组 tx（1/2 条）",
+      "模型分组 其他（0/1 条）",
+    ]);
 
     assert.deepEqual(result.searchManualCollapse.expanded, ["true", "false", "true", "false"]);
     assert.deepEqual(result.searchManualCollapse.order, [
