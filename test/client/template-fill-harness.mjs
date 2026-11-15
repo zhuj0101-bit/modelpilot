@@ -43,6 +43,8 @@ export const TEMPLATE_FILL_PROBE_SOURCE = String.raw`
   const seed = window.__TEMPLATE_SEED__;
   const store = new Map();
   if (seed !== null) store.set("modelpilot.default-template.v1", JSON.stringify(seed));
+  // 工单 #31 默认紧凑；本夹具继续在详细模式核对列表摘要。
+  store.set("modelpilot.model-list-density.v1", "detailed");
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: {

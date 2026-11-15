@@ -61,6 +61,8 @@ export const VISUAL_PROBE_SOURCE = String.raw`
 (async () => {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
+  // 工单 #31 默认紧凑；本夹具继续测量详细模式的摘要 / 字号 / 对比度。
+  window.localStorage.setItem("modelpilot.model-list-density.v1", "detailed");
 
 ${MODEL_EDIT_ROUTE_SOURCE}
   const providers = { "preview-chat": route };
@@ -136,7 +138,8 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   };
 
   // ── 五级字号：页面标题 / 区块标题 / 字段标签 / 正文 / 提示 ──
-  const summary = [...row("jxf/dsv4.1-flash").querySelectorAll("span")]
+  // 工单 #31：组内摘要相同时会提到组头，因此在模型卡片内找这段 tertiary 文案。
+  const summary = [...modelsCard.querySelectorAll("span")]
     .find((element) => element.textContent.includes("窗口 1M"));
   result.fonts = {
     title: styleOf(document.querySelector("h2")).fontSize,
@@ -146,10 +149,11 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     hint: styleOf(summary).fontSize,
   };
 
-  // ── 模型行 hover：底色变化 + 120ms 过渡 + 编辑按钮内缩 ──
+  // ── 模型行 hover：底色变化 + 120ms 过渡 + 操作按钮组内缩 ──
   const firstRow = row("jxf/dsv4.1-flash");
   const beforeHover = styleOf(firstRow).backgroundColor;
-  const editInset = rect(firstRow).right - rect(firstRow.querySelector('[aria-label^="编辑模型"]')).right;
+  // 工单 #31：行内多了删除按钮，内缩量按「编辑 / 删除」整组的最右边界测量。
+  const editInset = rect(firstRow).right - rect(firstRow.querySelector('[aria-label^="编辑模型"]').parentElement).right;
   const transitionDuration = styleOf(firstRow).transitionDuration;
   firstRow.dispatchEvent(new MouseEvent("mouseenter"));
   const hovered = row("jxf/dsv4.1-flash");

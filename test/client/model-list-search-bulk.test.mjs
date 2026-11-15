@@ -43,12 +43,13 @@ function contrast(fg, bg) {
   return (bright + 0.05) / (dark + 0.05);
 }
 
+// 工单 #31：列表按 id 第一段分组（组按字母序），组内保持 models 数组顺序。
 const INITIAL_ORDER = [
   "jxf/dsv4.1-flash",
   "jxf/dsv4.1-pro",
-  "tx/deepseek-v4.1-flash",
-  "qwen/complete",
   "openai/gpt-case",
+  "qwen/complete",
+  "tx/deepseek-v4.1-flash",
 ];
 
 for (const scheme of ["light", "dark"]) {
@@ -58,7 +59,8 @@ for (const scheme of ["light", "dark"]) {
     const tokens = THEME_TOKENS[scheme];
 
     assert.equal(result.scheme, scheme);
-    assert.deepEqual(result.geometry.rowHeights, [52, 61, 61, 61, 61], "行高与既有 modelRow 一致，不跳动");
+    // 工单 #31：每个分组的第一行去掉顶部分隔线（52px），组内后续行为 61px。
+    assert.deepEqual(result.geometry.rowHeights, [52, 61, 52, 52, 52], "组头之外的模型行沿用既有 modelRow 行高");
     assert.equal(result.geometry.searchBackground, rgbOf(tokens["--dsw-alias-bg-layer-1"]), "搜索框底色使用宿主 layer token");
     assert.equal(result.geometry.searchColor, rgbOf(tokens["--dsw-alias-label-primary"]), "搜索框文字使用宿主主文字色");
     assert.ok(
@@ -240,7 +242,7 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.busy.rowCheckboxDisabled, true);
     assert.equal(result.busy.searchUsable, true, "写入中仍可继续查看/搜索，只是不能再次提交");
     assert.equal(result.busyAfter.mutations, 1, "只提交了一次");
-    assert.deepEqual(result.busyAfter.order, ["tx/deepseek-v4.1-flash", "openai/gpt-case"]);
+    assert.deepEqual(result.busyAfter.order, ["openai/gpt-case", "tx/deepseek-v4.1-flash"]);
     assert.deepEqual(result.busyAfter.selected, []);
   });
 

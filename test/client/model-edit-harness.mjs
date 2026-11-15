@@ -50,6 +50,8 @@ export const MODEL_EDIT_PROBE_SOURCE = String.raw`
   try {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
+  // 工单 #31 默认紧凑；本夹具继续验证详细模式的行摘要与编辑入口。
+  window.localStorage.setItem("modelpilot.model-list-density.v1", "detailed");
 
 ${MODEL_EDIT_ROUTE_SOURCE}
   const providers = { "preview-chat": route };
@@ -162,6 +164,10 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     countText: panelText().split("\n")[0],
     summaries: [...document.querySelectorAll('[aria-label^="模型 jxf"], [aria-label^="模型 tx"]')]
       .map((row) => row.innerText),
+    // 工单 #31：组内摘要相同时提到组头，行内不再重复。
+    groupSummary: [...document.querySelectorAll('[aria-label^="模型分组 "]')]
+      .find((button) => button.children[1].textContent === "jxf")
+      ?.parentElement?.querySelector(":scope > span")?.textContent ?? "",
     editButtons: [...document.querySelectorAll('[aria-label^="编辑模型"]')].map((element) => element.getAttribute("aria-label")),
   };
 

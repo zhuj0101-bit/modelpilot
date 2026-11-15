@@ -38,8 +38,10 @@ for (const scheme of ["light", "dark"]) {
     const result = await probe(scheme);
     assert.match(result.initial.countText, /该路由的模型（3 条）/);
     assert.equal(result.initial.editButtons.length, 3);
-    assert.match(result.initial.summaries[0], /窗口 1M · 输出 33K · text · 4 档/);
-    assert.match(result.initial.summaries[1], /窗口 1M · 输出 33K · text · 4 档/);
+    // 工单 #31：jxf 组内两条摘要相同 → 提到组头，行内不重复。
+    assert.match(result.initial.groupSummary, /窗口 1M · 输出 33K · text · 4 档/);
+    assert.equal(result.initial.summaries[0].includes("窗口"), false);
+    assert.equal(result.initial.summaries[1].includes("窗口"), false);
     assert.match(result.initial.summaries[2], /窗口 128K · 输出 8K · text · 非推理/);
   });
 
