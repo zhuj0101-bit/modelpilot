@@ -49,7 +49,15 @@ import {
   writeDefaultTemplate,
 } from "../core/default-template.js";
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
-import { describeModelRowSource, diffRow, formFromModel } from "../core/model-edit.js";
+import {
+  TOKEN_INPUT,
+  classifyTokenInput,
+  describeModelRowSource,
+  diffRow,
+  formFromModel,
+  splitEditDiff,
+  validateEditForm,
+} from "../core/model-edit.js";
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
 import {
   bulkFieldsNotice,
@@ -123,9 +131,12 @@ const LLM_NS = "llm-pi-ai";
 const CONTEXT_WINDOW_CANDIDATES = Object.freeze([8192, 32768, 65536, 131072, 200000, 262144, 1000000]);
 const MAX_TOKENS_CANDIDATES = Object.freeze([4096, 8192, 16384, 32768, 65536, 131072]);
 
-/** 输入只接受十进制正整数；空字符串表示「不写该字段」。 */
+/**
+ * token 输入是否合法。与 diffRow 共用 classifyTokenInput（工单 #38 问题 3）：
+ * 输入层与逻辑层对空串 / 0 / 负数 / 非数字 / 超长数字的判断不允许相反。
+ */
 function isPositiveTokenCount(text) {
-  return /^\d+$/.test(text) && Number(text) > 0;
+  return classifyTokenInput(text).status === TOKEN_INPUT.VALID;
 }
 
 /** 从 configForms 快照里读取当前的 pi-ai providers 映射。 */
@@ -922,7 +933,7 @@ function Field({ label, children, hint, error, style }) {
  * 不用原生 datalist：datalist 会按当前输入值过滤候选项，选中一个之后
  * 其余的就不再可见（工单问题 1）。这里始终渲染完整候选列表。
  */
-function TokenCountField({ label, hint, value, candidates, error, placeholder, ariaLabel, closeSignal, onChange }) {
+function TokenCountField({ label, hint, value, candidates, error, note, placeholder, ariaLabel, closeSignal, onChange }) {
   const [open, setOpen] = React.useState(false);
   const boxRef = React.useRef(null);
 
@@ -1003,6 +1014,8 @@ function TokenCountField({ label, hint, value, candidates, error, placeholder, a
           <span style={s.fieldHint}>{humanizeTokenCount(value)}</span>
         ) : null}
       </div>
+      {/* 工单 #38：清空 = 删除字段；提示只在真正会写入删除时出现 */}
+      {note ? <div style={s.fieldHint} role="note">{note}</div> : null}
     </label>
   );
 }
@@ -1564,6 +1577,7 @@ function EditModelForm({
   form,
   template,
   errors,
+  formError,
   projection,
   changed,
   canSave,
@@ -1582,6 +1596,8 @@ function EditModelForm({
 }) {
   const changedFields = Object.keys(changed);
   const hasChanges = changedFields.length > 0;
+  // 工单 #38：diffRow 用 null 标记删除；只有这种「现有值被清空」才显示提示。
+  const tokenClearNote = "清空 = 删除该字段，改由路由默认值接管";
   const hasCompat = hasMeaningfulCompat(model?.compat);
   const stale = (projection?.warnings ?? []).find((warning) => warning.code === "stale-index");
   const unsupported = projection?.unsupportedControls ?? [];
@@ -1638,6 +1654,7 @@ function EditModelForm({
           value={form.contextWindow}
           candidates={CONTEXT_WINDOW_CANDIDATES}
           error={errors.contextWindow}
+          note={changed.contextWindow === null ? tokenClearNote : ""}
           placeholder="如 131072"
           ariaLabel="编辑上下文窗口"
           closeSignal={closeTokenPanels}
@@ -1649,6 +1666,7 @@ function EditModelForm({
           value={form.maxTokens}
           candidates={MAX_TOKENS_CANDIDATES}
           error={errors.maxTokens}
+          note={changed.maxTokens === null ? tokenClearNote : ""}
           placeholder="如 8192"
           ariaLabel="编辑输出上限"
           closeSignal={closeTokenPanels}
@@ -1716,6 +1734,9 @@ function EditModelForm({
           /> image
         </label>
       </div>
+
+      {/* 工单 #38 方案 A：取消全部输入模态时给出明确原因，而不是静默禁用保存 */}
+      {formError ? <div style={s.fieldError} role="alert">{formError.message}</div> : null}
 
       {hasCompat ? (
         <div style={s.compatibility}>ⓘ 该模型还有额外配置，保存时会原样保留。</div>
@@ -3562,14 +3583,21 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     if (editingIndex === null || editForm === null) return {};
     return diffRow(editForm, editModel);
   }, [editingIndex, editForm, editModel]);
-  const editDraft = React.useMemo(() => ({ id: editModelId, ...editDiff }), [editModelId, editDiff]);
+  // 工单 #38：diffRow 用 null 表示「删除该字段」，不能塞进投影 draft；
+  // 拆成要写入的值 + update 模式的 unset 清单。
+  const editSplit = React.useMemo(() => splitEditDiff(editDiff), [editDiff]);
+  const editDraft = React.useMemo(() => ({ id: editModelId, ...editSplit.values }), [editModelId, editSplit]);
+  const editFormError = React.useMemo(
+    () => (editingIndex === null || editForm === null ? null : validateEditForm(editForm, editModel)),
+    [editingIndex, editForm, editModel],
+  );
   const editProjection = React.useMemo(() => {
     if (editingIndex === null || editModelId === "") return undefined;
     try {
       return projectPiAi(
         editDraft,
         { providers, catalogModels: catalogIds },
-        { routeId, mode: "update", index: editingIndex },
+        { routeId, mode: "update", index: editingIndex, unset: editSplit.unset },
       );
     } catch (error) {
       return {
@@ -3580,13 +3608,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         profileOnlyFields: [],
       };
     }
-  }, [editDraft, providers, routeId, editingIndex, editModelId, catalogIds]);
+  }, [editDraft, editSplit, providers, routeId, editingIndex, editModelId, catalogIds]);
   const editGuard = editForm === null ? null : reasoningLevelsGuard(editForm.reasoningLevels);
   const editStale = (editProjection?.warnings ?? []).some((warning) => warning.code === "stale-index");
   const editCanSave =
     writable &&
     !busy &&
     editGuard === null &&
+    editFormError === null &&
     Object.keys(editDiff).length > 0 &&
     !editStale &&
     (editProjection?.unsupportedControls?.length ?? 0) === 0 &&
@@ -3751,14 +3780,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
 
   /** token 输入：合法值写入状态；非法值不落状态，回显最近一次合法值并给出错误。 */
   function changeTokenCount(event, current, setValue, setError) {
-    const next = event.target.value;
-    if (next === "" || isPositiveTokenCount(next)) {
-      setValue(next);
-      setError(false);
+    const state = classifyTokenInput(event.target.value);
+    if (state.status === TOKEN_INPUT.INVALID) {
+      setError(true);
+      event.target.value = current;
       return;
     }
-    setError(true);
-    event.target.value = current;
+    setValue(state.status === TOKEN_INPUT.EMPTY ? "" : event.target.value);
+    setError(false);
   }
 
   /** 新增表单的「API 参数值」：原样保存输入，trim / 丢弃规则交给 reasoningPolicyFor。 */
@@ -4152,20 +4181,25 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   function fillEditTemplate() {
     if (template === null) return;
     // 模板不含 API 参数值：整体替换时一并清空，避免旧的映射残留在新档位上。
-    updateEditForm({ ...templateToForm(template), reasoningApiValues: {} });
-    setEditErrors({ contextWindow: false, maxTokens: false });
+    const next = { ...templateToForm(template), reasoningApiValues: {} };
+    updateEditForm(next);
+    // 模板只校验结构、不校验 token 文案；与输入层共用判定，坏值立刻标红。
+    setEditErrors({
+      contextWindow: classifyTokenInput(next.contextWindow).status === TOKEN_INPUT.INVALID,
+      maxTokens: classifyTokenInput(next.maxTokens).status === TOKEN_INPUT.INVALID,
+    });
   }
 
-  /** 编辑表单的 token 输入：与新增流程同样拒绝非法值，回显最近一次合法值。 */
+  /** 编辑表单的 token 输入：与 diffRow 共用 classifyTokenInput，空串是合法清空。 */
   function changeEditToken(event, field) {
-    const next = event.target.value;
-    if (next === "" || isPositiveTokenCount(next)) {
-      updateEditForm({ [field]: next });
-      setEditErrors((current) => ({ ...current, [field]: false }));
+    const state = classifyTokenInput(event.target.value);
+    if (state.status === TOKEN_INPUT.INVALID) {
+      setEditErrors((current) => ({ ...current, [field]: true }));
+      event.target.value = editForm?.[field] ?? "";
       return;
     }
-    setEditErrors((current) => ({ ...current, [field]: true }));
-    event.target.value = editForm?.[field] ?? "";
+    updateEditForm({ [field]: state.status === TOKEN_INPUT.EMPTY ? "" : event.target.value });
+    setEditErrors((current) => ({ ...current, [field]: false }));
   }
 
   function toggleEditLevel(level) {
@@ -5437,6 +5471,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                                 form={editForm}
                                 template={template}
                                 errors={editErrors}
+                                formError={editFormError}
                                 projection={editProjection}
                                 changed={editDiff}
                                 canSave={editCanSave}

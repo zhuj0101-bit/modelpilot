@@ -7,20 +7,87 @@
 import { MODALITIES, PI_AI_LEVELS } from "./domain.js";
 import { sameWireMap, wireMapFromApiValues, wireMapFromEfforts } from "./reasoning-wire.js";
 
-/** 正整数字符串 → number；空串 / 非数字 / <= 0 返回 undefined。 */
-function positiveNumber(text) {
+/**
+ * token 字段输入的三种判定结果（工单 #38 问题 3）。
+ *
+ * 输入层（changeEditToken / changeTokenCount）与逻辑层（diffRow）必须调用
+ * 同一个判定函数：空串合法（= 删除该字段），正整数合法，其余一律非法。
+ * 绝不允许「输入层说合法、逻辑层当没看见」。
+ */
+export const TOKEN_INPUT = Object.freeze({
+  EMPTY: "empty",
+  VALID: "valid",
+  INVALID: "invalid",
+});
+
+/**
+ * token 字段输入 → 判定结果。
+ *
+ * - 空串 / 纯空白 / undefined / null：{ status: "empty" }，语义是「删除该字段」；
+ * - 十进制正整数：{ status: "valid", value }，前导零按数值归一（"007" → 7，
+ *   与既有输入层行为一致，明确固定为期望行为）；
+ * - 0 / 负数 / 小数 / 指数 / 非数字 / 超出安全整数范围：{ status: "invalid" }。
+ *
+ * 超长数字（超过 Number.MAX_SAFE_INTEGER）不再是宿主能可靠表示的整数，
+ * 因此按非法输入拒绝，而不是静默写成一个失真的 number。
+ *
+ * @param {unknown} text 输入框字符串或现有行里的值
+ * @returns {{status: "empty"|"valid"|"invalid", value?: number, code?: string}}
+ */
+export function classifyTokenInput(text) {
   if (typeof text === "number") {
-    return Number.isFinite(text) && text > 0 ? text : undefined;
+    if (!Number.isSafeInteger(text) || text <= 0) {
+      return { status: TOKEN_INPUT.INVALID, code: "token-invalid" };
+    }
+    return { status: TOKEN_INPUT.VALID, value: text };
   }
-  if (typeof text !== "string" || text.trim() === "") return undefined;
-  if (!/^\d+$/.test(text.trim())) return undefined;
-  const value = Number(text);
-  return Number.isFinite(value) && value > 0 ? value : undefined;
+  if (text === undefined || text === null) return { status: TOKEN_INPUT.EMPTY };
+  const raw = String(text).trim();
+  if (raw === "") return { status: TOKEN_INPUT.EMPTY };
+  if (!/^\d+$/.test(raw)) return { status: TOKEN_INPUT.INVALID, code: "token-invalid" };
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    return { status: TOKEN_INPUT.INVALID, code: "token-invalid" };
+  }
+  return { status: TOKEN_INPUT.VALID, value };
 }
 
-/** 现有行的 token 值 → 表单字符串；缺失时保持空串。 */
+/** 现有行的 token 值 → 表单字符串；缺失 / 非法时保持空串。 */
 function tokenFormValue(value) {
-  return Number.isFinite(value) && value > 0 ? String(value) : "";
+  const state = classifyTokenInput(value);
+  return state.status === TOKEN_INPUT.VALID ? String(state.value) : "";
+}
+
+/** 编辑表单的输入模态校验错误码与文案（工单 #38 问题 2，方案 A）。 */
+export const EDIT_FORM_ERRORS = Object.freeze({
+  INPUT_EMPTY: Object.freeze({
+    code: "input-empty",
+    field: "input",
+    message: "至少保留一个输入模态（宿主会拒绝空 input）",
+  }),
+});
+
+/**
+ * 编辑表单的纯逻辑校验（工单 #38 问题 2，方案 A：不允许取消全部输入模态）。
+ *
+ * 只有「现有行确实声明了非空 input，而表单把两个模态都取消」才报错 ——
+ * 那是一次清空尝试，宿主会拒绝空 input。现有行本来就没有 input（或声明了
+ * 空数组）时，两个框都空着表示「不改这个字段」，不能误伤其他字段的编辑。
+ *
+ * @param {ReturnType<typeof formFromModel>} form
+ * @param {object|undefined} existing 当前下标上的现有行
+ * @returns {{code: string, field: string, message: string}|null}
+ */
+export function validateEditForm(form, existing) {
+  const inputText = form?.inputText === true;
+  const inputImage = form?.inputImage === true;
+  const existingInput = Array.isArray(existing?.input)
+    ? existing.input.filter((modality) => MODALITIES.includes(modality))
+    : [];
+  if (!inputText && !inputImage && existingInput.length > 0) {
+    return EDIT_FORM_ERRORS.INPUT_EMPTY;
+  }
+  return null;
 }
 
 /**
@@ -65,7 +132,7 @@ function sameArray(left, right) {
 /**
  * 对比表单值与现有行，只产出真正变化的字段。
  *
- * 返回的片段直接满足 projectPiAi 的 draft 形状：
+ * 返回的片段除删除标记外直接满足 projectPiAi 的 draft 形状：
  * - name / contextWindow / maxTokens / input 是白名单字段；
  * - reasoning 是 ReasoningPolicy；projectPiAi 会把它投影成 reasoningEfforts 字典。
  *
@@ -75,11 +142,13 @@ function sameArray(left, right) {
  *
  * 只改 API 参数值而不改档位集合也算改动 —— 否则用户改了值，保存按钮还是灰的。
  *
- * 注意：一期只支持「修改」，不支持清空字段；空 token 输入不产生写入。
+ * 工单 #38：token 字段支持清空。表单为空串且现有行有合法值时，返回该字段
+ * 为 null —— 这是一个明确的「删除该键」标记，由调用方走整数组 set 写入；
+ * 现有行本来就没有值时不产生任何变化，绝不写多余的 unset。
  *
  * @param {ReturnType<typeof formFromModel>} form
  * @param {object|undefined} existing 当前下标上的现有行
- * @returns {object} 变化字段组成的 draft 片段
+ * @returns {object} 变化字段组成的 draft 片段；值为 null 表示删除该字段
  */
 export function diffRow(form, existing) {
   const changed = {};
@@ -88,14 +157,17 @@ export function diffRow(form, existing) {
   const nextName = typeof form?.name === "string" ? form.name.trim() : "";
   if (nextName !== currentName) changed.name = nextName;
 
-  const contextWindow = positiveNumber(form?.contextWindow);
-  if (contextWindow !== undefined && contextWindow !== existing?.contextWindow) {
-    changed.contextWindow = contextWindow;
-  }
-
-  const maxTokens = positiveNumber(form?.maxTokens);
-  if (maxTokens !== undefined && maxTokens !== existing?.maxTokens) {
-    changed.maxTokens = maxTokens;
+  for (const field of ["contextWindow", "maxTokens"]) {
+    const next = classifyTokenInput(form?.[field]);
+    const current = classifyTokenInput(existing?.[field]);
+    if (next.status === TOKEN_INPUT.INVALID) continue;
+    if (next.status === TOKEN_INPUT.EMPTY) {
+      if (current.status === TOKEN_INPUT.VALID) changed[field] = null;
+      continue;
+    }
+    if (current.status !== TOKEN_INPUT.VALID || current.value !== next.value) {
+      changed[field] = next.value;
+    }
   }
 
   const input = [];
@@ -124,6 +196,25 @@ export function diffRow(form, existing) {
   }
 
   return changed;
+}
+
+/**
+ * 把 diffRow 的结果拆成「要写入的值」与「要删除的键」。
+ *
+ * diffRow 用 null 表示删除字段；投影 draft 不能携带 null（会被当成非法值），
+ * 因此界面先把 null 拆出来，作为 update 模式的 unset 清单传入。
+ *
+ * @param {ReturnType<typeof diffRow>} diff
+ * @returns {{values: object, unset: string[]}}
+ */
+export function splitEditDiff(diff) {
+  const values = {};
+  const unset = [];
+  for (const [key, value] of Object.entries(diff ?? {})) {
+    if (value === null) unset.push(key);
+    else values[key] = value;
+  }
+  return { values, unset };
 }
 
 // ── 模型行摘要的来源标注（工单 #27）────────────────────────────────────

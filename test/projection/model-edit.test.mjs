@@ -134,6 +134,74 @@ test("update：路由没有 models 数组时拒绝为 stale-index", () => {
   assert.ok(result.warnings.some((item) => item.code === "stale-index"));
 });
 
+// ── 清空字段（工单 #38）─────────────────────────────────────────────────
+//
+// unset 不走逐字段 unset op：模型行是数组里的一项，删键必须让新对象里不存在
+// 该属性。写入沿用与 moveModel / planBulkFields / confirmDelete 相同的
+// 「一条 set 整数组」，并且原样保留 compat 与宿主未来字段。
+
+test("update + unset：清空 contextWindow → 一条整数组 set，该键从行里消失", () => {
+  const host = routeOf([existingRow, { id: "other/model" }]);
+  const result = projectPiAi({ id: existingRow.id }, host, {
+    routeId: "gw",
+    mode: "update",
+    index: 0,
+    unset: ["contextWindow"],
+  });
+
+  assert.equal(result.settingsOps.length, 1);
+  const op = result.settingsOps[0];
+  assert.equal(op.op, "set");
+  assert.deepEqual(op.path, ["providers", "gw", "models"]);
+  assert.equal(op.value.length, 2);
+  assert.equal("contextWindow" in op.value[0], false);
+  assert.deepEqual(op.value[0].compat, existingRow.compat);
+  assert.deepEqual(op.value[0].futureHostField, { untouched: 42 });
+  assert.deepEqual(op.value[1], { id: "other/model" });
+  assert.ok(!result.settingsOps.some((item) => item.op === "unset"), "不允许逐字段 unset");
+  assert.ok(result.appliedFields.includes("contextWindow"));
+});
+
+test("update + unset：清空 maxTokens 与修改 contextWindow 合并为一条整数组 set", () => {
+  const host = routeOf([existingRow]);
+  const result = projectPiAi({ id: existingRow.id, contextWindow: 262144 }, host, {
+    routeId: "gw",
+    mode: "update",
+    index: 0,
+    unset: ["maxTokens"],
+  });
+
+  assert.equal(result.settingsOps.length, 1);
+  const value = result.settingsOps[0].value[0];
+  assert.equal(value.contextWindow, 262144);
+  assert.equal("maxTokens" in value, false);
+  assert.deepEqual(value.compat, existingRow.compat);
+});
+
+test("update + unset：现有行本来没有该字段 → no-change，不发多余的写入", () => {
+  const bare = { id: "bare/model" };
+  const result = projectPiAi({ id: bare.id }, routeOf([bare]), {
+    routeId: "gw",
+    mode: "update",
+    index: 0,
+    unset: ["contextWindow", "maxTokens"],
+  });
+  assert.equal(result.settingsOps.length, 0);
+  assert.ok(result.warnings.some((item) => item.code === "no-change"));
+});
+
+test("update + unset：白名单外的字段 / id 不会被删除", () => {
+  const host = routeOf([existingRow]);
+  const result = projectPiAi({ id: existingRow.id }, host, {
+    routeId: "gw",
+    mode: "update",
+    index: 0,
+    unset: ["compat", "futureHostField", "id"],
+  });
+  assert.equal(result.settingsOps.length, 0);
+  assert.ok(result.warnings.some((item) => item.code === "no-change"));
+});
+
 // ── 删除（remove）────────────────────────────────────────────────────────
 
 test("remove：用 1 条 set 重写整个 models 数组，长度减一，绝不用 unset", () => {
