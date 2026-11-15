@@ -54,7 +54,7 @@ dsh plugin --profile desktop add ./dsh-model-assistant-0.1.0-alpha.3.tgz
 
 ```bash
 npm install
-node --test "test/**/*.test.mjs"      # 98 个测试
+node --test "test/**/*.test.mjs"      # 全量测试（当前实测 821 个）
 node scripts/build-client.mjs          # 重建 Web 端一半
 ```
 
@@ -78,10 +78,14 @@ docs/                           补料、设计（v2）、计划、证据笔记�
 
 ## 状态
 
-- **P0** SDK 概念验证 —— 已完成（48/48）。
-- **P1** 核心闭环 + 工作台 MVP —— 已完成（98/98）。身份解析器、候选引擎、
-  带 R1–R7 的 pi-ai 投影器、带指纹撤销的应用服务、三态档案仓库、
-  打包好的工作台界面。
+- **P0** SDK 概念验证 —— 已完成。
+- **P1** 核心闭环 + 工作台 MVP —— 代码完成、接线未完成。当前对外可见的能力只有
+  「模型 / 路由的增删改查 + 密钥管理 + 连接测试 + 批量操作 + 分组视图」，
+  全部由 `src/client/index.jsx` 直接驱动，不经过 `identity` / `candidates` /
+  `apply-service` / `profile-repository`。这四个模块是**已写好但尚未接入**的
+  P1 预置件，等 P1-07（工作台屏 A 骨架 + 双入口）接线；它们现在只有单测保护
+  （`test/core/identity.test.mjs`、`test/core/candidates.test.mjs`、
+  `test/apply/apply-service.test.mjs`、`test/core/profile-repository.test.mjs`）。
 - **P2** 计划中 —— `previewWire`、discovery 接入、档案屏、deepseek 方言启用。
 - **P3/P4** 计划中 —— `verifySelected` 驱动确认证据、运行时策略适配器、
   原生表单桥。

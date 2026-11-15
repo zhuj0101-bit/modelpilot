@@ -1,3 +1,5 @@
+// 状态：已实现、有单测，**尚未接入**运行路径（等 P1-07 工作台接线）。
+// 当前唯一调用方：test/apply/apply-service.test.mjs。
 // P1-04/P1-05：ApplyService —— prepare/commit、planId 幂等、lastApplied
 // 字段指纹与撤销（B5 §1–§4）。在注入端口之上的纯编排：
 // settingsWriter（读修订号、应用 ops）、profileStore、台账。

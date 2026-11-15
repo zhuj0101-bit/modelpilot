@@ -1,3 +1,5 @@
+// 状态：已实现、有单测，**尚未接入**运行路径（等 P1-07 工作台接线）。
+// 当前唯一调用方：test/core/identity.test.mjs。
 // P1-01：IdentityResolver —— 五级匹配链（B3 §3，DESIGN-v2 R-N3）。
 // 对注入来源做纯函数处理；出现冲突时保留备选（I3）。
 
