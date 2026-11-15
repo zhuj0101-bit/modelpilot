@@ -40,7 +40,7 @@ import {
   writeDefaultTemplate,
 } from "../core/default-template.js";
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
-import { describeModelRow, diffRow, formFromModel } from "../core/model-edit.js";
+import { describeModelRowSource, diffRow, formFromModel } from "../core/model-edit.js";
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
 import { planBulkDelete, planBulkFields, sameIdSequence } from "../core/model-bulk.js";
 import {
@@ -397,8 +397,11 @@ const s = {
     fontSize: FONT.caption, fontWeight: 600, overflowWrap: "anywhere",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   },
+  // 工单 #27：摘要多了来源标记（↑ / ·目录），不允许换行 —— 窄容器下用
+  // 单行省略，完整说明在 title 悬停里。minWidth: 0 是 flex 子项省略的前提。
   modelSummary: {
-    fontSize: FONT.hint, lineHeight: 1.55, overflowWrap: "anywhere", flex: "1 1 auto",
+    fontSize: FONT.hint, lineHeight: 1.55, flex: "1 1 auto", minWidth: 0,
+    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
     color: "var(--dsw-alias-label-tertiary, var(--dsw-alias-label-primary, inherit))",
   },
   modelEmpty: {
@@ -4642,6 +4645,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         ) : visibleModelIndexes.map((index, position) => {
           const model = routeModels[index];
           const modelKey = typeof model?.id === "string" && model.id !== "" ? model.id : `#${index}`;
+          const rowSummary = describeModelRowSource(model, humanizeTokenCount, route);
           const rowKey = `${modelKey}:${index}`;
           const hovered = hoveredRow === rowKey;
           const dragging = dragState !== null && dragState.from === index;
@@ -4703,10 +4707,11 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                 <span style={s.modelName}>{modelKey}</span>
               </div>
               <div style={s.modelRowMeta}>
-                <span style={s.modelSummary}>{describeModelRow(model, humanizeTokenCount)}</span>
+                <span style={s.modelSummary} title={rowSummary.title}>{rowSummary.text}</span>
                 <button
                   type="button"
-                  style={s.btnSmall}
+                  // 工单 #27：摘要单行省略时按钮保持原宽，窄容器下不把「编辑」挤成两行。
+                  style={{ ...s.btnSmall, flexShrink: 0 }}
                   onClick={() => openEditor(index)}
                   aria-label={`编辑模型 ${modelKey}`}
                 >
