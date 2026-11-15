@@ -65,6 +65,41 @@ function modelOp(routeId, value) {
   return { op: "set", path: ["providers", routeId, "models"], value };
 }
 
+/** 第 index 行在确认文案里的名字；id 缺失时回落序号。 */
+function displayIdAt(models, index) {
+  return typeof models[index]?.id === "string" ? models[index].id : `第 ${index + 1} 个模型`;
+}
+
+/**
+ * 批量删除确认框要用的选择摘要：条数、按绝对下标升序的 id，以及其中当前
+ * 不可见的条数。
+ *
+ * visibleIndexes 是界面真正渲染出来的行（展开且命中搜索）；不在其中的选中
+ * 行就是「用户看不见但会被删除」的行。选择里出现越界 / 非整数下标时按失效
+ * 处理，返回空摘要，交给调用方原有的写前复核拒绝写入。
+ *
+ * @param {object[]} models
+ * @param {Set<number>|number[]} selection
+ * @param {number[]} visibleIndexes
+ * @returns {{count:number, ids:string[], hiddenCount:number, hiddenIndexes:number[]}}
+ */
+export function summarizeBulkSelection(models, selection, visibleIndexes) {
+  const list = Array.isArray(models) ? models : [];
+  const indexes = normalizeIndexes(selection, list.length) ?? [];
+  const visible = new Set(
+    (Array.isArray(visibleIndexes) ? visibleIndexes : []).filter(
+      (value) => Number.isInteger(value) && value >= 0 && value < list.length,
+    ),
+  );
+  const hiddenIndexes = indexes.filter((index) => !visible.has(index));
+  return {
+    count: indexes.length,
+    ids: indexes.map((index) => displayIdAt(list, index)),
+    hiddenCount: hiddenIndexes.length,
+    hiddenIndexes,
+  };
+}
+
 /**
  * 批量删除：删掉选中的绝对下标，其余模型原样保留顺序。
  *
@@ -90,7 +125,7 @@ export function planBulkDelete(models, selection, routeId) {
   return {
     status: "ok",
     ops: [modelOp(routeId, next)],
-    removed: indexes.map((index) => (typeof list[index]?.id === "string" ? list[index].id : `第 ${index + 1} 个模型`)),
+    removed: indexes.map((index) => displayIdAt(list, index)),
   };
 }
 

@@ -74,6 +74,50 @@ export function groupModelRows(models) {
 }
 
 /**
+ * 组头计数的正文（不含括号）：无搜索时只显示总数；搜索中显示「命中数/总数」。
+ * 0 命中的组也要如实写 0，不能继续显示总数让用户以为组里有命中。
+ *
+ * @param {number} total 组内模型总数
+ * @param {number} matching 组内命中搜索的行数
+ * @param {boolean} searching 当前是否处于搜索状态
+ * @returns {string}
+ */
+export function groupCountText(total, matching, searching) {
+  const safeTotal = Number.isInteger(total) && total >= 0 ? total : 0;
+  if (searching !== true) return `${safeTotal}`;
+  const safeMatching = Number.isInteger(matching) && matching >= 0
+    ? Math.min(matching, safeTotal)
+    : 0;
+  return `${safeMatching}/${safeTotal}`;
+}
+
+/**
+ * 全选复选框的三态：checked / indeterminate / aria-label。
+ *
+ * - 全部可见行已选：`已全选 N 条`；
+ * - 只选了一部分：`已选 N / M 条`，indeterminate；
+ * - 一条没选（或没有可见行）：`全选`。
+ *
+ * 半选状态点击后由原生 checkbox 行为变成「勾满」，调用方按 checked 全选即可。
+ *
+ * @param {number} visibleCount 当前可见行数
+ * @param {number} selectedVisibleCount 当前可见行里已选中的条数
+ * @returns {{all:boolean, some:boolean, label:string}}
+ */
+export function selectAllCheckboxState(visibleCount, selectedVisibleCount) {
+  const total = Number.isInteger(visibleCount) && visibleCount > 0 ? visibleCount : 0;
+  const selected = Number.isInteger(selectedVisibleCount)
+    ? Math.min(Math.max(selectedVisibleCount, 0), total)
+    : 0;
+  const all = total > 0 && selected === total;
+  const some = selected > 0 && !all;
+  let label = "全选";
+  if (all) label = `已全选 ${total} 条`;
+  else if (some) label = `已选 ${selected} / ${total} 条`;
+  return { all, some, label };
+}
+
+/**
  * 按分组后的阅读顺序给一行编号（1 起）：组间字母序、组内数组顺序。
  * 折叠 / 搜索不改变编号；编号只是显示位置，写盘仍用 models 数组绝对下标。
  *

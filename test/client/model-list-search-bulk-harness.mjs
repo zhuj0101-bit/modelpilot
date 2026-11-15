@@ -157,7 +157,8 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
     const match = panelText().match(/显示 \d+ \/ \d+ 条/);
     return match === null ? "" : match[0];
   };
-  const allSelectedChecked = () => find("全选模型")?.checked === true;
+  const selectAll = () => document.querySelector("[data-modelpilot-select-all]");
+  const allSelectedChecked = () => selectAll()?.checked === true;
   const bulkText = () => find("模型批量操作")?.innerText ?? "";
   const routeSelect = () => document.querySelector("select");
 
@@ -229,14 +230,14 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
 
   setText(search(), "jxf");
   await sleep(10);
-  click(find("全选模型"));
+  click(selectAll());
   await sleep(10);
   result.selectAllFiltered = {
     checked: allSelectedChecked(),
     selected: selectedIds(),
     bulkText: bulkText(),
   };
-  click(find("全选模型"));
+  click(selectAll());
   await sleep(10);
   result.selectAllFilteredOff = {
     checked: allSelectedChecked(),
@@ -264,11 +265,19 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
   await sleep(20);
   result.routeBack = { order: listOrder(), searchValue: search()?.value ?? "" };
 
-  // ── 5. 批量删除：一次 mutate，一条 set 整数组 ──
+  // ── 5. 批量删除：先二次确认，确认后一次 mutate、一条 set 整数组 ──
   click(checkbox("jxf/dsv4.1-pro"));
   click(checkbox("qwen/complete"));
   await sleep(10);
+  const mutationsBeforeDelete = mutations.length;
   click(find("批量删除"));
+  await sleep(10);
+  result.bulkDeleteDialog = {
+    open: find("批量删除模型确认") !== null,
+    text: find("批量删除模型确认")?.innerText ?? "",
+    mutations: mutations.length - mutationsBeforeDelete,
+  };
+  click(find("确认批量删除"));
   await sleep(40);
   result.bulkDelete = {
     mutations: mutations.length,
@@ -277,11 +286,12 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
     snapshotOrder: providers["preview-chat"].models.map((model) => model.id),
     selected: selectedIds(),
     bulkText: bulkText(),
+    dialogClosed: find("批量删除模型确认") === null,
     toast: document.body.innerText.includes("已删除 2 条模型"),
   };
 
   // ── 6. 选中全部：批量删除禁用并说明至少保留一条 ──
-  click(find("全选模型"));
+  click(selectAll());
   await sleep(10);
   const mutationsBeforeAll = mutations.length;
   result.deleteAllBlocked = {
@@ -353,11 +363,14 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
   const mutationsBeforeBusy = mutations.length;
   click(find("批量删除"));
   await sleep(10);
+  click(find("确认批量删除"));
+  await sleep(10);
   result.busy = {
     deleteDisabled: find("批量删除")?.disabled === true,
     cancelDisabled: find("取消选择")?.disabled === true,
     rowCheckboxDisabled: checkbox("tx/deepseek-v4.1-flash")?.disabled === true,
     searchUsable: search()?.disabled !== true,
+    dialogBusyLabel: find("批量删除模型确认")?.innerText.includes("删除中…") === true,
   };
   window.__bulkResolveMutation();
   await sleep(40);
@@ -367,13 +380,16 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
     selected: selectedIds(),
   };
 
-  // ── 10. 写前复核：外部把列表顺序换掉后，批量删除不写任何东西 ──
+  // ── 10. 写前复核：确认框打开后外部把列表顺序换掉，确认时拒绝写入 ──
   click(checkbox("tx/deepseek-v4.1-flash"));
+  await sleep(10);
+  click(find("批量删除"));
   await sleep(10);
   const beforeStale = JSON.parse(JSON.stringify(providers["preview-chat"].models));
   providers["preview-chat"].models = [beforeStale[1], beforeStale[0], ...beforeStale.slice(2)];
   const mutationsBeforeStale = mutations.length;
-  click(find("批量删除"));
+  result.staleDialogOpen = find("批量删除模型确认") !== null;
+  click(find("确认批量删除"));
   await sleep(20);
   result.staleGuard = {
     mutations: mutations.length - mutationsBeforeStale,

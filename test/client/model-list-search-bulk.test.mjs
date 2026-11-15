@@ -155,12 +155,18 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.routeBack.searchValue, "");
   });
 
-  test(`${scheme} 主题：批量删除恰好一次 mutate、一条 set 整数组`, async (t) => {
+  test(`${scheme} 主题：批量删除先二次确认，确认后恰好一次 mutate、一条 set 整数组`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
 
-    assert.equal(result.bulkDelete.mutations, 1, "删除两条也只调用一次 mutate");
+    assert.equal(result.bulkDeleteDialog.open, true, "点批量删除先打开确认框");
+    assert.equal(result.bulkDeleteDialog.mutations, 0, "打开确认框不写盘");
+    assert.match(result.bulkDeleteDialog.text, /jxf\/dsv4\.1-pro/);
+    assert.match(result.bulkDeleteDialog.text, /qwen\/complete/);
+    assert.match(result.bulkDeleteDialog.text, /此操作无法撤销/);
+    assert.equal(result.bulkDelete.mutations, 1, "确认删除两条也只调用一次 mutate");
     assert.equal(result.bulkDelete.lastOps.length, 1, "只产出一条 op");
+    assert.equal(result.bulkDelete.dialogClosed, true, "写盘成功后关闭确认框");
     const [op] = result.bulkDelete.lastOps;
     assert.equal(op.op, "set");
     assert.deepEqual(op.path, ["providers", "preview-chat", "models"], "整数组路径，不是叶子");
@@ -241,6 +247,7 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.busy.cancelDisabled, true);
     assert.equal(result.busy.rowCheckboxDisabled, true);
     assert.equal(result.busy.searchUsable, true, "写入中仍可继续查看/搜索，只是不能再次提交");
+    assert.equal(result.busy.dialogBusyLabel, true, "确认框在写入中显示删除中…");
     assert.equal(result.busyAfter.mutations, 1, "只提交了一次");
     assert.deepEqual(result.busyAfter.order, ["openai/gpt-case", "tx/deepseek-v4.1-flash"]);
     assert.deepEqual(result.busyAfter.selected, []);
@@ -250,6 +257,7 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
 
+    assert.equal(result.staleDialogOpen, true, "确认框已打开，外部改动发生在确认之前");
     assert.equal(result.staleGuard.mutations, 0, "下标失效时不写盘");
     assert.deepEqual(result.staleGuard.snapshotOrder, ["openai/gpt-case", "tx/deepseek-v4.1-flash"], "快照保持外部改动的顺序");
     assert.equal(result.staleGuard.toast, true, "提示批量操作未执行");
