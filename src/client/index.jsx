@@ -15,6 +15,7 @@ import {
   deriveKeyRef,
 } from "../core/api-key.js";
 import { estimateContextBudget } from "../core/context-budget.js";
+import { buildProbeRequest, loadCatalogEntries, probeFailureText } from "../core/connection-probe.js";
 import { projectPiAi } from "../core/pi-ai-projection.js";
 import {
   DESCRIBE_BATCH_SIZE,
@@ -92,12 +93,6 @@ const MAX_TOKENS_CANDIDATES = Object.freeze([4096, 8192, 16384, 32768, 65536, 13
 /** 输入只接受十进制正整数；空字符串表示「不写该字段」。 */
 function isPositiveTokenCount(text) {
   return /^\d+$/.test(text) && Number(text) > 0;
-}
-
-/** 连接测试失败文案：宿主错误消息原样展示，最多 200 字符。 */
-function probeMessageText(message) {
-  const text = typeof message === "string" ? message : String(message ?? "");
-  return (text === "" ? "连接测试失败（宿主未返回原因）" : text).slice(0, 200);
 }
 
 /** 从 configForms 快照里读取当前的 pi-ai providers 映射。 */
@@ -4000,9 +3995,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   /**
    * 测试连接：用表单当前值发起一次真实探活。
    *
-   * 关键：请求不带 provider —— 宿主一旦看到 provider 且内置目录非空，就会
-   * 直接返回目录、根本不发 HTTP 请求；这里要的是真实端点。
-   * 只传 baseURL / api，不传任何密钥：凭据解析完全归宿主。
+   * provider 不能无条件带，也不能无条件不带：
+   *   - 宿主只按 request.provider 解析已保存的凭据，不带就根本没有密钥
+   *     （旧实现的 401 根因）；
+   *   - 但目录有货的 provider 一旦带上，宿主会直接回内置目录、不发 HTTP
+   *     请求，探活就变成了读目录。
+   * 因此按 declared 分流；目录读不到时保守按 declared（带 provider），至少
+   * 让用户看到端点/密钥的真实结果，而不是「没带密钥」的 401。
+   * 密钥始终不经过前端：只传 provider，凭据解析完全归宿主。
    */
   async function testConnection(form) {
     if (form === null || connectionTest.status === "running") return;
@@ -4016,10 +4016,11 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       setConnectionTest({ status: "done", tone, text });
     };
     try {
-      const response = await discoverModels(LLM_NS, {
-        baseURL,
-        ...(api === undefined ? {} : { api }),
-      });
+      const entries = await loadCatalogEntries(listConfigurableProviders);
+      // 目录是异步读的：这期间表单 / 路由可能已经变了，不要再替旧快照发请求。
+      if (generation !== connectionTestGeneration.current) return;
+      const { request } = buildProbeRequest({ entries, routeId, baseURL, api });
+      const response = await discoverModels(LLM_NS, request);
       if (generation !== connectionTestGeneration.current) return;
       if (response?.ok === true) {
         const count = Array.isArray(response.value) ? response.value.length : 0;
@@ -4031,9 +4032,9 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         settle("error", "该协议没有可读的模型列表，换个协议或手动填写模型");
         return;
       }
-      settle("error", probeMessageText(response?.error?.message));
+      settle("error", probeFailureText(response?.error));
     } catch (error) {
-      settle("error", probeMessageText(error?.message ?? error));
+      settle("error", probeFailureText(error));
     }
   }
 

@@ -1,8 +1,9 @@
 // 工单 #20：路由设置卡片里的「测试连接」（真实 DOM / headless Chrome）。
 //
 // 在 light / dark 两套宿主 token 下渲染打包后的 lib/client.js，逐条验收：
-// 按钮位置与禁用条件、表单快照请求、不带 provider、四种结果与颜色、
-// 结果随字段改动清除、以及测试全程不产生任何 settingsOps。
+// 按钮位置与禁用条件、表单快照请求、declared 路由带 provider（#29）、
+// 四种结果与颜色 / 401 / 403 / 404 / 5xx 文案、结果随字段改动清除，
+// 以及测试全程不产生任何 settingsOps。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -125,20 +126,98 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.longFailure.result.text, result.longFailure.expected);
     assert.equal(result.longFailure.result.color, token(scheme, "--dsw-alias-state-error-primary"));
     assert.equal(result.shortFailure.result.text, result.shortFailure.expected);
+    assert.equal(result.shortFailure.expected, "密钥未通过认证（HTTP 401）：https://preview.invalid/v2 answered 401; check the API key");
     assert.equal(result.thrown.result.text, "network down");
     assert.deepEqual(result.thrown.button, { text: "测试连接", disabled: false, title: "" });
   });
 
-  test(`${scheme} 主题：结果随字段改动清除；全程没有 provider / 密钥，也不产生 settingsOps`, async (t) => {
+  test(`${scheme} 主题：declared 路由请求带 provider，401 明确标注密钥问题`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.deepEqual(result.declaredUnauthorized.request, {
+      provider: "relay-route",
+      baseURL: "https://relay.invalid/v1",
+      api: "openai-completions",
+    }, "declared 路由必须带 provider，宿主才解析得到已保存凭据");
+    assert.deepEqual(result.declaredUnauthorized.requestKeys, ["provider", "baseURL", "api"]);
+    assert.equal(result.declaredUnauthorized.calls, 1, "每次点击只发一次探活请求");
+    assert.ok(result.declaredUnauthorized.catalogCalls >= 1, "测试时读取宿主目录判定 declared");
+    assert.equal(result.declaredUnauthorized.result.text, result.declaredUnauthorized.expected);
+    assert.equal(result.declaredUnauthorized.result.color, token(scheme, "--dsw-alias-state-error-primary"));
+    assert.deepEqual(result.declaredUnauthorized.button, { text: "测试连接", disabled: false, title: "" });
+  });
+
+  test(`${scheme} 主题：403 同样明确标注密钥问题`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.equal(
+      result.declaredForbidden.result.text,
+      "密钥未通过认证（HTTP 403）：https://relay.invalid/v1/models answered 403",
+    );
+    assert.equal(result.declaredForbidden.request.provider, "relay-route");
+  });
+
+  test(`${scheme} 主题：404 标注「地址可能写错」，5xx 标注「服务端错误」`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.equal(
+      result.declaredNotFound.result.text,
+      "接口地址可能写错（HTTP 404）：https://relay.invalid/v1/models answered 404",
+    );
+    assert.equal(
+      result.declaredServerError.result.text,
+      "服务端错误（HTTP 500）：https://relay.invalid/v1/models answered 500",
+    );
+    assert.equal(result.declaredNotFound.request.provider, "relay-route");
+    assert.equal(result.declaredServerError.request.provider, "relay-route");
+  });
+
+  test(`${scheme} 主题：目录读不到时保守带 provider；目录恢复后目录路由不带 provider`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+    assert.equal(
+      result.declaredCatalogFailure.request.provider,
+      "relay-route",
+      "目录读不到时 declared 路由仍带 provider",
+    );
+    assert.equal(
+      result.declaredCatalogFailure.result.text,
+      `密钥未通过认证（HTTP 401）：https://relay.invalid/v1/models answered 401; check the API key`,
+      "目录读不到也如实显示密钥错误",
+    );
+    assert.deepEqual(
+      result.catalogRouteCatalogFailure.request,
+      { provider: "preview-chat", baseURL: "https://preview.invalid/v3", api: "openai-completions" },
+      "目录读不到时目录路由也保守带 provider",
+    );
+    assert.deepEqual(
+      result.catalogRouteCatalogRestored.request,
+      { baseURL: "https://preview.invalid/v3", api: "openai-completions" },
+      "目录恢复后目录路由不带 provider，避免读目录冒充探活",
+    );
+    assert.deepEqual(result.catalogRouteCatalogRestored.requestKeys, ["baseURL", "api"]);
+  });
+
+  test(`${scheme} 主题：结果随字段改动清除；探活全程不带密钥字段，也不产生 settingsOps`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     assert.equal(result.cleared.result, null, "改显示名后结果自动清除");
     assert.deepEqual(result.cleared.button, { text: "测试连接", disabled: false, title: "" });
-    assert.equal(result.requests.total, 7);
+    assert.equal(result.requests.total, 14);
     assert.deepEqual(result.requests.namespaces, ["llm-pi-ai"]);
-    assert.deepEqual(result.requests.keys.sort(), ["api", "baseURL"]);
-    assert.equal(result.requests.providerAbsent, true, "所有请求都不带 provider");
+    assert.deepEqual(result.requests.keys.sort(), ["api", "baseURL", "provider"]);
     assert.equal(result.requests.credentialAbsent, true, "所有请求都不带 apiKey / apiKeyEnv / signal");
+    assert.deepEqual(
+      result.requests.providerByRoute.preview,
+      [false, false, false, false, false, false, false, true, false],
+      "目录路由默认不带 provider；仅目录读不到时保守带一次",
+    );
+    assert.deepEqual(
+      result.requests.providerByRoute.relay,
+      [true, true, true, true, true],
+      "declared 路由每次都带 provider（含目录读不到时）",
+    );
+    assert.ok(result.requests.catalogCalls >= 9, "每次测试都重新读一次目录事实");
     assert.equal(result.mutations, 0, "连接测试是只读探活");
     assert.equal(result.opsUnchanged, true, "所有测试前后 settingsOps 预览完全一致");
   });
