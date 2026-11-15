@@ -21,7 +21,22 @@ const ROUTE_SOURCE = String.raw`
       { id: "tx/deepseek-v4.1-flash", contextWindow: 128000, maxTokens: 8192, input: ["text"] },
     ],
   };
-  const providers = { "preview-chat": previewChat };
+  // 工单 #29：declared 路由（适配器只因为配置才知道，内置目录描述不了它）。
+  const relayRoute = {
+    id: "relay-route",
+    displayName: "Relay Route",
+    baseURL: "https://relay.invalid/v1",
+    api: "openai-completions",
+    apiKeyEnv: "RELAY_ROUTE_API_KEY",
+    models: [
+      { id: "relay/model-a", contextWindow: 128000, maxTokens: 8192, input: ["text"] },
+    ],
+  };
+  const providers = { "preview-chat": previewChat, "relay-route": relayRoute };
+  const catalog = [
+    { provider: "preview-chat", displayName: "Preview Chat", settingsNs: "llm-pi-ai", settingsPath: ["providers", "preview-chat"], declared: false },
+    { provider: "relay-route", displayName: "Relay Route", settingsNs: "llm-pi-ai", settingsPath: ["providers", "relay-route"], declared: true },
+  ];
   const snapshot = {
     status: "ready",
     value: { providers },
@@ -64,6 +79,19 @@ ${ROUTE_SOURCE}
     });
   };
 
+  // 目录通道：连接测试按 declared 分流时读取；失败次数可控，用来验证
+  // 「目录读不到 → 保守带 provider」。
+  let catalogCalls = 0;
+  let catalogFailures = 0;
+  const listConfigurableProviders = () => {
+    catalogCalls += 1;
+    if (catalogFailures > 0) {
+      catalogFailures -= 1;
+      return Promise.reject(new Error("catalog unavailable"));
+    }
+    return Promise.resolve({ ok: true, value: catalog });
+  };
+
   let Workbench;
   let spec;
   const ctx = {
@@ -81,7 +109,7 @@ ${ROUTE_SOURCE}
       },
     },
     remote: {
-      llm: { discoverModels },
+      llm: { discoverModels, listConfigurableProviders },
       credentials: {
         describe: async (refs) => ({
           ok: true,
@@ -134,6 +162,31 @@ ${ROUTE_SOURCE}
   };
   const footerOrder = () => [...byAria("删除路由").parentElement.querySelectorAll("button")]
     .map((button) => button.getAttribute("aria-label"));
+  const switchRoute = async (value) => {
+    // 路由选择器是页面里第一个 select；切换后 Workbench 会把卡片折叠并预填新路由。
+    setSelect(document.querySelector("select"), value);
+    await sleep(50);
+  };
+  const ensureCardOpen = async () => {
+    if (routeSummary() !== null && routeSummary().getAttribute("aria-expanded") !== "true") {
+      routeSummary().click();
+      await sleep(30);
+    }
+  };
+  const runTest = async () => {
+    const before = calls.length;
+    const catalogsBefore = catalogCalls;
+    byAria("测试连接").click();
+    await sleep(80);
+    return {
+      request: calls.length > before ? calls[calls.length - 1].request : null,
+      requestKeys: calls.length > before ? Object.keys(calls[calls.length - 1].request) : [],
+      calls: calls.length - before,
+      catalogCalls: catalogCalls - catalogsBefore,
+      result: resultState(),
+      button: buttonState(),
+    };
+  };
 
   const result = { scheme: styleOf(document.documentElement).colorScheme };
 
@@ -261,27 +314,99 @@ ${ROUTE_SOURCE}
   nextResponse = { ok: false, error: { code: "DISCOVERY_FAILED", message: shortMessage } };
   byAria("测试连接").click();
   await sleep(60);
-  result.shortFailure = { result: resultState(), expected: shortMessage };
+  result.shortFailure = {
+    result: resultState(),
+    expected: "密钥未通过认证（HTTP 401）：" + shortMessage,
+  };
 
-  // ── 10. 宿主抛异常同样如实显示；请求始终不带 provider / 密钥 ──
+  // ── 10. 宿主抛异常同样如实显示 ──
   nextResponse = () => { throw new Error("network down"); };
   byAria("测试连接").click();
   await sleep(60);
   result.thrown = { result: resultState(), button: buttonState() };
+
+  // ── 11. declared 路由：请求带 provider（宿主据此解析已保存凭据），401 点明密钥 ──
+  await switchRoute("relay-route");
+  await ensureCardOpen();
+  const unauthorized = "https://relay.invalid/v1/models answered 401; check the API key";
+  nextResponse = { ok: false, error: { code: "DISCOVERY_FAILED", message: unauthorized } };
+  result.declaredUnauthorized = await runTest();
+  result.declaredUnauthorized.expected = "密钥未通过认证（HTTP 401）：" + unauthorized;
+
+  // ── 12. 403 同样明确是密钥问题 ──
+  const forbidden = "https://relay.invalid/v1/models answered 403";
+  nextResponse = { ok: false, error: { code: "DISCOVERY_FAILED", message: forbidden } };
+  result.declaredForbidden = await runTest();
+
+  // ── 13. 404 标注地址可能写错 ──
+  const notFound = "https://relay.invalid/v1/models answered 404";
+  nextResponse = { ok: false, error: { code: "DISCOVERY_FAILED", message: notFound } };
+  result.declaredNotFound = await runTest();
+
+  // ── 14. 5xx 标注服务端错误 ──
+  const serverError = "https://relay.invalid/v1/models answered 500";
+  nextResponse = { ok: false, error: { code: "DISCOVERY_FAILED", message: serverError } };
+  result.declaredServerError = await runTest();
+
+  // ── 15. 目录读不到：declared 路由仍保守带 provider，真实错误照旧可见 ──
+  nextResponse = { ok: false, error: { code: "DISCOVERY_FAILED", message: unauthorized } };
+  catalogFailures = 1;
+  result.declaredCatalogFailure = await runTest();
+
+  // ── 16. 目录读不到：目录路由也保守带 provider（至少拿到真实结果） ──
+  await switchRoute("preview-chat");
+  await ensureCardOpen();
+  setValue(baseURLInput(), "https://preview.invalid/v3");
+  await sleep(20);
+  nextResponse = { ok: true, value: [{ id: "catalog-fallback" }] };
+  catalogFailures = 1;
+  result.catalogRouteCatalogFailure = await runTest();
+
+  // ── 17. 目录恢复：目录路由不带 provider，探活不会被「读目录」冒充 ──
+  nextResponse = { ok: true, value: [{ id: "catalog-restored" }] };
+  result.catalogRouteCatalogRestored = await runTest();
+
   result.requests = {
     total: calls.length,
     namespaces: [...new Set(calls.map((call) => call.namespace))],
     keys: [...new Set(calls.flatMap((call) => Object.keys(call.request)))],
-    providerAbsent: calls.every((call) => !("provider" in call.request)),
     credentialAbsent: calls.every((call) => (
       !("apiKey" in call.request) && !("apiKeyEnv" in call.request) && !("signal" in call.request)
     )),
+    providerByRoute: {
+      preview: calls
+        .filter((call) => String(call.request.baseURL ?? "").startsWith("https://preview.invalid"))
+        .map((call) => "provider" in call.request),
+      relay: calls
+        .filter((call) => String(call.request.baseURL ?? "").startsWith("https://relay.invalid"))
+        .map((call) => "provider" in call.request),
+    },
+    catalogCalls,
   };
   result.mutations = mutations.length;
   result.ops = opsOf();
   result.opsUnchanged = JSON.stringify(result.success.opsBefore) === JSON.stringify(result.success.opsAfter);
 
   document.getElementById("result").textContent = JSON.stringify(result);
+
+  // 视觉证据页（工单 #29）：把同一页面驱动到「declared 路由 + 指定 HTTP 状态」
+  // 的最终状态，供 headless Chrome 截图；普通单测不设置这个标记。
+  if (typeof window.__EVIDENCE_SCENARIO__ === "string" && window.__EVIDENCE_SCENARIO__.startsWith("declared-")) {
+    const status = Number(window.__EVIDENCE_SCENARIO__.slice("declared-".length));
+    await switchRoute("relay-route");
+    await ensureCardOpen();
+    nextResponse = {
+      ok: false,
+      error: {
+        code: "DISCOVERY_FAILED",
+        message: "https://relay.invalid/v1/models answered " + status
+          + (status === 401 || status === 403 ? "; check the API key" : ""),
+      },
+    };
+    byAria("测试连接").click();
+    await sleep(200);
+    window.__EVIDENCE_READY__ = true;
+  }
   } catch (error) {
     document.getElementById("result").textContent = JSON.stringify({ __error: String(error), stack: error.stack });
   }
@@ -289,8 +414,9 @@ ${ROUTE_SOURCE}
 `;
 
 /** 以指定主题组装「测试连接」页。 */
-export function buildConnectionTestHtml(bundleSource, scheme) {
+export function buildConnectionTestHtml(bundleSource, scheme, options = {}) {
   if (scheme !== "light" && scheme !== "dark") throw new TypeError(`未知主题：${scheme}`);
+  const evidence = typeof options.evidence === "string" ? options.evidence : "";
   return [
     "<!doctype html>",
     `<html lang="en" data-scheme="${scheme}" style="color-scheme: ${scheme}">`,
@@ -301,6 +427,7 @@ export function buildConnectionTestHtml(bundleSource, scheme) {
     '<pre id="result">pending</pre>',
     `<script>${SHIM_SOURCE}</script>`,
     `<script>${bundleSource}</script>`,
+    evidence === "" ? "" : `<script>window.__EVIDENCE_SCENARIO__ = ${JSON.stringify(evidence)};</script>`,
     `<script>${PROBE_SOURCE}</script>`,
     "</body></html>",
   ].join("\n");

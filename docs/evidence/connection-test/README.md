@@ -1,5 +1,7 @@
 # 连接测试（平替第四批）— 视觉证据
 
+> **后续变更（工单 #29）**：连接测试已改为按 `declared` 分流 —— 目录描述不了的路由携带 `provider`，让宿主解析已保存凭据，修掉「没带密钥」的 401；目录有货的路由仍不传 `provider`。本目录截图记录的是 #20 当时的旧行为，最新对照见 [`docs/evidence/connection-probe-provider/`](../connection-probe-provider/README.md)。
+
 - 基线：`origin/main` `28ec70e`（`feat: 模型列表拖动排序与键盘排序（工单 #19） (#42)`）
 - 变更：本分支 `agent/connection-test-cba86ef47bed` 的头提交；截图在 `node scripts/build-client.mjs` 重建 `lib/client.js` 后采集
 - 环境：headless Chrome 152.0.7977.64，1440×1500 视口，设备像素比 1
