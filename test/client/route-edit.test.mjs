@@ -145,17 +145,24 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     assert.equal(result.deleteDialog.open, true);
-    assert.match(result.deleteDialog.text, /删除路由 preview-chat/);
-    assert.match(result.deleteDialog.text, /该路由下有 3 个模型/);
+    // 工单 #26：标题带路由 id，正文按密钥状态分两套；这条路由的密钥已配置。
+    assert.match(result.deleteDialog.text, /删除路由「preview-chat」？/);
+    assert.match(result.deleteDialog.text, /移除该路由的全部配置（3 个模型）/);
+    assert.match(result.deleteDialog.text, /并一并删除存储的密钥 PREVIEW_CHAT_API_KEY/);
+    assert.match(result.deleteDialog.text, /密钥删除后无法恢复/);
     assert.match(result.deleteDialog.text, /这一步不能撤销/);
+    assert.equal(result.deleteDialog.confirmLabel, "删除路由和密钥");
+    assert.equal(result.deleteDialog.confirmDisabled, false);
     assert.ok(result.deleteDialog.danger.ratio >= 4.5, `删除按钮对比度 ${result.deleteDialog.danger.ratio}`);
     assert.equal(result.deleteDialog.cancelled, true);
     assert.equal(result.deleteDialog.mutationsAfterCancel, 2);
   });
 
-  test(`${scheme} 主题：确认删除 → 1 条 unset 整条路由，选择器切到下一条路由`, async (t) => {
+  test(`${scheme} 主题：确认删除 → 先删密钥，再 1 条 unset 整条路由，选择器切到下一条路由`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
+    // 工单 #26：密钥先删（引用名从 apiKeyEnv 派生，配置删掉就查不到了）。
+    assert.deepEqual(result.remove.unsetCalls, ["PREVIEW_CHAT_API_KEY"]);
     assert.equal(result.remove.mutations, 3);
     assert.deepEqual(result.remove.lastOps, [{ op: "unset", path: ["providers", "preview-chat"] }]);
     assert.deepEqual(result.remove.routes, ["backup-route", "spare-route"]);
