@@ -28,10 +28,12 @@ function staleIndex(result, routeId, index, detail) {
  * @param {object} draft - 已选定的值 {id, name?, contextWindow?, maxTokens?, input?, reasoning?}
  *   reasoning = ReasoningPolicy。
  * @param {object} hostState - {providers: {<routeId>: {models?: [...], modelOverrides?: {...}}}, catalogModels?: Set}
- * @param {object} opts {routeId, mode: "create"|"update"|"remove", index, append?, ackedReplacement?}
+ * @param {object} opts {routeId, mode: "create"|"update"|"remove", index, append?, ackedReplacement?, unset?}
+ *   unset 只用于 update：要删除的模型字段名（工单 #38 清空字段）；
+ *   写入仍是一条 set（清空时是整数组、其余情况是原下标）。
  * @returns ProjectionResult {settingsOps, appliedFields, profileOnlyFields, unsupportedControls, warnings, previewFidelity}
  */
-export function projectPiAi(draft, hostState, { routeId, mode = "create", index, append = true, ackedReplacement = false } = {}) {
+export function projectPiAi(draft, hostState, { routeId, mode = "create", index, append = true, ackedReplacement = false, unset = [] } = {}) {
   const result = {
     settingsOps: [],
     appliedFields: [],
@@ -196,16 +198,30 @@ export function projectPiAi(draft, hostState, { routeId, mode = "create", index,
       if (field === "id") continue;
       if (canonicalJson(row[field]) !== canonicalJson(existing?.[field])) changed[field] = row[field];
     }
-    if (Object.keys(changed).length === 0) {
+    // 工单 #38：清空字段 = 新对象里不存在该键。只接受白名单字段，且只删除
+    // 现有行确实拥有的键；逐字段 unset 会在数组项里制造非法空值，所以删键
+    // 走一条整数组 set —— 与 moveModel / planBulkFields / confirmDelete 同一
+    // 写入形态，不引入第二种 op。
+    const removals = [...new Set(
+      (Array.isArray(unset) ? unset : []).filter(
+        (field) => typeof field === "string" && field !== "id" && field !== "reasoning" && WHITELIST.includes(field),
+      ),
+    )].filter((field) => existing !== null && typeof existing === "object" && Object.hasOwn(existing, field));
+    for (const field of removals) delete changed[field];
+    if (Object.keys(changed).length === 0 && removals.length === 0) {
       result.warnings.push({ code: "no-change", message: "没有字段发生变化；未生成写入操作" });
       return result;
     }
-    result.settingsOps.push({
-      op: "set",
-      path: ["providers", routeId, "models", String(index)],
-      value: { ...existing, ...changed },
-    });
-    result.appliedFields.push("id", ...valueFields.filter((field) => Object.hasOwn(changed, field)));
+    const nextRow = { ...existing, ...changed };
+    for (const field of removals) delete nextRow[field];
+    if (removals.length > 0) {
+      const nextModels = models.slice();
+      nextModels[index] = nextRow;
+      result.settingsOps.push({ op: "set", path: ["providers", routeId, "models"], value: nextModels });
+    } else {
+      result.settingsOps.push({ op: "set", path: ["providers", routeId, "models", String(index)], value: nextRow });
+    }
+    result.appliedFields.push("id", ...valueFields.filter((field) => Object.hasOwn(changed, field)), ...removals);
   }
 
   // 解析出的事实标注为「仅输入」时，给出 contextWindow 语义告警

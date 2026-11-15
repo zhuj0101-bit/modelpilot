@@ -188,7 +188,7 @@ for (const scheme of ["light", "dark"]) {
     assert.deepEqual(create.afterFill, expected);
   });
 
-  test(`${scheme} 主题：模板空 token / 空档位如实清空表单（一期不写清空）`, async (t) => {
+  test(`${scheme} 主题：模板空 token / 空档位如实清空表单（清空 token 现在可保存）`, async (t) => {
     if (chrome === null) return skip(t);
     const { create, edit } = await probe(scheme, "empty", EMPTY_TOKEN_TEMPLATE_SEED);
     assert.deepEqual(create.initial, EMPTY_FORM);
@@ -197,10 +197,17 @@ for (const scheme of ["light", "dark"]) {
       ...EMPTY_FORM,
     });
     assert.equal(edit.filled.zeroHint, true);
-    assert.equal(edit.filled.saveDisabled, true);
-    assert.equal(edit.filled.ops.length, 0);
-    // diffRow 只产出正整数 token 变化；清空不是一期支持的写入，故此处不列出。
-    assert.equal(edit.filled.changedLine, "改动字段：无（保存已禁用）");
+    // 工单 #38：清空 token 是合法写入 —— 一条整数组 set，两个键从行里消失。
+    assert.equal(edit.filled.saveDisabled, false);
+    assert.equal(edit.filled.changedLine, "改动字段：上下文窗口 / 输出上限");
+    assert.equal(edit.filled.ops.length, 1);
+    const [op] = edit.filled.ops;
+    assert.equal(op.op, "set");
+    assert.deepEqual(op.path, ["providers", "preview-chat", "models"]);
+    assert.equal(Object.hasOwn(op.value[0], "contextWindow"), false);
+    assert.equal(Object.hasOwn(op.value[0], "maxTokens"), false);
+    assert.deepEqual(op.value[0].input, ["text"]);
+    assert.deepEqual(op.value[0].reasoningEfforts, { off: null, low: "low", medium: "medium", high: "high_reasoning" });
   });
 
   test(`${scheme} 主题：按钮与提示行跟随 token，禁用样式可辨识`, async (t) => {
