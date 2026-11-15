@@ -300,6 +300,19 @@ ${GROUPING_ROUTE_SOURCE}
   setText(search(), "");
   await sleep(20);
 
+  // ── 8. 行内删除：打开同一个二次确认弹窗，取消不写盘 ──
+  const mutationsBeforeRowDelete = mutations.length;
+  click(find("删除模型 acme/zeta"));
+  await sleep(10);
+  result.rowDelete = {
+    dialog: find("删除模型确认") !== null,
+    target: (find("删除模型确认")?.innerText ?? "").includes("acme/zeta"),
+    mutations: mutations.length - mutationsBeforeRowDelete,
+  };
+  click(find("取消删除"));
+  await sleep(10);
+  result.rowDelete.cancelled = find("删除模型确认") === null;
+
   document.getElementById("result").textContent = JSON.stringify(result);
   } catch (error) {
     document.getElementById("result").textContent = JSON.stringify({ __error: String(error), stack: error.stack });

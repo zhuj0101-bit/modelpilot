@@ -214,6 +214,16 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.searchHandles.footer, "显示 3 / 9 条");
   });
 
+  test(`${scheme} 主题：行内删除打开同一个二次确认弹窗，取消不写盘`, async (t) => {
+    if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
+    const result = await probe(scheme);
+
+    assert.equal(result.rowDelete.dialog, true);
+    assert.equal(result.rowDelete.target, true, "确认弹窗写明要删除的模型 id");
+    assert.equal(result.rowDelete.mutations, 0, "打开 / 取消确认不写配置");
+    assert.equal(result.rowDelete.cancelled, true, "取消后弹窗关闭");
+  });
+
   test(`${scheme} 主题：密度偏好从 localStorage 读取；非法值回落 compact`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     if (scheme !== "light") return t.skip("light 主题已覆盖存储读取");
