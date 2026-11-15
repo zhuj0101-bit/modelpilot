@@ -26,6 +26,12 @@ import {
   overviewCredentialRefs,
 } from "../core/route-overview.js";
 import {
+  buildRouteDeleteTarget,
+  describeRouteDeleteDialog,
+  routeDeleteKeyState,
+  routeDeleteRemovesKey,
+} from "../core/route-delete.js";
+import {
   describeTemplate,
   formToTemplate,
   readDefaultTemplate,
@@ -1745,6 +1751,7 @@ function ConfirmDialog({
   busyLabel,
   footerHint,
   busy,
+  confirmDisabled = false,
   onCancel,
   onConfirm,
   children,
@@ -1812,8 +1819,8 @@ function ConfirmDialog({
             <button ref={cancelRef} type="button" style={s.btn} onClick={onCancel} aria-label={cancelAria}>取消</button>
             <button
               type="button"
-              style={busy ? { ...s.btnDanger, opacity: 0.55, cursor: "not-allowed" } : s.btnDanger}
-              disabled={busy}
+              style={busy || confirmDisabled ? { ...s.btnDanger, opacity: 0.55, cursor: "not-allowed" } : s.btnDanger}
+              disabled={busy || confirmDisabled}
               onClick={onConfirm}
               aria-label={confirmAria}
             >
@@ -1852,28 +1859,32 @@ function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
   );
 }
 
-/** 删除整条路由的二次确认：写明模型条数与不可撤销。 */
-function DeleteRouteDialog({ routeId, modelCount, busy, onCancel, onConfirm }) {
+/**
+ * 删除整条路由的二次确认：写明模型条数与不可撤销，并按密钥的真实状态
+ * 说明会不会一并删除密钥（工单 #26）。
+ *
+ * 文案与按钮文字全部来自 {@link describeRouteDeleteDialog}：有没有密钥、
+ * 共用、只读、读不到时说法不同，按钮文字直接写清后果。密钥状态还在读取
+ * 时确认按钮禁用 —— 绝不在「要不要删密钥」还没确定时就把配置删掉。
+ */
+function DeleteRouteDialog({ routeId, modelCount, keyRef, keyState, sharedBy, error, busy, onCancel, onConfirm }) {
+  const copy = describeRouteDeleteDialog({ routeId, modelCount, ref: keyRef, keyState, sharedBy, error });
   return (
     <ConfirmDialog
       ariaLabel="删除路由确认"
-      title="删除路由"
+      title={copy.title}
       badge="二次确认"
       cancelAria="取消删除路由"
       confirmAria="确认删除路由"
-      confirmLabel="删除路由"
+      confirmLabel={copy.confirmLabel}
       busyLabel="删除中…"
-      footerHint="删除后不会影响其它路由。"
+      footerHint={copy.hint}
       busy={busy}
+      confirmDisabled={copy.confirmDisabled}
       onCancel={onCancel}
       onConfirm={onConfirm}
     >
-      <p style={s.sub}>
-        确定要删除路由 <b>{routeId}</b> 吗？
-      </p>
-      <p style={s.sub}>
-        该路由下有 <b>{modelCount}</b> 个模型，删除后连同模型配置一起消失。这一步不能撤销。
-      </p>
+      <p style={s.sub}>{copy.body}</p>
     </ConfirmDialog>
   );
 }
@@ -2078,6 +2089,7 @@ function RouteSettingsCard({
   confirmOpen,
   usageOpen,
   credential,
+  deletePlan,
   connectionTest,
   onChange,
   onToggleOpen,
@@ -2507,10 +2519,14 @@ function RouteSettingsCard({
       </div>
       ) : null}
 
-      {open && confirmOpen ? (
+      {open && confirmOpen && deletePlan !== undefined ? (
         <DeleteRouteDialog
           routeId={routeId}
-          modelCount={modelCount}
+          modelCount={deletePlan.modelCount}
+          keyRef={deletePlan.ref}
+          keyState={deletePlan.keyState}
+          sharedBy={deletePlan.sharedBy}
+          error={deletePlan.error}
           busy={busy}
           onCancel={onCloseConfirm}
           onConfirm={onDelete}
@@ -2650,6 +2666,17 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const [routeFormState, setRouteFormState] = React.useState(null);
   const [routeCardOpen, setRouteCardOpen] = React.useState(false);
   const [routeConfirmOpen, setRouteConfirmOpen] = React.useState(false);
+  // 删除路由前对「这条路由的密钥」做一次只读 describe（工单 #26）：弹窗文案
+  // 与按钮文字按真实状态分两套，绝不在状态未定时把配置删掉。generation 作废
+  // 上一轮（上一个引用名 / 上一次打开）的迟到结果。
+  const [deleteProbe, setDeleteProbe] = React.useState({
+    ref: "",
+    status: "idle",
+    configured: false,
+    writable: true,
+    error: "",
+  });
+  const deleteProbeGeneration = React.useRef(0);
   // 连接测试是只读探活：状态只在这里，结果不写配置、不缓存、不自动跑。
   // generation 作废「发起后表单又被改过」或「切了路由」的迟到结果。
   const [connectionTest, setConnectionTest] = React.useState({ status: "idle", tone: "", text: "" });
@@ -2725,6 +2752,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }, [routes, routeId]);
 
   const route = routeId ? providers[routeId] : undefined;
+
+  // 删除路由要用的密钥事实（工单 #26）：引用名与共用者每次都从最新快照重算。
+  // 弹窗文案、按钮文字与真正删除时的决策都读同一份事实，避免两处各算一遍。
+  const deleteRouteTarget = buildRouteDeleteTarget(routeId, providers);
 
   // 切换路由时收起卡片并重新预填十个字段；不把上一条路由的表单带过来。
   React.useEffect(() => {
@@ -2865,6 +2896,85 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       disposed = true;
     };
   }, [routeCardOpen, credentialReference, credentialRefresh, credentialOps]);
+
+  // 删除弹窗打开时才读取这条路由的密钥状态（工单 #26）：读的是快照里保存的
+  // apiKeyEnv 派生的引用名，不是表单里可能还没保存的草稿。只读 describe；
+  // 读失败单独成态，绝不把「读不到」当成「没有密钥」。
+  React.useEffect(() => {
+    const ref = deleteRouteTarget.ref;
+    if (!routeConfirmOpen || ref === "") {
+      deleteProbeGeneration.current += 1;
+      setDeleteProbe({ ref, status: "idle", configured: false, writable: true, error: "" });
+      return undefined;
+    }
+    const generation = ++deleteProbeGeneration.current;
+    setDeleteProbe({ ref, status: "loading", configured: false, writable: true, error: "" });
+    let disposed = false;
+    const settle = (next) => {
+      if (disposed || generation !== deleteProbeGeneration.current) return;
+      setDeleteProbe(next);
+    };
+    (async () => {
+      try {
+        const response = await credentialOps.describe([ref]);
+        if (response?.ok === true) {
+          const info = response.value?.[ref];
+          settle({
+            ref,
+            status: "ready",
+            configured: info?.configured === true,
+            writable: info?.writable !== false,
+            error: "",
+          });
+          return;
+        }
+        settle({
+          ref,
+          status: "error",
+          configured: false,
+          writable: false,
+          error: credentialErrorMessage(response, "宿主未返回原因"),
+        });
+      } catch (error) {
+        settle({
+          ref,
+          status: "error",
+          configured: false,
+          writable: false,
+          error: String(error?.message ?? error),
+        });
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [routeConfirmOpen, deleteRouteTarget.ref, credentialOps]);
+
+  // 引用名对不上（刚切路由 / 刚改 apiKeyEnv）的那一帧按「读取中」渲染：
+  // 不能把上一条路由的密钥状态贴到新引用名上，也不能提前放出确认按钮。
+  const deleteProbeState = deleteProbe.ref === deleteRouteTarget.ref
+    ? deleteProbe
+    : {
+        ref: deleteRouteTarget.ref,
+        status: deleteRouteTarget.ref === "" ? "idle" : "loading",
+        configured: false,
+        writable: true,
+        error: "",
+      };
+  const deleteKeyState = routeDeleteKeyState({
+    ref: deleteRouteTarget.ref,
+    status: deleteProbeState.status,
+    configured: deleteProbeState.configured,
+    writable: deleteProbeState.writable,
+    sharedBy: deleteRouteTarget.sharedBy,
+  });
+  const deletePlan = {
+    modelCount: deleteRouteTarget.modelCount,
+    ref: deleteRouteTarget.ref,
+    sharedBy: deleteRouteTarget.sharedBy,
+    keyState: deleteKeyState,
+    error: deleteProbeState.error,
+  };
 
   // 总览的批量密钥状态：折叠时直接返回（不发请求）；展开后按 64 个一批查询。
   // 路由增删 / apiKeyEnv 变化（快照订阅重算 refs）与保存 / 清除密钥
@@ -4064,8 +4174,17 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }
 
   /**
-   * 删除整条路由：用最新快照复核 stale-route 与「至少保留一个路由」，
-   * 通过后只发一条 unset ["providers", routeId]。
+   * 删除整条路由（工单 #26：先删密钥，再删配置）。
+   *
+   * 1. 用最新快照复核 stale-route 与「至少保留一个路由」，并重算引用名与
+   *    共用关系（弹窗打开后快照可能已经变了）；
+   * 2. 只有「弹窗里已确认 + 独占 + 可写」这一种状态才动密钥：先 describe
+   *    确认仍然存在，再 unset。describe 或 unset 失败都立刻返回，配置一条
+   *    都不动 —— 密钥删不掉却删掉配置，只会留下再也看不到的永久孤儿；
+   * 3. 其余状态（没有 / 共用 / 环境变量提供 / 读不到）跳过 unset，只删配置；
+   * 4. 最后才发唯一的一条 unset ["providers", routeId]。
+   *
+   * 顺序不能反：引用名是从路由的 apiKeyEnv 派生的，配置先删就不知道删哪个 ref。
    */
   async function deleteRoute() {
     const latestProviders = providersOf(scope.getSnapshot());
@@ -4074,21 +4193,67 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       setToast({ tone: "bad", text: plan.warnings[0].message });
       return { ok: false, message: plan.warnings[0].message };
     }
+    const target = buildRouteDeleteTarget(routeId, latestProviders);
+    const probe = deleteProbe.ref === target.ref
+      ? deleteProbe
+      : { ref: target.ref, status: "loading", configured: false, writable: true, error: "" };
+    const keyState = routeDeleteKeyState({
+      ref: target.ref,
+      status: probe.status,
+      configured: probe.configured,
+      writable: probe.writable,
+      sharedBy: target.sharedBy,
+    });
     setBusy(true);
     setToast(null);
+    let keyRemoved = false;
     try {
+      if (routeDeleteRemovesKey(keyState)) {
+        const described = await credentialOps.describe([target.ref]);
+        if (described?.ok !== true) {
+          const message = `无法确认密钥 ${target.ref} 的状态：${credentialErrorMessage(described, "宿主未返回原因")}；路由配置未改动`;
+          setToast({ tone: "bad", text: message });
+          return { ok: false, message };
+        }
+        if (described.value?.[target.ref]?.configured === true) {
+          const removed = await credentialOps.unset(target.ref);
+          if (removed?.ok !== true) {
+            const message = `删除密钥失败：${credentialErrorMessage(removed, "宿主拒绝删除")}；路由配置未改动`;
+            setToast({ tone: "bad", text: message });
+            return { ok: false, message };
+          }
+          keyRemoved = true;
+        }
+      }
       const ok = await scope.mutate(plan.ops);
       if (!ok) {
-        setToast({ tone: "bad", text: "删除被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+        // 密钥已经删掉（顺序在前），配置没删成 —— 必须把这件事说清楚，不能让用户
+        // 以为路由还完好无损地带着密钥。
+        setToast({
+          tone: "bad",
+          text: keyRemoved
+            ? `删除被宿主拒绝（修订号冲突或校验失败）；密钥 ${target.ref} 已删除，路由配置未改动，请核对后重试`
+            : "删除被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试",
+        });
         return { ok: false, message: "删除被宿主拒绝" };
       }
       const remaining = Object.keys(providersOf(scope.getSnapshot()));
       setRouteId(remaining[0] ?? "");
-      setToast({ tone: "good", text: `已删除路由 ${routeId}` });
+      const kept = target.sharedBy.length > 0 && target.ref !== ""
+        ? `；密钥 ${target.ref} 仍被其他路由使用，将保留`
+        : "";
+      setToast({
+        tone: "good",
+        text: keyRemoved ? `已删除路由 ${routeId}，并删除密钥 ${target.ref}` : `已删除路由 ${routeId}${kept}`,
+      });
       return { ok: true };
     } catch (error) {
-      setToast({ tone: "bad", text: `删除异常：${error?.message ?? error}` });
-      return { ok: false, message: String(error?.message ?? error) };
+      const message = String(error?.message ?? error);
+      setToast({
+        tone: "bad",
+        text: keyRemoved ? `删除异常：${message}；密钥 ${target.ref} 已删除，请核对路由是否仍在` : `删除异常：${message}`,
+      });
+      return { ok: false, message };
     } finally {
       setBusy(false);
     }
@@ -4231,6 +4396,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           form={routeFormState}
           confirmOpen={routeConfirmOpen}
           usageOpen={routeDefaultUsageOpen}
+          deletePlan={deletePlan}
           credential={{
             ...credentialUi,
             editorOpen: credentialEditorOpen,

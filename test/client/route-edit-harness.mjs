@@ -260,6 +260,8 @@ function multiProbe(schemaMode) {
   if (!client) throw new Error("client bundle did not register");
 ${fixtureSource("multi")}
   const mutations = [];
+  // 工单 #26：删除整条路由前会先删密钥 —— 记下被删的引用名，断言「先删密钥再删配置」。
+  const unsetCalls = [];
   const setPath = (root, path, value) => {
     let node = root;
     for (let i = 0; i < path.length - 1; i++) node = node[path[i]];
@@ -309,7 +311,10 @@ ${configFormsSource(schemaMode)}
       credentials: {
         describe: async (refs) => ({ ok: true, value: Object.fromEntries(refs.map((ref) => [ref, { configured: true, writable: true }])) }),
         set: async () => ({ ok: true, value: undefined }),
-        unset: async () => ({ ok: true, value: undefined }),
+        unset: async (ref) => {
+          unsetCalls.push(ref);
+          return { ok: true, value: undefined };
+        },
       },
     },
   };
@@ -416,11 +421,16 @@ ${HELPERS}
     displayName: providers["preview-chat"].displayName,
   };
 
-  // ── 4. 删除确认：模型条数 + 不可撤销；取消不写 ──
+  // ── 4. 删除确认：模型条数 + 密钥状态；取消不写 ──
+  // 弹窗打开后会先 describe 这条路由的密钥；读取期间确认按钮禁用（工单 #26），
+  // 因此这里等一拍再读文案 / 点确认。
   byAria("删除路由").click();
+  await sleep(30);
   result.deleteDialog = {
     open: byAria("删除路由确认") !== null,
     text: byAria("删除路由确认")?.innerText ?? "",
+    confirmLabel: byAria("确认删除路由")?.innerText.trim() ?? "",
+    confirmDisabled: byAria("确认删除路由")?.disabled ?? null,
     background: styleOf(byAria("删除路由确认")).backgroundColor,
     color: styleOf(byAria("删除路由确认")).color,
     danger: (() => {
@@ -436,11 +446,13 @@ ${HELPERS}
   result.deleteDialog.cancelled = byAria("删除路由确认") === null;
   result.deleteDialog.mutationsAfterCancel = mutations.length;
 
-  // ── 5. 确认删除：1 条 unset 整条路由，选择器切到下一条路由 ──
+  // ── 5. 确认删除：先 unset 密钥，再 1 条 unset 整条路由，选择器切到下一条路由 ──
   byAria("删除路由").click();
+  await sleep(30);
   byAria("确认删除路由").click();
   await sleep(30);
   result.remove = {
+    unsetCalls: unsetCalls.slice(),
     mutations: mutations.length,
     lastOps: mutations[mutations.length - 1],
     routes: Object.keys(providers),
@@ -452,6 +464,7 @@ ${HELPERS}
   // ── 6. stale-route：弹窗打开期间路由被别处删掉，确认必须拒绝写入 ──
   routeSummary().click();
   byAria("删除路由").click();
+  await sleep(30);
   const removedRoute = providers["backup-route"];
   delete providers["backup-route"];
   byAria("确认删除路由").click();
