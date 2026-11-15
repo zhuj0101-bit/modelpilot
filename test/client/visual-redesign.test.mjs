@@ -185,14 +185,14 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(new Set(Object.values(result.fonts)).size, 5, "五级字号互不相同");
   });
 
-  test(`${scheme} 主题：模型行 hover 底色 + 120ms 过渡，编辑按钮内缩 ≤ 16px`, async (t) => {
+  test(`${scheme} 主题：模型行 hover 底色 + 120ms 过渡，行内操作按钮内缩 ≤ 16px`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实视觉测量");
     const result = await probe(scheme);
     assert.equal(result.hover.beforeHover, "rgba(0, 0, 0, 0)", "默认行无底色");
     assert.equal(result.hover.afterHover, extra(scheme, "--dsw-alias-interactive-bg-hover"), "hover 有底色");
     assert.equal(result.hover.afterLeave, "rgba(0, 0, 0, 0)", "移出后恢复");
     assert.equal(result.hover.transitionDuration, "0.12s", "过渡 120ms");
-    assert.ok(result.editInset >= 0 && result.editInset <= 16, `编辑按钮距行右边界 ${result.editInset}px`);
+    assert.ok(result.actionInset >= 0 && result.actionInset <= 16, `行内操作按钮距行右边界 ${result.actionInset}px`);
   });
 
   test(`${scheme} 主题：四个 select appearance:none 且高度一致`, async (t) => {

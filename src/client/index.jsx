@@ -393,6 +393,8 @@ const s = {
   dropLineBefore: { top: -1 },
   dropLineAfter: { bottom: -1 },
   modelRowMeta: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, paddingRight: GAP.xs },
+  // 行内操作：编辑与删除并列在摘要右侧，按钮不随摘要压缩（工单 #28）。
+  modelRowActions: { display: "flex", alignItems: "center", gap: GAP.xs, flexShrink: 0 },
   modelName: {
     fontSize: FONT.caption, fontWeight: 600, overflowWrap: "anywhere",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -629,6 +631,18 @@ const s = {
   },
   usageList: { display: "flex", flexDirection: "column", gap: GAP.xs, margin: "0 0 2px", paddingLeft: 14, listStyle: "none" },
   usageItem: { fontSize: FONT.hint, lineHeight: 1.55, overflowWrap: "anywhere" },
+  // 编辑表单顶部：标题 + 收起按钮（工单 #28）。收起与底部「取消」走同一
+  // 条退出路径，有未保存改动时禁用，避免手滑丢草稿。
+  editorHeader: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: GAP.sm, flexWrap: "wrap",
+    paddingBottom: GAP.xs,
+    borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2))",
+  },
+  editorTitle: {
+    fontSize: FONT.section, fontWeight: 600, minWidth: 0,
+    overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  },
   // 编辑表单顶部：填入默认模板 + 模板摘要 / 无模板说明。
   templateBar: { display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap" },
   modelEditor: {
@@ -1444,12 +1458,26 @@ function EditModelForm({
   closeTokenPanels,
 }) {
   const changedFields = Object.keys(changed);
+  const hasChanges = changedFields.length > 0;
   const hasCompat = hasMeaningfulCompat(model?.compat);
   const stale = (projection?.warnings ?? []).find((warning) => warning.code === "stale-index");
   const unsupported = projection?.unsupportedControls ?? [];
 
   return (
     <div style={s.modelEditor} aria-label={`编辑表单 ${modelId}`}>
+      <div style={s.editorHeader}>
+        <span style={s.editorTitle}>编辑 {modelId}</span>
+        <button
+          type="button"
+          style={hasChanges ? { ...s.btnSmall, ...s.btnDisabled } : s.btnSmall}
+          disabled={hasChanges}
+          onClick={onCancel}
+          aria-label="收起编辑"
+          title={hasChanges ? "有未保存的改动，请先保存或点取消" : "收起编辑表单"}
+        >
+          × 收起
+        </button>
+      </div>
       <div style={s.templateBar}>
         <button
           type="button"
@@ -1812,7 +1840,7 @@ function ConfirmDialog({
         onKeyDown={handleKeyDown}
       >
         <div style={s.pickerHeader}>
-          <span style={s.h}>{title}</span>
+          <span style={{ ...s.h, minWidth: 0, overflowWrap: "anywhere" }}>{title}</span>
           <span style={s.pickerHint}>{badge}</span>
         </div>
         {children}
@@ -1841,7 +1869,7 @@ function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
   return (
     <ConfirmDialog
       ariaLabel="删除模型确认"
-      title="删除模型"
+      title={modelId === "" ? "删除模型" : `删除模型 ${modelId}`}
       badge="二次确认"
       cancelAria="取消删除"
       confirmAria="确认删除"
@@ -3754,6 +3782,15 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }
 
   /**
+   * 行内删除（工单 #28）：不必先展开编辑，直接把这一行交给同一个
+   * DeleteConfirmDialog；确认后仍走 confirmDelete 的原有写入路径。
+   */
+  function requestRowDelete(index, model) {
+    if (!writable || busy) return;
+    setDeleteTarget({ index, id: typeof model?.id === "string" ? model.id : "" });
+  }
+
+  /**
    * 确认删除。先按最新快照复核下标与 id，防止弹窗打开期间配置被别处改动
    * 而删错行；随后走 projectPiAi(remove) 的一条 set 重写整个 models 数组。
    */
@@ -4708,15 +4745,29 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               </div>
               <div style={s.modelRowMeta}>
                 <span style={s.modelSummary} title={rowSummary.title}>{rowSummary.text}</span>
-                <button
-                  type="button"
-                  // 工单 #27：摘要单行省略时按钮保持原宽，窄容器下不把「编辑」挤成两行。
-                  style={{ ...s.btnSmall, flexShrink: 0 }}
-                  onClick={() => openEditor(index)}
-                  aria-label={`编辑模型 ${modelKey}`}
-                >
-                  编辑
-                </button>
+                <span style={s.modelRowActions}>
+                  <button
+                    type="button"
+                    // 工单 #27：摘要单行省略时按钮保持原宽，窄容器下不把「编辑」挤成两行。
+                    style={{ ...s.btnSmall, flexShrink: 0 }}
+                    onClick={() => openEditor(index)}
+                    aria-label={`编辑模型 ${modelKey}`}
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    style={!writable || busy
+                      ? { ...s.btnSmall, ...s.btnDisabled, flexShrink: 0 }
+                      : { ...s.btnSmall, flexShrink: 0 }}
+                    disabled={!writable || busy}
+                    onClick={() => requestRowDelete(index, model)}
+                    aria-label={`删除模型 ${modelKey}`}
+                    title={!writable ? "当前配置不可写（writable: false），删除已禁用" : "删除这一条模型"}
+                  >
+                    删除
+                  </button>
+                </span>
               </div>
               {editingIndex === index && editForm !== null ? (
                 <EditModelForm
