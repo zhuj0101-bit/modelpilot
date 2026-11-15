@@ -405,8 +405,8 @@ const s = {
   dropLineBefore: { top: -1 },
   dropLineAfter: { bottom: -1 },
   modelRowMeta: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: GAP.sm, paddingRight: GAP.xs },
-  // 行内操作：编辑与删除并列在摘要右侧，按钮不随摘要压缩（工单 #28）。
-  modelRowActions: { display: "flex", alignItems: "center", gap: GAP.xs, flexShrink: 0 },
+  // 行内操作：编辑与删除并列在摘要右侧 / 紧凑行末尾，按钮不随摘要压缩（工单 #28 / #31）。
+  modelRowActions: { display: "flex", alignItems: "center", gap: GAP.xs, flexShrink: 0, marginLeft: "auto" },
   modelName: {
     fontSize: FONT.caption, fontWeight: 600, overflowWrap: "anywhere",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -450,9 +450,6 @@ const s = {
   modelRowCompact: { padding: "4px 0" },
   modelNameCompact: {
     whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0,
-  },
-  modelRowActions: {
-    display: "flex", alignItems: "center", gap: GAP.xs, flexShrink: 0, marginLeft: "auto",
   },
   // 「详细 / 紧凑」切换：右上角的分段按钮，默认紧凑。
   modelDensity: {
@@ -3956,21 +3953,15 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setDeleteTarget({ index: editingIndex, id: editModelId });
   }
 
-  /** 行内删除按钮：按该行在 models 数组里的绝对下标打开同一个确认弹窗。 */
-  function requestDeleteModel(index) {
-    const model = routeModels[index];
-    const id = typeof model?.id === "string" ? model.id : "";
-    if (id === "") return;
-    setDeleteTarget({ index, id });
-  }
-
   /**
-   * 行内删除（工单 #28）：不必先展开编辑，直接把这一行交给同一个
+   * 行内删除（工单 #28 / #31）：不必先展开编辑，直接把这一行交给同一个
    * DeleteConfirmDialog；确认后仍走 confirmDelete 的原有写入路径。
    */
   function requestRowDelete(index, model) {
     if (!writable || busy) return;
-    setDeleteTarget({ index, id: typeof model?.id === "string" ? model.id : "" });
+    const id = typeof model?.id === "string" ? model.id : "";
+    if (id === "") return;
+    setDeleteTarget({ index, id });
   }
 
   /**
@@ -4950,7 +4941,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                               ? { ...s.btnSmall, flexShrink: 0, ...s.btnDisabled }
                               : { ...s.btnSmall, flexShrink: 0 }}
                             disabled={busy || !writable}
-                            onClick={() => requestDeleteModel(index)}
+                            onClick={() => requestRowDelete(index, model)}
                             aria-label={`删除模型 ${modelKey}`}
                             title="删除模型（需要二次确认）"
                           >

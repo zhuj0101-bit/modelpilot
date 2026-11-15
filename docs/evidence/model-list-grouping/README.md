@@ -41,7 +41,7 @@
 
 ## 测试与产物验证
 
-- `node --test 'test/**/*.test.mjs'`（`npm test`）：**709 项**，702 通过、7 项按既有条件跳过、0 失败。
+- `node --test 'test/**/*.test.mjs'`（`npm test`）：**758 项**，751 通过、7 项按既有条件跳过、0 失败。
 - 新增 **28 项**：
   - `test/core/model-list-view.test.mjs` 9 项（纯函数：分组键 / 短名 / 组顺序 / 组内绝对下标 / 阅读序号 / 摘要去重 / localStorage 默认、非法值回落、异常存储）；
   - `test/client/model-list-grouping.test.mjs` 19 项（light / dark 真实 DOM：分组顺序与短名、折叠与全选可见行、摘要去重、详细 / 紧凑切换与持久化、搜索自动展开 / 收起、拖动绝对下标写盘、折叠组无手柄、搜索禁用拖动、行内删除确认、非法偏好回落）。
@@ -49,7 +49,7 @@
   - 验证行摘要的 #12 / #17 / #27 / #29 夹具在渲染前把密度设为 `detailed`，继续覆盖详细模式；
   - #19 拖动夹具把四条模型放进同一个 `jxf` 组，组内顺序与数组顺序一致，拖动 / 键盘 / 失败回滚断言不变；
   - #25 搜索 / 批量夹具只更新分组后的显示顺序，写盘参数与批量行为断言不变。
-- `node scripts/build-client.mjs` 连续两次：`lib/client.js` 的 SHA-256 均为 `827a68f676cef428a06ae31a8e84682f87432afd9b0873627862c96d96ed6bc5`（可重现）。
+- `node scripts/build-client.mjs` 连续两次：`lib/client.js` 的 SHA-256 均为 `fa463695421309ed012061d9f12979fbba03ed6fbb2417890cd9a13caa35cc3d`（可重现）。
 - `node scripts/verify-package.mjs .`：18/18 PASS。
 - 未新增依赖；`package.json` 未改。
 
