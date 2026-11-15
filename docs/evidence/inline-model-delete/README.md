@@ -1,7 +1,7 @@
 # 模型行直接删除与编辑折叠 — 视觉证据（工单 #28）
 
 - 基线：`4ab7a3e`（`origin/main`，`feat: 模型行摘要标注值来源（工单 #27） (#57)`），打包产物 `lib/client.js` SHA-256 `e3d79a9c3ba3e3769c2795d72489a5f8c68bac5d681f2b77e7d8e4422486a5bd`
-- 变更：本分支功能提交，截图在 `node scripts/build-client.mjs` 重建 `lib/client.js` 后采集，SHA-256 `71be2352230b215e6681060c21e52e0a4016cdb8c28e1fdea5665515e237d79f`（连续两次构建同值）
+- 变更：本分支功能提交 `5f4990c`，截图在 `node scripts/build-client.mjs` 重建 `lib/client.js` 后采集，SHA-256 `71be2352230b215e6681060c21e52e0a4016cdb8c28e1fdea5665515e237d79f`（连续两次构建同值）
 - 环境：Chrome 152.0.7977.64 headless，设备像素比 1；列表 / 弹窗视口 1440×1100，展开编辑视口 1440×1500；宿主 `--dsw-*` token 由仓库既有的 light / dark token 夹具提供，`color-scheme` 分别为 `light` / `dark`
 - 场景：一条占位路由 `preview-chat`，`baseURL` 为 `https://preview.invalid/v1`，三个模型：
   - `jxf/dsv4.1-flash`：`contextWindow: 1000000`、`maxTokens: 32768`、`input: ["text"]`、4 个推理档位；
