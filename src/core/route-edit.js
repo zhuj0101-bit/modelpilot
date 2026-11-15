@@ -517,27 +517,27 @@ export function countRouteDefaultUsers(models, catalogIds) {
 /**
  * 展开清单里的一行：写清这个模型未声明什么，以及另一个字段是否已声明。
  * @param {object} model 路由 models 数组里的一条模型条目
- * @returns {string} 如「未声明 contextWindow / maxTokens」
+ * @returns {string} 如「未声明窗口 / 输出上限」
  */
 export function describeRouteDefaultUsage(model) {
   const missingContext = model?.contextWindow === undefined;
   const missingMaxTokens = model?.maxTokens === undefined;
-  if (missingContext && missingMaxTokens) return "未声明 contextWindow / maxTokens";
-  if (missingContext) return "未声明 contextWindow（已声明 maxTokens）";
-  if (missingMaxTokens) return "未声明 maxTokens（已声明 contextWindow）";
-  return "已声明 contextWindow / maxTokens";
+  if (missingContext && missingMaxTokens) return "未声明窗口 / 输出上限";
+  if (missingContext) return "未声明窗口（已声明输出上限）";
+  if (missingMaxTokens) return "未声明输出上限（已声明窗口）";
+  return "已声明窗口 / 输出上限";
 }
 
 /**
  * 输入模态清单里的一行：写清这个模型的 input 是怎么来的。
  * @param {object} model 路由 models 数组里的一条模型条目
- * @returns {string} 如「未声明 input（路由默认值生效）」
+ * @returns {string} 如「未声明输入模态（路由默认值生效）」
  */
 export function describeRouteDefaultInputUsage(model) {
   const declared = model?.input;
-  if (!Array.isArray(declared)) return "未声明 input（路由默认值生效）";
-  if (declared.length === 0) return "已声明 input（空数组：一个模态都不开）";
-  return `已声明 input（${declared.join(" / ")}）`;
+  if (!Array.isArray(declared)) return "未声明输入模态（路由默认值生效）";
+  if (declared.length === 0) return "已声明输入模态（一个都不开）";
+  return `已声明输入模态（${declared.join(" / ")}）`;
 }
 
 /**
@@ -596,19 +596,19 @@ export function describeRouteDefaultCount(routeKey, total, affected) {
 /**
  * 路由默认值留空时宿主的真实后果：回落到内置常量，而不是「不限制」。
  * @param {string} routeKey defaultContextWindow | defaultMaxTokens | defaultInput
- * @returns {string|null} 如「默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）」
+ * @returns {string|null} 如「默认上下文：留空 → 使用内置默认值 1,000,000（1M）」
  */
 export function describeHostDefaultFallback(routeKey) {
   const field = routeDefaultField(routeKey);
   const value = HOST_ROUTE_DEFAULT_FALLBACKS[routeKey];
   if (field === undefined) return null;
   if (Array.isArray(value)) {
-    return `${field.label}：留空 → 宿主使用内置默认值 ${value.join(" / ")}（未声明 input 的模型按纯文本处理）`;
+    return `${field.label}：留空 → 使用内置默认值 ${value.join(" / ")}（按纯文本处理）`;
   }
   if (!Number.isFinite(value)) return null;
   const exact = value.toLocaleString("en-US");
   const short = humanizeTokenCount(value) || String(value);
-  return `${field.label}：留空 → 宿主使用内置默认值 ${exact}（${short}）`;
+  return `${field.label}：留空 → 使用内置默认值 ${exact}（${short}）`;
 }
 
 /**

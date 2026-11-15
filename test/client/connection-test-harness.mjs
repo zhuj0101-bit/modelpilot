@@ -140,7 +140,7 @@ ${ROUTE_SOURCE}
   const routeSummary = () => document.querySelector('[aria-label="展开路由设置"], [aria-label="收起路由设置"]');
   const opsOf = () => {
     const label = [...document.querySelectorAll("summary")]
-      .find((element) => element.textContent.includes("保存将写入的 settingsOps"));
+      .find((element) => element.textContent.includes("将写入的配置项"));
     if (label === undefined) return null;
     return JSON.parse(label.parentElement.querySelector("pre").textContent);
   };

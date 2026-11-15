@@ -264,7 +264,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     hint: editorHint(),
     changedLine: editorLine("改动字段："),
     saveDisabled: byAria("保存修改").disabled,
-    zeroHint: (editor()?.innerText ?? "").includes("全不选：不修改现有 reasoningEfforts"),
+    zeroHint: (editor()?.innerText ?? "").includes("全不选：不修改现有档位"),
     ops: editorOps(),
   };
   const firstFill = JSON.stringify({ state: result.edit.filled.state, ops: result.edit.filled.ops });

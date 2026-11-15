@@ -206,7 +206,7 @@ const HELPERS = String.raw`
   const routeSelect = () => document.querySelector("select");
   const opsOf = () => {
     const label = [...document.querySelectorAll("summary")]
-      .find((element) => element.textContent.includes("保存将写入的 settingsOps"));
+      .find((element) => element.textContent.includes("将写入的配置项"));
     if (label === undefined) return null;
     return JSON.parse(label.parentElement.querySelector("pre").textContent);
   };
@@ -326,7 +326,7 @@ ${HELPERS}
   const result = { scheme: styleOf(document.documentElement).colorScheme };
   result.initial = {
     collapsed: routeCard() !== null && routeSummary()?.getAttribute("aria-expanded") === "false",
-    summary: routeSummary()?.textContent.trim() ?? "",
+    summary: (routeSummary()?.textContent ?? "").replace(/ⓘ/g, "").trim(),
     route: routeSelect().value,
   };
 
@@ -346,14 +346,14 @@ ${HELPERS}
     saveDisabled: byAria("保存路由设置").disabled,
     deleteDisabled: byAria("删除路由").disabled,
     apiOptions: [...byAria("路由协议").options].map((option) => option.value),
-    schemaHint: document.body.innerText.includes("选项来自宿主 schema"),
+    schemaHint: document.querySelectorAll('[title="选项随应用版本自动更新"]').length > 0,
     fallbackNotice: document.body.innerText.includes("协议清单读取失败，使用内置列表"),
-    defaultsHint: document.body.innerText.includes("未声明窗口 / 输出上限 / 输入模态的模型回落到这里的默认值"),
+    defaultsHint: [...document.querySelectorAll("[title]")].some((element) => element.title.includes("回落顺序：模型自己 → 内置目录 → 路由默认值")),
     cacheOptions: [...byAria("路由缓存").options].map((option) => option.value),
     transportOptions: [...byAria("路由传输").options].map((option) => option.value),
     defaultInputChips: modalChipValues(),
     defaultInputChecked: modalChipChecked(),
-    defaultInputHintSchema: document.body.innerText.includes("选项来自宿主 schema"),
+    defaultInputHintSchema: [...document.querySelectorAll("[title]")].some((element) => element.title.startsWith("留空 = 按纯文本处理")),
     changed: document.body.innerText.includes("改动字段：无（保存已禁用）"),
     ops: opsOf(),
   };
@@ -367,7 +367,7 @@ ${HELPERS}
     ops: opsOf(),
     opsSummary: [...document.querySelectorAll("summary")]
       .map((element) => element.textContent)
-      .find((text) => text.includes("保存将写入的 settingsOps")) ?? "",
+      .find((text) => text.includes("将写入的配置项")) ?? "",
   };
   result.theme = {
     card: { background: styleOf(routeCard()).backgroundColor },
@@ -559,6 +559,9 @@ ${HELPERS}
   routeSummary().click();
   result.blank = {
     block: blockText(),
+    lines: defaultsBlock() === null ? 0 : [...defaultsBlock().children].length,
+    summaryTip: routeSummary()?.querySelector("[title]")?.title ?? "",
+    inputTip: [...document.querySelectorAll("[title]")].find((element) => element.title.startsWith("留空 = 按纯文本处理"))?.title ?? "",
     windowLine: lineOf("默认上下文"),
     outputLine: lineOf("默认输出上限"),
     inputLine: lineOf("默认输入模态"),
@@ -706,7 +709,7 @@ ${HELPERS}
     defaultInputChecked: modalChipChecked(),
     modalFallbackNotice: document.body.innerText.includes("模态清单读取失败，使用内置模态清单"),
     saveDisabled: byAria("保存路由设置").disabled,
-    summary: routeSummary()?.textContent.trim() ?? "",
+    summary: (routeSummary()?.textContent ?? "").replace(/ⓘ/g, "").trim(),
     mutations: mutations.length,
   };
   document.getElementById("result").textContent = JSON.stringify(result);
@@ -821,7 +824,7 @@ ${HELPERS}
     open: routeSummary()?.getAttribute("aria-expanded") === "true",
     chips: modalChipValues(),
     checked: modalChipChecked(),
-    hintSchema: document.body.innerText.includes("选项来自宿主 schema"),
+    inputTip: [...document.querySelectorAll("[title]")].some((element) => element.title.startsWith("留空 = 按纯文本处理")),
     fallbackNotice: document.body.innerText.includes("模态清单读取失败，使用内置模态清单"),
     saveDisabled: byAria("保存路由设置").disabled,
     ops: opsOf(),

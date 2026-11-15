@@ -145,7 +145,7 @@ export function describeRouteDeleteDialog(facts) {
     return {
       title,
       body: `${base}。无法确认是否存在存储的密钥，因此只会删除配置。`,
-      hint: `${ref === "" ? "密钥" : `密钥 ${ref}`} 可能仍保留在宿主的凭据存储中${reason}。这一步不能撤销。`,
+      hint: `${ref === "" ? "密钥" : `密钥 ${ref}`} 可能仍保留在凭据存储中${reason}。这一步不能撤销。`,
       confirmLabel: "删除路由",
       confirmDisabled: false,
     };

@@ -152,7 +152,7 @@ ${ROUTES_SOURCE}
   };
   const routeSummary = () => byAria("展开路由设置") ?? byAria("收起路由设置");
   const routeSelect = () => document.querySelector("select");
-  const statusText = () => (byAria("密钥状态")?.innerText ?? "").replace(/\s+/g, " ").trim();
+  const statusText = () => (byAria("密钥状态")?.innerText ?? "").replace(/ⓘ/g, "").replace(/\s+/g, " ").trim();
   const dotInfo = () => {
     const row = byAria("密钥状态");
     if (row === null) return null;
@@ -223,7 +223,7 @@ ${ROUTES_SOURCE}
     type: secretInput()?.type,
     ariaLabel: secretInput()?.getAttribute("aria-label"),
     saveDisabledWhenEmpty: buttonByAria("保存密钥")?.disabled,
-    hint: byAria("密钥")?.innerText.includes("密钥只写入宿主的凭据存储，不会出现在配置文件中。") ?? false,
+    hint: (byAria("密钥")?.querySelector("[title]")?.title ?? "").includes("密钥单独保存，不会写进配置文件。"),
   };
 
   // ── 4. 保存：set 收到逐字节一致的输入（含首尾空格），保存后立即变「已配置」 ──
@@ -249,7 +249,7 @@ ${ROUTES_SOURCE}
   await sleep(20);
   const opsPreview = (() => {
     const label = [...document.querySelectorAll("summary")]
-      .find((element) => element.textContent.includes("保存将写入的 settingsOps"));
+      .find((element) => element.textContent.includes("将写入的配置项"));
     return label?.parentElement.querySelector("pre")?.textContent ?? "";
   })();
   buttonByAria("保存路由设置").click();

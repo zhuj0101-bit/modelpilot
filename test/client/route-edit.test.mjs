@@ -42,7 +42,7 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     assert.equal(result.initial.collapsed, true, "卡片默认折叠");
-    assert.equal(result.initial.summary, "▶ 路由设置 · 输出上限 33K · 上下文 1M · 3 个模型");
+    assert.equal(result.initial.summary.replace(/ⓘ/g, "").trim(), "▶ 路由设置 · 输出上限 33K · 上下文 1M · 3 个模型");
     assert.equal(result.initial.route, "preview-chat");
   });
 
@@ -114,7 +114,7 @@ for (const scheme of ["light", "dark"]) {
       { op: "set", path: ["providers", "preview-chat", "baseURL"], value: "https://preview.invalid/v2" },
       { op: "set", path: ["providers", "preview-chat", "defaultMaxTokens"], value: 16384 },
     ]);
-    assert.match(result.edit.opsSummary, /保存将写入的 settingsOps（2 条）/);
+    assert.match(result.edit.opsSummary, /将写入的配置项（2 条）/);
 
     assert.equal(result.save.mutations, 1);
     assert.deepEqual(result.save.lastOps, result.edit.ops);
@@ -206,17 +206,21 @@ for (const scheme of ["light", "dark"]) {
     assert.ok(result.deleteDialog.danger.ratio >= 4.5, `确认删除按钮对比度 ${result.deleteDialog.danger.ratio}`);
   });
 
-  test(`${scheme} 主题：三行语义提示 + 两个默认值留空时显示宿主内置回落常量`, async (t) => {
+  test(`${scheme} 主题：常驻语义提示已移除，回落依据在悬停里；默认值留空显示内置回落常量`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme, "usage");
-    assert.match(result.blank.block, /未声明窗口 \/ 输出上限 \/ 输入模态的模型回落到这里的默认值；已声明自己的模型不受影响。/);
-    assert.match(result.blank.block, /回落顺序：模型自己 → 内置目录 → 这里。/);
-    assert.match(result.blank.block, /注意：这里只影响请求参数，不影响 DSH 压缩阈值 —— 后者只认模型自己声明的那一项。/);
-    assert.equal(result.blank.windowLine, "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）");
-    assert.equal(result.blank.outputLine, "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）");
+    assert.equal(result.blank.lines, 3, "默认值区块只保留三个字段的当前状态行");
+    assert.doesNotMatch(result.blank.block, /未声明窗口 \/ 输出上限 \/ 输入模态的模型回落到这里的默认值/);
+    assert.doesNotMatch(result.blank.block, /回落顺序：模型自己 → 内置目录 → 这里/);
+    assert.match(result.blank.summaryTip, /只写改动过的字段/);
+    assert.match(result.blank.summaryTip, /回落顺序：模型自己 → 内置目录 → 路由默认值/);
+    assert.match(result.blank.inputTip, /留空 = 按纯文本处理/);
+    assert.match(result.blank.inputTip, /不改压缩阈值/);
+    assert.equal(result.blank.windowLine, "默认上下文：留空 → 使用内置默认值 1,000,000（1M）");
+    assert.equal(result.blank.outputLine, "默认输出上限：留空 → 使用内置默认值 128,000（128K）");
     assert.equal(
       result.blank.inputLine,
-      "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+      "默认输入模态：留空 → 使用内置默认值 text（按纯文本处理）",
     );
     assert.equal(result.blank.countButtons, 0, "留空时没有可展开的计数");
     assert.equal(result.blank.mutations, 0);
@@ -226,13 +230,13 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme, "usage");
     assert.equal(result.windowTyped.windowLine, "默认上下文：当前路由 3 个模型中有 1 个会使用这两个值。");
-    assert.equal(result.windowTyped.outputLine, "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）");
+    assert.equal(result.windowTyped.outputLine, "默认输出上限：留空 → 使用内置默认值 128,000（128K）");
     assert.equal(result.blank.mutations, 0);
     assert.equal(result.windowTyped.mutations, 0, "计数不需要保存就更新");
     assert.equal(result.bothTyped.windowLine, "默认上下文：当前路由 3 个模型中有 1 个会使用这两个值。");
     assert.equal(result.bothTyped.outputLine, "默认输出上限：当前路由 3 个模型中有 2 个会使用这两个值。");
     assert.equal(result.bothTyped.mutations, 0);
-    assert.equal(result.windowCleared.windowLine, "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）");
+    assert.equal(result.windowCleared.windowLine, "默认上下文：留空 → 使用内置默认值 1,000,000（1M）");
     assert.equal(result.windowCleared.outputLine, "默认输出上限：当前路由 3 个模型中有 2 个会使用这两个值。");
     assert.equal(result.windowCleared.windowListGone, true);
     assert.equal(result.windowCleared.mutations, 0);
@@ -242,13 +246,13 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme, "usage");
     assert.equal(result.windowExpanded.expanded, true);
-    assert.equal(result.windowExpanded.list, "jxf/dsv4.1-flash —— 未声明 contextWindow / maxTokens");
+    assert.equal(result.windowExpanded.list, "jxf/dsv4.1-flash —— 未声明窗口 / 输出上限");
     assert.equal(result.windowCollapsed.collapsed, true);
     assert.equal(
       result.outputExpanded.list,
       [
-        "jxf/dsv4.1-flash —— 未声明 contextWindow / maxTokens",
-        "tx/deepseek-v4.1-chat —— 未声明 maxTokens（已声明 contextWindow）",
+        "jxf/dsv4.1-flash —— 未声明窗口 / 输出上限",
+        "tx/deepseek-v4.1-chat —— 未声明输出上限（已声明窗口）",
       ].join("\n"),
     );
   });
@@ -270,7 +274,7 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.prefill.open, true);
     assert.deepEqual(result.prefill.chips, ["text", "image", "audio"], "候选从 schema 现读");
     assert.deepEqual(result.prefill.checked, ["image"], "只预填路由声明的 image");
-    assert.equal(result.prefill.hintSchema, true);
+    assert.equal(result.prefill.inputTip, true, "留空后果在提示里");
     assert.equal(result.prefill.fallbackNotice, false);
     assert.equal(result.prefill.saveDisabled, true, "未改动时保存禁用");
     assert.deepEqual(result.prefill.ops, []);
@@ -285,8 +289,8 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(
       result.count.list,
       [
-        "jxf/undeclared —— 未声明 input（路由默认值生效）",
-        "jxf/tokens-only —— 未声明 input（路由默认值生效）",
+        "jxf/undeclared —— 未声明输入模态（路由默认值生效）",
+        "jxf/tokens-only —— 未声明输入模态（路由默认值生效）",
       ].join("\n"),
     );
   });
@@ -339,7 +343,7 @@ for (const scheme of ["light", "dark"]) {
     assert.deepEqual(result.clearedSaved.checked, []);
     assert.equal(
       result.clearedSaved.fallbackLine,
-      "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+      "默认输入模态：留空 → 使用内置默认值 text（按纯文本处理）",
     );
     assert.equal(result.clearedSaved.countButtonGone, true, "留空时没有可展开的计数");
   });
@@ -368,7 +372,7 @@ for (const scheme of ["light", "dark"]) {
     assert.deepEqual(result.blank.checked, []);
     assert.equal(
       result.blank.line,
-      "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+      "默认输入模态：留空 → 使用内置默认值 text（按纯文本处理）",
     );
     assert.equal(result.blank.saveDisabled, true);
     assert.equal(result.blank.mutations, 2, "切换路由 / 查看空白字段不写入");
@@ -379,7 +383,6 @@ for (const scheme of ["light", "dark"]) {
     const result = await probe(scheme, "input:fallback");
     assert.deepEqual(result.prefill.chips, ["text", "image"]);
     assert.deepEqual(result.prefill.checked, ["image"]);
-    assert.equal(result.prefill.hintSchema, false);
     assert.equal(result.prefill.fallbackNotice, true, "标注「使用内置模态清单」");
     assert.equal(result.prefill.saveDisabled, true);
     assert.equal(result.prefill.mutations, 0);

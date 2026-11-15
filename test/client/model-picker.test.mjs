@@ -444,7 +444,7 @@ function createHarness({ providers, remote, mutateImpl = async () => true, stora
       // 「API 参数值」高级区也是 details；这里只看 settingsOps 的 JSON 预览。
       return findAll(current(), (node) => node.type === "details").filter((node) => {
         const summary = findAll(node, (child) => child.type === "summary")[0];
-        return textOf(summary?.props?.children).trim().startsWith("settingsOps");
+        return textOf(summary?.props?.children).trim().startsWith("配置项");
       });
     },
     summaryTexts() {
@@ -598,7 +598,7 @@ test("勾 1 个：确认后关闭弹窗并把完整 id 填进模型输入框，�
   assert.equal(harness.displayNameInput().props.value, "jxf/dsv4.1-flash");
   assert.equal(harness.mutations.length, 0, "single selection does not write");
   assert.doesNotMatch(harness.text(), /待写入/);
-  assert.deepEqual(harness.summaryTexts(), ["settingsOps（1 条）· 点击展开"]);
+  assert.deepEqual(harness.summaryTexts(), ["配置项（1 条）· 点击展开"]);
   assert.equal(harness.details()[0].props.open, undefined, "single projection JSON default closed");
 });
 
@@ -619,12 +619,12 @@ test("勾 3 个：确认只生成待写入区块，点「写入」才一次 muta
   for (const id of ["jxf/dsv4.1-flash", "jxf/dsv4.1-pro", "tx/deepseek-v4.1-flash"]) {
     assert.match(harness.text(), new RegExp(id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(harness.text(), /contextWindow 未设置/);
-  assert.match(harness.text(), /maxTokens 未设置/);
-  assert.match(harness.text(), /input text/);
-  assert.match(harness.text(), /reasoningEfforts off \/ low \/ medium \/ high/);
+  assert.match(harness.text(), /窗口 未设置/);
+  assert.match(harness.text(), /输出上限 未设置/);
+  assert.match(harness.text(), /输入模态 text/);
+  assert.match(harness.text(), /推理档位 off \/ low \/ medium \/ high/);
   // ② 原始 JSON 在默认关闭的 details 中，摘要显示条数。
-  assert.deepEqual(harness.summaryTexts(), ["settingsOps（3 条）· 点击展开"]);
+  assert.deepEqual(harness.summaryTexts(), ["配置项（3 条）· 点击展开"]);
   assert.equal(harness.details()[0].props.open, undefined, "details default closed");
   assert.match(harness.projectionText(), /"models"/);
   assert.equal((harness.projectionText().match(/"op": "set"/g) ?? []).length, 3);
@@ -678,7 +678,7 @@ test("待写入区块：写入失败保留，可再次点「写入」重试", as
   await harness.flush();
   harness.render();
   assert.equal(attempt, 1);
-  assert.match(harness.text(), /写入被宿主拒绝/);
+  assert.match(harness.text(), /写入被系统拒绝/);
   assert.match(harness.text(), /待写入 3 条模型/, "failure keeps the plan for retry");
 
   harness.click(harness.pendingWriteButton());
@@ -725,10 +725,10 @@ test("待写入区块展示模板里的实际字段值", async () => {
   harness.toggleRow("jxf/dsv4.1-pro");
   harness.click(harness.confirmButton());
 
-  assert.match(harness.text(), /contextWindow 131072/);
-  assert.match(harness.text(), /maxTokens 8192/);
-  assert.match(harness.text(), /input text \/ image/);
-  assert.match(harness.text(), /reasoningEfforts off \/ high/);
+  assert.match(harness.text(), /窗口 131072/);
+  assert.match(harness.text(), /输出上限 8192/);
+  assert.match(harness.text(), /输入模态 text \/ image/);
+  assert.match(harness.text(), /推理档位 off \/ high/);
 });
 
 test("仅大小写不同的条目默认不勾；勾上后批量写入跳过并计数", async () => {
@@ -768,8 +768,8 @@ test("目录路由：批量写入先显示 catalog-replacement 告警，确认�
   const harness = await fetchedHarness({ providers: { "newapi-chat": route({ models: undefined }) } });
   harness.toggleRow("jxf/dsv4.1-flash");
   harness.toggleRow("jxf/dsv4.1-pro");
-  assert.match(harness.dialogText(), /catalog-replacement/);
-  assert.match(harness.dialogText(), /目录路由/);
+  assert.match(harness.dialogText(), /整体替换/);
+  assert.match(harness.dialogText(), /模型来自内置目录/);
   assert.match(harness.dialogText(), /整体替换/);
   assert.equal(harness.confirmButton().props.disabled, true, "unacknowledged replacement blocks confirm");
 
@@ -797,7 +797,7 @@ test("modelOverrides 路由：确定按钮禁用并说明原因", async () => {
   };
   const harness = await fetchedHarness({ providers });
   harness.toggleRow("jxf/dsv4.1-flash");
-  assert.match(harness.dialogText(), /modelOverrides/);
+  assert.match(harness.dialogText(), /模型覆盖设置/);
   assert.equal(harness.confirmButton().props.disabled, true);
 });
 

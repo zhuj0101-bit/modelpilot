@@ -40,7 +40,7 @@ test("路由选择器旁出现「+ 新建路由」；打开弹窗先显示目录
   assert.equal(result.initial.route, "preview-chat");
   assert.equal(result.loading.text, true);
   assert.ok(result.dialog.open, "弹窗已打开");
-  assert.ok(result.loading.dialogText.includes("正在读取宿主目录…"), result.loading.dialogText);
+  assert.ok(result.loading.dialogText.includes("正在读取目录…"), result.loading.dialogText);
 });
 
 test("目录列表：只列 llm-pi-ai 的可声明提供商，已配置项禁用并标注「已配置」", async (t) => {

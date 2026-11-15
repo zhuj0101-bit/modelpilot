@@ -111,7 +111,7 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     assert.match(result.unknown.text, /无法确认是否存在存储的密钥，因此只会删除配置/);
-    assert.match(result.unknown.text, /密钥 GAMMA_RELAY_API_KEY 可能仍保留在宿主的凭据存储中/);
+    assert.match(result.unknown.text, /密钥 GAMMA_RELAY_API_KEY 可能仍保留在凭据存储中/);
     assert.equal(result.unknown.confirmLabel, "删除路由");
     assert.equal(result.unknown.confirmDisabled, false);
     assertNoUnsetButMutate(result.unknownAfter.events, "读不到密钥状态的路由");
