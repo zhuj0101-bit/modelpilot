@@ -43,7 +43,20 @@ import {
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
 import { describeModelRowSource, diffRow, formFromModel } from "../core/model-edit.js";
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
-import { planBulkDelete, planBulkFields, sameIdSequence, summarizeBulkSelection } from "../core/model-bulk.js";
+import {
+  bulkFieldsNotice,
+  planBulkDelete,
+  planBulkFields,
+  sameIdSequence,
+  summarizeBulkSelection,
+} from "../core/model-bulk.js";
+import {
+  TOAST_FADE_MS,
+  nextToastOnDismiss,
+  restoreToastOnFocus,
+  toastAria,
+  toastDismissDelay,
+} from "../core/toast.js";
 import {
   DENSITY_COMPACT,
   DENSITY_DETAILED,
@@ -756,6 +769,12 @@ const s = {
     background: "var(--dsw-alias-state-success-secondary, rgba(80,170,110,0.12))",
     border: "1px solid var(--dsw-alias-state-success-primary, rgba(80,170,110,0.34))",
   },
+  // 常驻 live region 的空闲态：视觉隐藏但仍留在无障碍树里（读屏要能感知
+  // 后续的文字变化）。不占版面、不改变布局。
+  toastIdle: {
+    position: "absolute", width: 1, height: 1, margin: -1, padding: 0, border: 0,
+    overflow: "hidden", clip: "rect(0 0 0 0)", clipPath: "inset(50%)", whiteSpace: "nowrap",
+  },
   btn: {
     padding: "7px 14px", fontSize: FONT.body, borderRadius: RADIUS.sm, cursor: "pointer",
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.36))",
@@ -1429,6 +1448,10 @@ function NewRouteDialog({
  * 窗口或输出为空 / 非法时不渲染，避免显示 0 或 NaN；两处（新增 / 编辑）
  * 复用同一个 estimateContextBudget。具体数字放在输入框下面，底部还有一段
  * 抽象说明。
+ *
+ * 小窗口装不下 64K 缓冲时（工单 #35）不显示「可用上下文 0」这类数字，而是
+ * 用一句话说明任何输出都会立刻触发压缩；窗口连零损失边界都达不到时，
+ * 也不再显示「建议 ≤ … 可零损失」这种做不到的建议。
  */
 function BudgetHint({ contextWindow, maxTokens }) {
   const windowValue = tokenInputOf(contextWindow);
@@ -1437,11 +1460,22 @@ function BudgetHint({ contextWindow, maxTokens }) {
   const estimate = estimateContextBudget(windowValue, outputValue);
   if (estimate === null) return null;
 
+  const explanation = <div style={s.fieldHint}>按默认压缩策略估算；实际以运行时为准。</div>;
+
+  if (estimate.exhausted) {
+    return (
+      <div style={s.budgetWarn} role="status">
+        ⚠ 这个上下文窗口小于 64K 缓冲，任何输出都会立刻触发压缩。建议提高 contextWindow。
+        {explanation}
+      </div>
+    );
+  }
+
   if (estimate.ok) {
     return (
       <div style={s.budget} role="status">
         可用上下文 {formatTokenNumber(estimate.threshold)}（零损失 ✓）
-        <div style={s.fieldHint}>按默认压缩策略估算；实际以运行时为准。</div>
+        {explanation}
       </div>
     );
   }
@@ -1451,10 +1485,12 @@ function BudgetHint({ contextWindow, maxTokens }) {
   return (
     <div style={severe ? s.budgetWarn : s.budget} role="status">
       {severe ? "⚠ " : ""}可用上下文 {formatTokenNumber(estimate.threshold)}（比最优少 {percent}%）
-      {severe && estimate.freeBoundary > 0 ? (
+      {estimate.freeBoundary > 0 ? (
         <div style={s.budgetSuggestion}>建议 ≤ {formatTokenNumber(estimate.freeBoundary)} 可零损失</div>
-      ) : null}
-      <div style={s.fieldHint}>按默认压缩策略估算；实际以运行时为准。</div>
+      ) : (
+        <div style={s.budgetSuggestion}>这个上下文窗口即使不设输出上限也无法做到零损失；建议提高 contextWindow。</div>
+      )}
+      {explanation}
     </div>
   );
 }
@@ -2753,6 +2789,23 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const [ackReplace, setAckReplace] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [toast, setToast] = React.useState(null);
+  // 工单 #35：提示是一个常驻的 live region（读屏能播报），成功提示 6 秒后
+  // 淡出移除，报错保留；焦点在提示上时暂停计时，卸载时清掉定时器。
+  const [toastFocused, setToastFocused] = React.useState(false);
+  const toastAriaProps = toastAria(toast?.tone);
+  React.useEffect(() => {
+    if (toastFocused) {
+      const restored = restoreToastOnFocus(toast);
+      if (restored !== toast) setToast(restored);
+      return undefined;
+    }
+    const delay = toastDismissDelay(toast, toastFocused);
+    if (delay === null) return undefined;
+    const timer = window.setTimeout(() => {
+      setToast((current) => nextToastOnDismiss(current));
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [toast, toastFocused]);
 
   // 已拉取的远端候选；同时供 datalist 补全和选择器弹窗使用，不自动填充模型 ID。
   const [remoteModels, setRemoteModels] = React.useState([]);
@@ -4004,7 +4057,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     if (bulkForm === null || busy || !writable || modelSelected.size === 0) return;
     const latestModels = latestModelsForBulk();
     if (latestModels === null) return;
-    const plan = planBulkFields(latestModels, modelSelected, bulkPatchFromForm(bulkForm), routeId);
+    const selection = modelSelected;
+    const plan = planBulkFields(latestModels, selection, bulkPatchFromForm(bulkForm), routeId);
     if (plan.status !== "ok") {
       setBulkError(plan.message ?? "批量修改未执行");
       return;
@@ -4015,7 +4069,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     try {
       const ok = await scope.mutate(plan.ops);
       if (ok) {
-        setToast({ tone: "good", text: `已批量更新 ${plan.changed.length} 条模型` });
+        // 工单 #35：N 是真实改动条数；本来就是目标值的行单独说明。
+        setToast({ tone: "good", text: bulkFieldsNotice(plan.changed.length, selection.size) });
         clearModelSelection();
         closeEditor();
         setDeleteTarget(null);
@@ -5520,7 +5575,34 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       </div>
       </section>
 
-      {toast ? <div style={toast.tone === "good" ? s.ok : s.err}>{toast.text}</div> : null}
+      {/*
+        工单 #35：提示容器常驻 DOM（role=status / aria-live=polite，报错用
+        role=alert），这样读屏会在文字变化时播报，而不是遇到「新插入的节点」。
+        没有提示时视觉隐藏但不移除；成功提示先淡出（opacity transition）再清空，
+        报错不自动消失；焦点在容器内时暂停计时。
+      */}
+      <div
+        data-modelpilot-toast={toast === null ? "" : toast.tone}
+        role={toastAriaProps.role}
+        aria-live={toastAriaProps.live}
+        aria-atomic="true"
+        tabIndex={toast === null ? -1 : 0}
+        onFocus={() => setToastFocused(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setToastFocused(false);
+        }}
+        style={
+          toast === null
+            ? s.toastIdle
+            : {
+                ...(toast.tone === "good" ? s.ok : s.err),
+                opacity: toast.hiding === true ? 0 : 1,
+                transition: `opacity ${TOAST_FADE_MS}ms ease`,
+              }
+        }
+      >
+        {toast === null ? "" : toast.text}
+      </div>
 
       {pickerOpen ? (
         <ModelPicker

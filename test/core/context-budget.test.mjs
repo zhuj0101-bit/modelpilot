@@ -65,3 +65,51 @@ test("无效窗口返回 null；无效输出按 0 处理", () => {
     assert.equal(estimate.ok, true);
   }
 });
+
+// ── 工单 #35：小窗口不返回负数；loss 上限 100%；预算吃光时显式标记 ──────────
+
+test("8K 窗口 / 2K 输出：预算被 64K 缓冲完全吃光，threshold 截到 0", () => {
+  const estimate = estimateContextBudget(8192, 2048);
+  assert.equal(estimate.threshold, 0, "可用额度就是 0，不是负数");
+  assert.equal(estimate.exhausted, true);
+  assert.equal(estimate.loss, 1, "最多「比最优少 100%」");
+  assert.equal(estimate.ok, false);
+});
+
+test("常见窗口下 threshold 永远不为负，loss 上限为 1", () => {
+  const windows = [1, 8192, 32768, 65536, 131072, 200000, 262144, 1000000];
+  const outputs = [0, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 384000, 1000000];
+  for (const window of windows) {
+    for (const maxTokens of outputs) {
+      const estimate = estimateContextBudget(window, maxTokens);
+      assert.ok(estimate.threshold >= 0, `window=${window} maxTokens=${maxTokens} threshold=${estimate.threshold}`);
+      assert.ok(estimate.loss >= 0 && estimate.loss <= 1, `window=${window} maxTokens=${maxTokens} loss=${estimate.loss}`);
+    }
+  }
+});
+
+test("exhausted 条件：预算装不下 64K 缓冲", () => {
+  assert.equal(estimateContextBudget(8192, 2048).exhausted, true);
+  assert.equal(estimateContextBudget(32768, 8192).exhausted, true);
+  assert.equal(estimateContextBudget(131072, 32768).exhausted, false, "131K 窗口扣掉 32K 输出仍装得下缓冲");
+  assert.equal(estimateContextBudget(1000000, 32768).exhausted, false);
+});
+
+test("已有大窗口口径不变：1M / 32K 仍是零损失", () => {
+  const estimate = estimateContextBudget(1000000, 32768);
+  assert.equal(estimate.ceiling, 800000);
+  assert.equal(estimate.threshold, 800000);
+  assert.equal(estimate.loss, 0);
+  assert.equal(estimate.freeBoundary, 134464);
+  assert.equal(estimate.exhausted, false);
+  assert.equal(estimate.ok, true);
+});
+
+test("131K 窗口 / 32K 输出：freeBoundary 为负，说明做不到零损失", () => {
+  const estimate = estimateContextBudget(131072, 32768);
+  assert.equal(estimate.threshold, 32768);
+  assert.ok(estimate.loss > 0 && estimate.loss <= 1);
+  assert.ok(estimate.freeBoundary <= 0);
+  assert.equal(estimate.exhausted, false);
+  assert.equal(estimate.ok, false);
+});

@@ -194,31 +194,45 @@ export function planBulkFields(models, selection, patch, routeId) {
     }
   }
 
-  let changed = false;
   // 工单 #34：选中判断走 Set.has；indexes 最坏等于 list.length，线性扫描会
   // 变成 O(n×m)，而 bulkLivePlan 每次渲染都会重算。输出顺序仍由 indexes
   // （已去重升序）决定，未选中项保持同一引用。
   const selected = new Set(indexes);
+  // changed 只收真正有差异的行（工单 #35）：整批都没变化才叫 no-change，
+  // 但「已批量更新 N 条」的 N 必须是真实改动条数，不能把已经是目标值的行算进去。
+  const changed = [];
   const next = list.map((model, index) => {
     if (!selected.has(index)) return model;
     const row = { ...model };
     if (maxTokens !== undefined) row.maxTokens = maxTokens;
     if (input !== undefined) row.input = [...input];
     if (efforts !== undefined) row.reasoningEfforts = { ...efforts };
-    if (canonicalJson(row) !== canonicalJson(model)) changed = true;
+    if (canonicalJson(row) !== canonicalJson(model)) changed.push({ index, id: displayIdAt(list, index) });
     return row;
   });
 
-  if (!changed) {
+  if (changed.length === 0) {
     return { status: "no-change", ops: [], changed: [], message: "选中模型已经是这些值，没有需要写入的改动" };
   }
 
   return {
     status: "ok",
     ops: [modelOp(routeId, next)],
-    changed: indexes.map((index) => ({
-      index,
-      id: typeof list[index]?.id === "string" ? list[index].id : `第 ${index + 1} 个模型`,
-    })),
+    changed,
   };
+}
+
+/**
+ * 批量改字段成功后的提示口径（工单 #35）：N 是真实改动条数，另说明选中里
+ * 有多少条本来就是目标值，避免用户把「选中了 N 条」当成「改了 N 条」。
+ *
+ * @param {number} changedCount 真正发生变化的行数
+ * @param {number} selectedCount 本次选中的行数
+ */
+export function bulkFieldsNotice(changedCount, selectedCount) {
+  const changed = Number.isInteger(changedCount) && changedCount > 0 ? changedCount : 0;
+  const total = Number.isInteger(selectedCount) && selectedCount > changed ? selectedCount : changed;
+  const skipped = total - changed;
+  if (skipped <= 0) return `已批量更新 ${changed} 条模型`;
+  return `已批量更新 ${changed} 条模型（${total} 条中 ${skipped} 条已是目标值）`;
 }

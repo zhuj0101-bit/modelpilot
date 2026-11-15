@@ -15,17 +15,24 @@ export const COMPACTION_DEFAULTS = Object.freeze({
 /**
  * 按 DSH 默认压缩策略估算可用上下文。
  *
+ * 小窗口装不下 headroom 时预算会被完全吃光：`threshold` 截到 0（可用额度就是
+ * 没有），而不是返回一个负的「可用上下文」；`loss` 的上限是 1（100%），
+ * 不输出超过 100% 的「比最优少」。这种状态用 `exhausted` 显式标出，界面据此
+ * 换成说明文案，而不是显示「可用上下文 0（比最优少 100%）」这种读不懂的数字。
+ *
  * @param {number} contextWindow 上下文窗口；非有限数或 <= 0 时返回 null。
  * @param {number} maxTokens 输出上限；无效时按 0 处理。
- * @returns {{ceiling:number, threshold:number, loss:number, freeBoundary:number, ok:boolean}|null}
+ * @returns {{ceiling:number, threshold:number, loss:number, freeBoundary:number, exhausted:boolean, ok:boolean}|null}
  */
 export function estimateContextBudget(contextWindow, maxTokens) {
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) return null;
   const ceiling = Math.floor(contextWindow * COMPACTION_DEFAULTS.thresholdRatio);
   const used = Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 0;
   const budget = contextWindow - used;
-  const threshold = Math.min(ceiling, budget - COMPACTION_DEFAULTS.headroomTokens);
-  const loss = ceiling > 0 ? Math.max(0, (ceiling - threshold) / ceiling) : 0;
+  const rawThreshold = Math.min(ceiling, budget - COMPACTION_DEFAULTS.headroomTokens);
+  const threshold = Math.max(0, rawThreshold);
+  const loss = ceiling > 0 ? Math.min(1, Math.max(0, (ceiling - threshold) / ceiling)) : 0;
   const freeBoundary = contextWindow - COMPACTION_DEFAULTS.headroomTokens - ceiling;
-  return { ceiling, threshold, loss, freeBoundary, ok: loss === 0 };
+  const exhausted = budget - COMPACTION_DEFAULTS.headroomTokens <= 0;
+  return { ceiling, threshold, loss, freeBoundary, exhausted, ok: loss === 0 };
 }
