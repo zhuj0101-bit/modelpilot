@@ -36,6 +36,7 @@ import {
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
 import { describeModelRow, diffRow, formFromModel } from "../core/model-edit.js";
 import { classifyModels, filterModels, planBatchSelection } from "../core/model-selection.js";
+import { planBulkDelete, planBulkFields, sameIdSequence } from "../core/model-bulk.js";
 import {
   CACHE_RETENTION_CHOICES,
   ROUTE_DEFAULT_FIELDS,
@@ -399,6 +400,69 @@ const s = {
     fontSize: FONT.caption, lineHeight: 1.6,
     color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
   },
+  // 工单 #25：标题行右侧的搜索框与操作按钮同一行，窄容器下按钮先换行。
+  modelHeaderActions: {
+    display: "flex", alignItems: "center", gap: GAP.sm,
+    flexWrap: "wrap", justifyContent: "flex-end",
+  },
+  modelSearch: { ...INPUT, flex: "0 1 220px", width: 220 },
+  modelFilterFooter: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: GAP.sm, flexWrap: "wrap", paddingTop: GAP.xs,
+  },
+  modelFilterCount: {
+    fontSize: FONT.hint,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  // 每行左侧的复选框：与拖动手柄并存，自身不撑高行（行高由文字行决定）。
+  modelCheckbox: {
+    margin: 0, flex: "0 0 auto", alignSelf: "center",
+    colorScheme: "inherit", cursor: "pointer",
+  },
+  // 批量操作条：全选 / 已选计数 / 三个按钮同一行。
+  bulkBar: {
+    display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap",
+    padding: "6px 8px", borderRadius: RADIUS.sm,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    background: "var(--dsw-alias-bg-base, rgba(128,128,128,0.04))",
+  },
+  bulkLabel: {
+    display: "inline-flex", alignItems: "center", gap: GAP.xs,
+    fontSize: FONT.caption, cursor: "pointer", userSelect: "none",
+    color: "var(--dsw-alias-label-primary, inherit)",
+  },
+  bulkCount: {
+    fontSize: FONT.caption,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  bulkActions: { display: "flex", alignItems: "center", gap: GAP.sm, marginLeft: "auto", flexWrap: "wrap" },
+  bulkEditor: {
+    display: "flex", flexDirection: "column", gap: GAP.sm,
+    padding: "9px 11px", borderRadius: RADIUS.sm,
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    background: "var(--dsw-alias-bg-base, rgba(128,128,128,0.04))",
+  },
+  bulkFieldRow: {
+    display: "flex", alignItems: "center", gap: GAP.sm,
+    flexWrap: "wrap", fontSize: FONT.caption,
+  },
+  bulkFieldLabel: {
+    display: "inline-flex", alignItems: "center", gap: GAP.xs,
+    fontSize: FONT.caption, cursor: "pointer", userSelect: "none", minWidth: 128,
+    color: "var(--dsw-alias-label-primary, inherit)",
+  },
+  bulkTokenInput: { ...INPUT, flex: "0 0 auto", width: 128 },
+  bulkLevels: { display: "flex", flexWrap: "wrap", gap: GAP.xs },
+  bulkHint: {
+    fontSize: FONT.hint, lineHeight: 1.5,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  bulkError: { fontSize: FONT.hint, lineHeight: 1.5, color: "var(--dsw-alias-state-error-primary, #e05252)" },
+  bulkFooter: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: GAP.sm, flexWrap: "wrap",
+  },
+  btnDisabled: { opacity: 0.55, cursor: "not-allowed" },
   // 路由设置卡片：嵌在「当前路由」区块内，只留一条分隔线，不再叠一层卡片。
   routeCard: {
     display: "flex", flexDirection: "column", gap: GAP.xs,
@@ -2573,6 +2637,13 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const [dragState, setDragState] = React.useState(null);
   const dragCancelled = React.useRef(false);
   const pendingHandleFocus = React.useRef(null);
+  // 主模型列表的搜索与批量操作（工单 #25）。查询只影响显示；勾选记的是
+  // models 数组里的绝对下标 —— 筛选状态下拖动会被禁用，避免下标错位。
+  const [modelQuery, setModelQuery] = React.useState("");
+  const [modelSelected, setModelSelected] = React.useState(() => new Set());
+  // 批量改字段的表单；null = 收起（初始 / 切换路由 / 写入成功后都回到收起）。
+  const [bulkForm, setBulkForm] = React.useState(null);
+  const [bulkError, setBulkError] = React.useState("");
 
   // 路由设置卡片的状态放在 Workbench：卡片组件保持无 hook，测试用的轻量
   // 渲染器（按组件树展开函数调用而不隔离 hook 槽）才能安全地展开它。
@@ -2859,6 +2930,27 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   // 批量写入 models 会整体替换宿主目录，必须先确认。
   const catalogWarning = route !== undefined && route.models === undefined;
 
+  // 搜索只筛显示：visibleModelIndexes 里始终是 models 数组的绝对下标，
+  // 勾选、批量操作与（清空搜索后的）拖动都按它定位。匹配逻辑复用
+  // filterModels，避免在界面里再写一套大小写规则；id 缺失的行只在无搜索词时显示。
+  const visibleModelIndexes = routeModels
+    .map((_, index) => index)
+    .filter((index) => {
+      const id = routeModels[index]?.id;
+      return filterModels([typeof id === "string" ? id : ""], modelQuery).length === 1;
+    });
+  const allVisibleSelected =
+    visibleModelIndexes.length > 0 && visibleModelIndexes.every((index) => modelSelected.has(index));
+  const bulkPatch = bulkForm === null ? null : bulkPatchFromForm(bulkForm);
+  const bulkLivePlan = bulkPatch === null ? null : planBulkFields(routeModels, modelSelected, bulkPatch, routeId);
+  const bulkDeleteBlocked = routeModels.length > 0 && modelSelected.size >= routeModels.length;
+  const bulkCanApply =
+    bulkForm !== null &&
+    writable &&
+    !busy &&
+    modelSelected.size > 0 &&
+    bulkLivePlan?.status === "ok";
+
   // 切换路由后清掉上一条路由的候选、选择器与批量预览；未完成的请求由 generation 作废。
   React.useEffect(() => {
     fetchGeneration.current += 1;
@@ -2878,7 +2970,31 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setDragState(null);
     dragCancelled.current = false;
     pendingHandleFocus.current = null;
+    setModelQuery("");
+    setModelSelected(new Set());
+    setBulkForm(null);
+    setBulkError("");
   }, [routeId]);
+
+  // 模型增删改（含别处改配置）后下标全变：清空选择与批量表单，避免继续
+  // 对着旧下标写入。搜索词不动 —— 用户还在看同一批筛选结果。
+  const routeModelIdKey = routeModels
+    .map((model) => (typeof model?.id === "string" ? model.id : `#${model?.id}`))
+    .join("\u0000");
+  React.useEffect(() => {
+    setModelSelected((current) => (current.size === 0 ? current : new Set()));
+    setBulkForm(null);
+    setBulkError("");
+  }, [routeModelIdKey]);
+
+  // 选择被清空时一并收起批量表单：没有选中项就没有可应用的目标，
+  // 重新勾选时从默认值开始，不残留上一轮填过的值。
+  React.useEffect(() => {
+    if (modelSelected.size === 0 && bulkForm !== null) {
+      setBulkForm(null);
+      setBulkError("");
+    }
+  }, [modelSelected, bulkForm]);
 
   // 键盘移动后行的 key 会变，手柄被重建、焦点丢失；写盘成功后把焦点还给
   // 新位置的手柄，保证可以连续按方向键。
@@ -2980,8 +3096,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     (editProjection?.unsupportedControls?.length ?? 0) === 0 &&
     (editProjection?.settingsOps?.length ?? 0) > 0;
 
-  // 至少两条才谈得上排序；只读 / 写入进行中也禁用，避免并发写同一数组。
-  const canReorderModels = writable && !busy && routeModels.length > 1;
+  // 至少两条才谈得上排序；只读 / 写入进行中 / 筛选状态下都禁用 ——
+  // 拖动按绝对下标写盘，筛选后可见行与下标对不上（工单 #25 判据 12）。
+  const canReorderModels =
+    writable && !busy && routeModels.length > 1 && modelQuery.trim() === "";
 
   // ── 新建路由：目录行、表单校验与唯一一条 set op ──────────────────────
   const createRows = React.useMemo(
@@ -3283,6 +3401,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         // 展开会编辑到另一条模型，因此成功后收起，让用户按新位置重开。
         closeEditor();
         setDeleteTarget(null);
+        setModelSelected(new Set());
+        setBulkForm(null);
         if (focusHandle) pendingHandleFocus.current = to;
         setToast({ tone: "good", text: `已把 ${movedId} 移到第 ${to + 1} 位` });
       } else {
@@ -3292,6 +3412,156 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     } catch (error) {
       if (focusHandle) pendingHandleFocus.current = from;
       setToast({ tone: "bad", text: `排序失败：${error?.message ?? error}；列表保持原顺序` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── 主列表搜索 / 批量操作（工单 #25）────────────────────────────────────
+
+  /** 批量改字段表单 → planBulkFields 的 patch（只有勾选的字段出现）。 */
+  function bulkPatchFromForm(form) {
+    const patch = {};
+    if (form === null) return patch;
+    if (form.maxTokensOn) patch.maxTokens = form.maxTokens;
+    if (form.inputOn) {
+      const input = [];
+      if (form.inputText) input.push("text");
+      if (form.inputImage) input.push("image");
+      patch.input = input;
+    }
+    if (form.levelsOn) patch.reasoningLevels = form.levels;
+    return patch;
+  }
+
+  /** 勾选 / 取消某一行。勾选的是绝对下标，与搜索词无关。 */
+  function toggleModelSelected(index) {
+    if (busy || !writable) return;
+    setModelSelected((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
+
+  /** 全选只作用于当前筛选结果；取消全选也只移除这些行。 */
+  function selectAllVisible(checked) {
+    if (busy || !writable) return;
+    setModelSelected((current) => {
+      const next = new Set(current);
+      for (const index of visibleModelIndexes) {
+        if (checked) next.add(index);
+        else next.delete(index);
+      }
+      return next;
+    });
+  }
+
+  function clearModelSelection() {
+    setModelSelected(new Set());
+    setBulkForm(null);
+    setBulkError("");
+  }
+
+  function openBulkFields() {
+    if (busy || !writable || modelSelected.size === 0) return;
+    setBulkError("");
+    setBulkForm({
+      maxTokensOn: false,
+      maxTokens: "",
+      inputOn: false,
+      inputText: true,
+      inputImage: false,
+      levelsOn: false,
+      levels: defaultReasoningLevels(),
+    });
+  }
+
+  function updateBulkForm(patch) {
+    setBulkForm((current) => (current === null ? current : { ...current, ...patch }));
+    setBulkError("");
+  }
+
+  function toggleBulkLevel(level) {
+    setBulkForm((current) => (current === null
+      ? current
+      : { ...current, levels: toggleReasoningLevel(current.levels, level) }));
+    setBulkError("");
+  }
+
+  /**
+   * 写前按最新快照复核 id 序列（不是长度）：长度相同但顺序变了，
+   * 同一下标已经指向另一条模型。列表变了就清空选择并提示，绝不写入。
+   */
+  function latestModelsForBulk() {
+    const latestProviders = providersOf(scope.getSnapshot());
+    const latestRoute = routeId === "" ? undefined : latestProviders[routeId];
+    const latestModels = Array.isArray(latestRoute?.models) ? latestRoute.models : [];
+    const currentIds = routeModels.map((model) => model?.id);
+    const latestIds = latestModels.map((model) => model?.id);
+    if (!sameIdSequence(currentIds, latestIds)) {
+      clearModelSelection();
+      setToast({ tone: "bad", text: "模型列表已变化，批量操作未执行；已重新读取当前配置，请核对后重试" });
+      return null;
+    }
+    return latestModels;
+  }
+
+  /** 批量删除：一次 mutate、一条 set 重写整数组，要么全成要么全不成。 */
+  async function bulkDeleteSelected() {
+    if (busy || !writable || modelSelected.size === 0) return;
+    const latestModels = latestModelsForBulk();
+    if (latestModels === null) return;
+    const plan = planBulkDelete(latestModels, modelSelected, routeId);
+    if (plan.status !== "ok") {
+      setToast({ tone: "bad", text: plan.message });
+      return;
+    }
+    setBusy(true);
+    setToast(null);
+    try {
+      const ok = await scope.mutate(plan.ops);
+      if (ok) {
+        setToast({ tone: "good", text: `已删除 ${plan.removed.length} 条模型` });
+        clearModelSelection();
+        closeEditor();
+        setDeleteTarget(null);
+      } else {
+        setToast({ tone: "bad", text: "批量删除被宿主拒绝（修订号冲突或校验失败），批量操作未执行；已重新读取当前配置，请核对后重试" });
+      }
+    } catch (error) {
+      setToast({ tone: "bad", text: `批量删除异常：${error?.message ?? error}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 批量改字段：同样一次 mutate、一条 set；每个模型的其他字段原样保留。 */
+  async function applyBulkFields() {
+    if (bulkForm === null || busy || !writable || modelSelected.size === 0) return;
+    const latestModels = latestModelsForBulk();
+    if (latestModels === null) return;
+    const plan = planBulkFields(latestModels, modelSelected, bulkPatchFromForm(bulkForm), routeId);
+    if (plan.status !== "ok") {
+      setBulkError(plan.message ?? "批量修改未执行");
+      return;
+    }
+    setBusy(true);
+    setToast(null);
+    setBulkError("");
+    try {
+      const ok = await scope.mutate(plan.ops);
+      if (ok) {
+        setToast({ tone: "good", text: `已批量更新 ${plan.changed.length} 条模型` });
+        clearModelSelection();
+        closeEditor();
+        setDeleteTarget(null);
+      } else {
+        setToast({ tone: "bad", text: "批量修改被宿主拒绝（修订号冲突或校验失败），批量操作未执行；已重新读取当前配置，请核对后重试" });
+      }
+    } catch (error) {
+      setToast({ tone: "bad", text: `批量修改异常：${error?.message ?? error}` });
     } finally {
       setBusy(false);
     }
@@ -3352,6 +3622,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       if (ok) {
         setToast({ tone: "good", text: `已更新 ${routeId} / ${editModelId}` });
         closeEditor();
+        setModelSelected(new Set());
+        setBulkForm(null);
       } else {
         setToast({ tone: "bad", text: "更新被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
       }
@@ -3399,6 +3671,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       if (ok) {
         setToast({ tone: "good", text: `已删除 ${routeId} / ${deleteTarget.id}` });
         setDeleteTarget(null);
+        setModelSelected(new Set());
+        setBulkForm(null);
         if (editingIndex === deleteTarget.index) closeEditor();
       } else {
         setToast({ tone: "bad", text: "删除被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
@@ -3591,6 +3865,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         setReasoningApiValues({});
         setAckReplace(false);
         setBatchProjection(null);
+        setModelSelected(new Set());
+        setBulkForm(null);
       }
     } catch (error) {
       setToast({ tone: "bad", text: `写入异常：${error?.message ?? error}` });
@@ -3987,10 +4263,202 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       <section style={s.modelsPanel} aria-label="该路由的模型列表">
         <div style={s.pendingHeader}>
           <span style={s.sectionTitle}>该路由的模型（{routeModels.length} 条）</span>
-          <button type="button" style={s.btnSmall} onClick={focusCreateForm} aria-label="新增模型">
-            + 新增
-          </button>
+          <div style={s.modelHeaderActions}>
+            <input
+              id="modelpilot-model-search"
+              type="text"
+              style={s.modelSearch}
+              value={modelQuery}
+              onChange={(event) => setModelQuery(event.target.value)}
+              placeholder="搜索模型 ID…"
+              aria-label="搜索模型列表"
+            />
+            <button type="button" style={s.btnSmall} onClick={focusCreateForm} aria-label="新增模型">
+              + 新增
+            </button>
+          </div>
         </div>
+        {routeModels.length > 0 ? (
+          <div style={s.bulkBar} role="group" aria-label="模型批量操作">
+            <label style={s.bulkLabel}>
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                disabled={busy || !writable || visibleModelIndexes.length === 0}
+                onChange={(event) => selectAllVisible(event.target.checked)}
+                aria-label="全选模型"
+              />
+              全选
+            </label>
+            <span style={s.bulkCount}>已选 {modelSelected.size} 条</span>
+            {bulkDeleteBlocked ? <span style={s.bulkCount}>不能删除全部模型；至少保留一条模型</span> : null}
+            <div style={s.bulkActions}>
+              <button
+                type="button"
+                style={busy || !writable || modelSelected.size === 0
+                  ? { ...s.btnSmall, ...s.btnDisabled }
+                  : s.btnSmall}
+                disabled={busy || !writable || modelSelected.size === 0}
+                onClick={openBulkFields}
+                aria-label="批量改字段"
+              >
+                批量改字段
+              </button>
+              <button
+                type="button"
+                style={busy || !writable || modelSelected.size === 0 || bulkDeleteBlocked
+                  ? { ...s.btnSmall, ...s.btnDisabled }
+                  : s.btnSmall}
+                disabled={busy || !writable || modelSelected.size === 0 || bulkDeleteBlocked}
+                onClick={bulkDeleteSelected}
+                aria-label="批量删除"
+                title={bulkDeleteBlocked ? "不能删除全部模型；至少保留一条模型" : "删除选中的模型"}
+              >
+                批量删除
+              </button>
+              <button
+                type="button"
+                style={busy || modelSelected.size === 0 ? { ...s.btnSmall, ...s.btnDisabled } : s.btnSmall}
+                disabled={busy || modelSelected.size === 0}
+                onClick={clearModelSelection}
+                aria-label="取消选择"
+              >
+                取消选择
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {bulkForm !== null && modelSelected.size > 0 ? (
+          <div style={s.bulkEditor} role="group" aria-label="批量修改字段">
+            <div style={s.bulkHint}>
+              给选中的 {modelSelected.size} 条模型设置同一组字段值；未勾选的字段保持不变。
+            </div>
+            <div style={s.bulkFieldRow}>
+              <label style={s.bulkFieldLabel}>
+                <input
+                  type="checkbox"
+                  checked={bulkForm.maxTokensOn}
+                  disabled={busy || !writable}
+                  onChange={(event) => updateBulkForm({ maxTokensOn: event.target.checked })}
+                  aria-label="批量设置输出上限"
+                />
+                输出上限 (maxTokens)
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                style={s.bulkTokenInput}
+                value={bulkForm.maxTokens}
+                disabled={busy || !bulkForm.maxTokensOn}
+                onChange={(event) => updateBulkForm({ maxTokens: event.target.value })}
+                placeholder="如 8192"
+                aria-label="批量输出上限"
+              />
+            </div>
+            <div style={s.bulkFieldRow}>
+              <label style={s.bulkFieldLabel}>
+                <input
+                  type="checkbox"
+                  checked={bulkForm.inputOn}
+                  disabled={busy || !writable}
+                  onChange={(event) => updateBulkForm({ inputOn: event.target.checked })}
+                  aria-label="批量设置输入模态"
+                />
+                输入模态 (input)
+              </label>
+              <span style={s.bulkLevels}>
+                {MODALITIES.map((modality) => {
+                  const key = modality === "text" ? "inputText" : "inputImage";
+                  const on = bulkForm[key] === true;
+                  return (
+                    <button
+                      key={modality}
+                      type="button"
+                      style={!bulkForm.inputOn
+                        ? { ...s.chip, ...s.btnDisabled }
+                        : on
+                          ? { ...s.chip, ...s.chipOn }
+                          : s.chip}
+                      disabled={busy || !bulkForm.inputOn}
+                      aria-label={`批量输入模态 ${modality}`}
+                      aria-pressed={on}
+                      onClick={() => updateBulkForm({ [key]: !on })}
+                    >
+                      {modality}
+                    </button>
+                  );
+                })}
+              </span>
+            </div>
+            <div style={s.bulkFieldRow}>
+              <label style={s.bulkFieldLabel}>
+                <input
+                  type="checkbox"
+                  checked={bulkForm.levelsOn}
+                  disabled={busy || !writable}
+                  onChange={(event) => updateBulkForm({ levelsOn: event.target.checked })}
+                  aria-label="批量设置推理档位"
+                />
+                推理档位 (reasoningEfforts)
+              </label>
+              <span style={s.bulkLevels}>
+                {PI_AI_LEVELS.map((level) => {
+                  const on = bulkForm.levels.includes(level);
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      style={!bulkForm.levelsOn
+                        ? { ...s.chip, ...s.btnDisabled }
+                        : on
+                          ? { ...s.chip, ...s.chipOn }
+                          : s.chip}
+                      disabled={busy || !bulkForm.levelsOn}
+                      aria-label={`批量推理档位 ${level}`}
+                      aria-pressed={on}
+                      onClick={() => toggleBulkLevel(level)}
+                    >
+                      {level}
+                    </button>
+                  );
+                })}
+              </span>
+            </div>
+            {bulkError !== "" ? (
+              <div style={s.bulkError}>{bulkError}</div>
+            ) : bulkLivePlan !== null && bulkLivePlan.status !== "ok" ? (
+              <div style={s.bulkHint}>{bulkLivePlan.message}</div>
+            ) : null}
+            <div style={s.bulkFooter}>
+              <span style={s.bulkHint}>
+                将写入 {bulkLivePlan?.status === "ok" ? bulkLivePlan.changed.length : 0} 条模型；应用后清空选择
+              </span>
+              <span style={{ display: "flex", gap: GAP.sm }}>
+                <button
+                  type="button"
+                  style={bulkCanApply ? s.btnSmall : { ...s.btnSmall, ...s.btnDisabled }}
+                  disabled={!bulkCanApply}
+                  onClick={applyBulkFields}
+                  aria-label="应用批量修改"
+                >
+                  应用修改
+                </button>
+                <button
+                  type="button"
+                  style={s.btnSmall}
+                  disabled={busy}
+                  onClick={() => {
+                    setBulkForm(null);
+                    setBulkError("");
+                  }}
+                  aria-label="收起批量修改"
+                >
+                  取消
+                </button>
+              </span>
+            </div>
+          </div>
+        ) : null}
         {routeModels.length === 0 ? (
           <div style={s.modelEmpty}>
             <span>该路由没有模型。可在下方新增，或从端点拉取后批量添加。</span>
@@ -3998,14 +4466,22 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               + 新增
             </button>
           </div>
-        ) : routeModels.map((model, index) => {
+        ) : visibleModelIndexes.length === 0 ? (
+          <div style={s.modelEmpty} aria-label="没有匹配的模型">
+            <span>没有匹配的模型。换个关键词，或清空搜索查看全部。</span>
+            <button type="button" style={s.btnSmall} onClick={() => setModelQuery("")} aria-label="清空搜索（无匹配）">
+              清空搜索
+            </button>
+          </div>
+        ) : visibleModelIndexes.map((index, position) => {
+          const model = routeModels[index];
           const modelKey = typeof model?.id === "string" && model.id !== "" ? model.id : `#${index}`;
           const rowKey = `${modelKey}:${index}`;
           const hovered = hoveredRow === rowKey;
           const dragging = dragState !== null && dragState.from === index;
           const rowStyle = {
             ...s.modelRow,
-            ...(index === 0 ? s.modelRowFirst : null),
+            ...(position === 0 ? s.modelRowFirst : null),
             ...(hovered ? s.modelRowHover : null),
             ...(dragging ? s.modelRowDragging : null),
           };
@@ -4029,6 +4505,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                 />
               ) : null}
               <div style={s.modelRowHead}>
+                <input
+                  type="checkbox"
+                  style={s.modelCheckbox}
+                  checked={modelSelected.has(index)}
+                  disabled={busy || !writable}
+                  onChange={() => toggleModelSelected(index)}
+                  aria-label={`选择模型 ${modelKey}`}
+                />
                 <button
                   type="button"
                   id={`modelpilot-model-handle-${index}`}
@@ -4038,9 +4522,11 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                   aria-label={`拖动排序 第 ${index + 1} 位`}
                   title={canReorderModels
                     ? "拖动排序；聚焦后可用 ↑ / ↓ / Home / End 移动"
-                    : routeModels.length <= 1
-                      ? "只有一个模型，无法排序"
-                      : "当前不可排序（配置只读或正在写入）"}
+                    : modelQuery.trim() !== ""
+                      ? "筛选状态下不可排序；清空搜索后才能拖动"
+                      : routeModels.length <= 1
+                        ? "只有一个模型，无法排序"
+                        : "当前不可排序（配置只读或正在写入）"}
                   onDragStart={(event) => beginModelDrag(event, index)}
                   onDragEnd={endModelDrag}
                   onKeyDown={(event) => handleModelHandleKey(event, index)}
@@ -4088,6 +4574,16 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             </div>
           );
         })}
+        {modelQuery.trim() !== "" && routeModels.length > 0 ? (
+          <div style={s.modelFilterFooter}>
+            <span style={s.modelFilterCount}>
+              显示 {visibleModelIndexes.length} / {routeModels.length} 条
+            </span>
+            <button type="button" style={s.btnLink} onClick={() => setModelQuery("")} aria-label="清空搜索">
+              清空搜索
+            </button>
+          </div>
+        ) : null}
       </section>
 
       {fetchState === "failed" ? <div style={s.err}>拉取失败：{fetchError}</div> : null}
