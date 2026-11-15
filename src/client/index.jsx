@@ -178,10 +178,10 @@ function describePendingFields(row) {
     if (levels.length > 0) reasoning = levels.join(" / ");
   }
   return [
-    `contextWindow ${valueText(row?.contextWindow)}`,
-    `maxTokens ${valueText(row?.maxTokens)}`,
-    `input ${input}`,
-    `reasoningEfforts ${reasoning}`,
+    `窗口 ${valueText(row?.contextWindow)}`,
+    `输出上限 ${valueText(row?.maxTokens)}`,
+    `输入模态 ${input}`,
+    `推理档位 ${reasoning}`,
   ];
 }
 
@@ -268,6 +268,13 @@ const s = {
   hintLine: { minHeight: 16, height: 16, lineHeight: "16px", display: "flex", alignItems: "center", gap: GAP.sm },
   label: {
     fontSize: FONT.label, fontWeight: 500, letterSpacing: 0.2,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  // 工单 #30：字段说明不再常驻，改成标签后的 ⓘ（原生 title 悬停）。
+  // 字号沿用提示级，且小于标签字号，不撑高字段标签所在的行。
+  tip: {
+    marginLeft: GAP.xs, fontSize: FONT.hint, lineHeight: 1, fontWeight: 400,
+    verticalAlign: "middle", cursor: "help", userSelect: "none",
     color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
   },
   // 区块：标题 / 卡片 / 主操作行 / 次要操作行。三个区块共用同一套卡片语言。
@@ -792,13 +799,24 @@ const s = {
   createModelField: { flex: "1 1 100%" },
 };
 
+/** 字段标签后的说明入口：常驻文案只剩 ⓘ，完整说明放进原生 title 悬停。 */
+function Tip({ text }) {
+  const value = typeof text === "string" ? text.trim() : "";
+  if (value === "") return null;
+  return (
+    <span style={s.tip} role="img" aria-label={value} title={value}>
+      ⓘ
+    </span>
+  );
+}
+
 function Field({ label, children, hint, error, style }) {
   return (
     <label style={style === undefined ? s.field : { ...s.field, ...style }}>
-      <span style={s.label}>{label}</span>
+      <span style={s.label}>{label}<Tip text={hint} /></span>
       {children}
       <div style={s.hintLine}>
-        {error ? <span style={s.fieldError}>{error}</span> : hint ? <span style={s.fieldHint}>{hint}</span> : null}
+        {error ? <span style={s.fieldError}>{error}</span> : null}
       </div>
     </label>
   );
@@ -810,7 +828,7 @@ function Field({ label, children, hint, error, style }) {
  * 不用原生 datalist：datalist 会按当前输入值过滤候选项，选中一个之后
  * 其余的就不再可见（工单问题 1）。这里始终渲染完整候选列表。
  */
-function TokenCountField({ label, value, candidates, error, placeholder, ariaLabel, closeSignal, onChange }) {
+function TokenCountField({ label, hint, value, candidates, error, placeholder, ariaLabel, closeSignal, onChange }) {
   const [open, setOpen] = React.useState(false);
   const boxRef = React.useRef(null);
 
@@ -838,7 +856,7 @@ function TokenCountField({ label, value, candidates, error, placeholder, ariaLab
 
   return (
     <label style={s.field}>
-      <span style={s.label}>{label}</span>
+      <span style={s.label}>{label}<Tip text={hint} /></span>
       <div ref={boxRef} style={s.comboBox}>
         <input
           style={s.input}
@@ -1066,14 +1084,14 @@ function ModelPicker({
               aria-label="确认目录替换"
             />
             <span>
-              <b>catalog-replacement</b>：该路由是目录路由，批量写入 models 会<b>整体替换</b>它的模型目录。我确认继续。
+              该路由的模型来自内置目录，批量写入会<b>整体替换</b>目录。我确认继续。
             </span>
           </label>
         ) : null}
 
         {overridesInUse ? (
           <div style={s.err}>
-            该路由已在用 <b>modelOverrides</b>；写 models 数组会被宿主拒绝，无法批量写入。请先在宿主中移除 modelOverrides。
+            该路由已有旧的模型覆盖设置，写入会被拒绝，无法批量写入。请先清除这些覆盖。
           </div>
         ) : null}
 
@@ -1149,9 +1167,9 @@ function NewRouteDialog({
   const custom = mode === "custom";
   const footerHint = custom
     ? catalogKnown
-      ? "目录描述得了这条路由：不写 models，宿主继续用内置目录。"
-      : "目录外的路由必须至少列出 1 条模型，否则宿主会拒绝整条路由。"
-    : "从宿主目录选择；已配置的路由不可重复创建。";
+      ? "目录已收录这条路由，创建时无需列出模型。"
+      : "目录外的路由至少列出 1 条模型，否则会被拒绝。"
+    : "从目录选择；已配置的路由不能重复创建。";
 
   return (
     <div
@@ -1162,9 +1180,9 @@ function NewRouteDialog({
     >
       <div style={s.dialog} role="dialog" aria-modal="true" aria-label="新建路由">
         <div style={s.pickerHeader}>
-          <span style={s.h}>新建路由</span>
+          <span style={s.h}>新建路由<Tip text={footerHint} /></span>
           <span style={s.pickerHint}>
-            {custom ? "手填一个目录里没有的提供商" : `宿主目录 ${catalogTotal} 个`}
+            {custom ? "手填一个目录里没有的提供商" : `目录 ${catalogTotal} 个`}
           </span>
         </div>
 
@@ -1241,7 +1259,7 @@ function NewRouteDialog({
             </div>
             {catalogKnown ? (
               <div style={s.fieldHint}>
-                目录已描述该提供商（{catalogProviderName}），创建时无需列出模型。
+                目录已收录该提供商（{catalogProviderName}），无需列出模型。
               </div>
             ) : (
               <Field
@@ -1272,10 +1290,10 @@ function NewRouteDialog({
             />
             <div style={{ ...s.pickerList, ...s.createList }} role="listbox" aria-label="可配置提供商">
               {catalogStatus === "loading" ? (
-                <div style={{ ...s.pickerHint, padding: "8px" }}>正在读取宿主目录…</div>
+                <div style={{ ...s.pickerHint, padding: "8px" }}>正在读取目录…</div>
               ) : catalogStatus === "failed" ? (
                 <div style={s.err}>
-                  目录读取失败：{catalogError || "宿主未返回原因"}
+                  目录读取失败：{catalogError || "未返回原因"}
                   <button type="button" style={{ ...s.btnSmall, marginLeft: GAP.sm }} onClick={onRetryCatalog}>
                     重试
                   </button>
@@ -1314,8 +1332,7 @@ function NewRouteDialog({
         {error ? <div style={s.err}>{error}</div> : null}
 
         <div style={s.pickerFooter}>
-          <span style={s.pickerHint}>{footerHint}</span>
-          <span style={{ display: "flex", alignItems: "center", gap: GAP.sm }}>
+          <span style={{ display: "flex", alignItems: "center", gap: GAP.sm, marginLeft: "auto" }}>
             <button
               type="button"
               style={busy ? { ...s.btn, opacity: 0.55, cursor: "not-allowed" } : s.btn}
@@ -1357,7 +1374,7 @@ function BudgetHint({ contextWindow, maxTokens }) {
     return (
       <div style={s.budget} role="status">
         可用上下文 {formatTokenNumber(estimate.threshold)}（零损失 ✓）
-        <div style={s.fieldHint}>按默认压缩策略估算；实际值以宿主运行时为准。</div>
+        <div style={s.fieldHint}>按默认压缩策略估算；实际以运行时为准。</div>
       </div>
     );
   }
@@ -1370,7 +1387,7 @@ function BudgetHint({ contextWindow, maxTokens }) {
       {severe && estimate.freeBoundary > 0 ? (
         <div style={s.budgetSuggestion}>建议 ≤ {formatTokenNumber(estimate.freeBoundary)} 可零损失</div>
       ) : null}
-      <div style={s.fieldHint}>按默认压缩策略估算；实际值以宿主运行时为准。</div>
+      <div style={s.fieldHint}>按默认压缩策略估算；实际以运行时为准。</div>
     </div>
   );
 }
@@ -1385,7 +1402,7 @@ const EDIT_FIELD_LABELS = Object.freeze({
 
 // 与内置模型页 modelReasoningHelpText 同一段说明（工单 #23 验收 16）。
 const REASONING_WIRE_HELP_TEXT =
-  "API 参数值会写入请求的推理强度字段（如 OpenAI 的 reasoning_effort），默认与档位名相同；如有不同，以模型提供商的 API 文档为准。Off 表示关闭思考，不需要填写参数值；配置中已写入的值会保留并发送。";
+  "API 参数值会写进请求的推理强度字段，默认与档位名相同；如有不同，以模型提供商的文档为准。Off 表示关闭思考，不需要参数值；已写入的值会保留并发送。";
 
 /**
  * 推理档位的「API 参数值」高级区。
@@ -1480,6 +1497,7 @@ function EditModelForm({
           disabled={template === null}
           onClick={onFillTemplate}
           aria-label="填入默认模板"
+          title={template === null ? "先在新增表单里「存为默认模板」" : ""}
         >
           填入默认模板
         </button>
@@ -1505,6 +1523,7 @@ function EditModelForm({
       <div style={s.row}>
         <TokenCountField
           label="上下文窗口 (contextWindow)"
+          hint="留空 = 不修改该字段"
           value={form.contextWindow}
           candidates={CONTEXT_WINDOW_CANDIDATES}
           error={errors.contextWindow}
@@ -1515,6 +1534,7 @@ function EditModelForm({
         />
         <TokenCountField
           label="输出上限 (maxTokens)"
+          hint="同时限制单次输出，并从上下文窗口预留；填得越大能装的历史越少。"
           value={form.maxTokens}
           candidates={MAX_TOKENS_CANDIDATES}
           error={errors.maxTokens}
@@ -1525,10 +1545,10 @@ function EditModelForm({
         />
         <div style={s.levels}>
           {form.reasoningDisabled ? (
-            <span style={s.sub}>该模型声明为非推理模型（reasoningEfforts: false），不显示推理档位与 API 参数值。</span>
+            <span style={s.sub}>该模型声明为非推理模型，不显示推理档位与 API 参数值。</span>
           ) : (
             <>
-              <span style={s.label}>推理档位（多选）</span>
+              <span style={s.label}>推理档位（多选）<Tip text="全不选 = 不修改现有档位，也不会清空字段" /></span>
               <div style={s.levelChips}>
                 {PI_AI_LEVELS.map((level) => {
                   const checked = form.reasoningLevels.includes(level);
@@ -1552,7 +1572,7 @@ function EditModelForm({
               </div>
               {guard ? <div style={s.err}>{guard}</div> : null}
               {form.reasoningLevels.length === 0 ? (
-                <span style={s.sub}>全不选：不修改现有 reasoningEfforts（一期只支持修改档位，不清空字段）。</span>
+                <span style={s.sub}>全不选：不修改现有档位，也不清空该字段。</span>
               ) : null}
               <ReasoningApiValues
                 levels={form.reasoningLevels}
@@ -1587,10 +1607,10 @@ function EditModelForm({
       </div>
 
       {hasCompat ? (
-        <div style={s.compatibility}>ⓘ 该模型还声明了 compat 字段，保存时会原样保留。</div>
+        <div style={s.compatibility}>ⓘ 该模型还有额外配置，保存时会原样保留。</div>
       ) : null}
 
-      {!writable ? <div style={s.warn}>当前配置不可写（writable: false），保存已禁用。</div> : null}
+      {!writable ? <div style={s.warn}>当前配置不可写，保存已禁用；请检查是否处于只读连接或内存模式。</div> : null}
 
       {stale ? <div style={s.err}>{stale.message} 请取消编辑后重新打开。</div> : null}
       {unsupported.filter((item) => item.reason !== "stale-index").map((item, index) => (
@@ -1600,19 +1620,15 @@ function EditModelForm({
         </div>
       ))}
 
-      <div style={s.sub}>
-        改动字段：{changedFields.length === 0 ? "无（保存已禁用）" : changedFields.map((field) => EDIT_FIELD_LABELS[field] ?? field).join(" / ")}
-      </div>
-
       <details style={s.details}>
         <summary style={s.summary}>
-          保存将写入的 settingsOps（{projection?.settingsOps?.length ?? 0} 条）· 点击展开
+          将写入的配置项（{projection?.settingsOps?.length ?? 0} 条）· 点击展开
         </summary>
         <pre style={s.pre}>{JSON.stringify(projection?.settingsOps ?? [], null, 2)}</pre>
       </details>
 
       <div style={s.editorFooter}>
-        <span style={s.sub}>写入走宿主 configForms（修订号围栏 + 冲突自动重读）。</span>
+        <span style={s.sub}>改动字段：{changedFields.length === 0 ? "无（保存已禁用）" : changedFields.map((field) => EDIT_FIELD_LABELS[field] ?? field).join(" / ")}</span>
         <span style={{ display: "flex", gap: GAP.sm, flexWrap: "wrap" }}>
           <button type="button" style={s.btn} onClick={onCancel} aria-label="取消编辑">取消</button>
           <button
@@ -1630,6 +1646,7 @@ function EditModelForm({
             disabled={!canSave}
             onClick={onSave}
             aria-label="保存修改"
+            title="只写改动过的字段；冲突时会自动重读配置"
           >
             {busy ? "保存中…" : "保存修改"}
           </button>
@@ -1681,7 +1698,12 @@ function CredentialBlock({
       ) : null}
 
       <div style={s.credentialRow} role="status" aria-label="密钥状态">
-        <span style={s.credentialLabel}>密钥状态</span>
+        <span style={s.credentialLabel}>
+          密钥状态
+          <Tip text={view.readOnly
+            ? `${CREDENTIAL_TEXT.editorHint}\n该密钥由部署环境提供，这里只能查看状态。`
+            : CREDENTIAL_TEXT.editorHint} />
+        </span>
         {view.kind === "ready" ? (
           <React.Fragment>
             <span
@@ -1723,10 +1745,6 @@ function CredentialBlock({
         ) : null}
       </div>
 
-      {view.readOnly && view.kind === "ready" ? (
-        <span style={s.credentialHint}>ⓘ 该引用来自部署的环境变量，这里只显示状态。</span>
-      ) : null}
-
       {showEditor ? (
         <React.Fragment>
           <div style={s.credentialEditor}>
@@ -1753,7 +1771,6 @@ function CredentialBlock({
               {busy ? "保存中…" : "保存密钥"}
             </button>
           </div>
-          <span style={s.credentialHint}>ⓘ {CREDENTIAL_TEXT.editorHint}</span>
         </React.Fragment>
       ) : null}
 
@@ -1879,7 +1896,7 @@ function DeleteConfirmDialog({ routeId, modelId, busy, onCancel, onConfirm }) {
         确定要从 <b>{routeId}</b> 删除模型 <b>{modelId}</b> 吗？
       </p>
       <p style={s.sub}>
-        删除会用一条 set 重写该路由的 models 数组（长度减一），不会在数组里留下空洞；此操作无法撤销。
+        删除会立即重写该路由的模型清单（少一条），不会破坏其它模型条目；此操作无法撤销。
       </p>
     </ConfirmDialog>
   );
@@ -1929,7 +1946,7 @@ function ClearCredentialDialog({ reference, busy, onCancel, onConfirm }) {
       confirmAria="确认清除密钥"
       confirmLabel="清除"
       busyLabel="清除中…"
-      footerHint="只删除宿主凭据存储里的这一条，不改动配置文件。"
+      footerHint="只删除凭据库里的这一条，不改动配置文件。"
       busy={busy}
       onCancel={onCancel}
       onConfirm={onConfirm}
@@ -1985,6 +2002,7 @@ function RouteOverviewCard({
         onClick={onToggle}
       >
         {open ? "▾" : "▶"} {summary}
+        <Tip text="点任意行切换当前路由；密钥只显示状态。" />
       </button>
 
       {open ? (
@@ -2087,8 +2105,6 @@ function RouteOverviewCard({
               </tbody>
             </table>
           )}
-
-          <div style={s.overviewNote}>点任意行切换当前路由；密钥只显示状态，不显示密钥内容。</div>
         </div>
       ) : null}
     </section>
@@ -2202,6 +2218,8 @@ function RouteSettingsCard({
     };
   });
 
+  const hasDefaultNotes = defaultRows.some((row) => row.blank || row.parts !== null);
+
   function update(field, value) {
     onChange({ [field]: value });
   }
@@ -2231,14 +2249,11 @@ function RouteSettingsCard({
         onClick={onToggleOpen}
       >
         {open ? "▾" : "▶"} 路由设置 · {describeRouteSummary(provider)}
+        <Tip text={"只写改动过的字段，其余原样保留。\n回落顺序：模型自己 → 内置目录 → 路由默认值；默认值不改压缩阈值。"} />
       </button>
 
       {open ? (
       <div style={s.routeBody}>
-        <span style={s.sub}>
-          编辑路由 <b>{routeId}</b> 的字段：只写改过的叶子路径，models / compat 与宿主未来字段原样保留。
-        </span>
-
         <div style={s.row}>
           <Field label="显示名 (displayName)" hint="留空 = 清空该字段">
             <input
@@ -2249,7 +2264,7 @@ function RouteSettingsCard({
               aria-label="路由显示名"
             />
           </Field>
-          <Field label="接口地址 (baseURL)" error={errors.baseURL} hint="必须以 http:// 或 https:// 开头">
+          <Field label="接口地址 (baseURL)" error={errors.baseURL} hint="以 http:// 或 https:// 开头">
             <input
               style={s.input}
               value={form.baseURL}
@@ -2263,7 +2278,7 @@ function RouteSettingsCard({
         <div style={s.row}>
           <Field
             label="协议 (api)"
-            hint={apiChoicesSource === "schema" ? "选项来自宿主 schema" : "使用内置协议清单"}
+            hint="选项随应用版本自动更新"
           >
             <select
               style={s.select}
@@ -2285,7 +2300,7 @@ function RouteSettingsCard({
         <div style={s.row}>
           <Field
             label="密钥引用 (apiKeyEnv)"
-            hint="引用宿主凭据存储里的条目名"
+            hint="密钥在凭据库中的名称"
             style={{ flex: "0 1 360px" }}
           >
             <input
@@ -2321,7 +2336,7 @@ function RouteSettingsCard({
         ) : null}
 
         <div style={s.row}>
-          <Field label="默认上下文 (defaultContextWindow)" error={errors.defaultContextWindow} hint="">
+          <Field label="默认上下文 (defaultContextWindow)" error={errors.defaultContextWindow} hint="留空 = 内置默认值 1,000,000；已声明窗口的模型不受影响">
             <input
               style={s.input}
               value={form.defaultContextWindow}
@@ -2331,7 +2346,7 @@ function RouteSettingsCard({
               inputMode="numeric"
             />
           </Field>
-          <Field label="默认输出上限 (defaultMaxTokens)" error={errors.defaultMaxTokens} hint="">
+          <Field label="默认输出上限 (defaultMaxTokens)" error={errors.defaultMaxTokens} hint="留空 = 内置默认值 128,000；已声明输出上限的模型不受影响">
             <input
               style={s.input}
               value={form.defaultMaxTokens}
@@ -2341,7 +2356,7 @@ function RouteSettingsCard({
               inputMode="numeric"
             />
           </Field>
-          <Field label="超时 (timeoutMs)" error={errors.timeoutMs} hint="">
+          <Field label="超时 (timeoutMs)" error={errors.timeoutMs} hint="留空 = 不声明超时，由运行时决定">
             <input
               style={s.input}
               value={form.timeoutMs}
@@ -2355,7 +2370,10 @@ function RouteSettingsCard({
 
         <div style={s.row}>
           <div style={s.field}>
-            <span style={s.label}>默认输入模态 (defaultInput)</span>
+            <span style={s.label}>
+              默认输入模态 (defaultInput)
+              <Tip text={"留空 = 按纯文本处理；已声明输入模态的模型不受影响。\n回落顺序：模型自己 → 内置目录 → 这里；不改压缩阈值。"} />
+            </span>
             <div style={s.levelChips} role="group" aria-label="路由默认输入模态">
               {[...modalChoicesList, ...declaredOnlyModalities].map((value) => {
                 const checked = modalitySelection.includes(value);
@@ -2377,13 +2395,7 @@ function RouteSettingsCard({
               })}
             </div>
             <div style={s.hintLine}>
-              {errors.defaultInput ? (
-                <span style={s.fieldError}>{errors.defaultInput}</span>
-              ) : (
-                <span style={s.fieldHint}>
-                  {modalChoicesSource === "schema" ? "选项来自宿主 schema" : "使用内置模态清单"}
-                </span>
-              )}
+              {errors.defaultInput ? <span style={s.fieldError}>{errors.defaultInput}</span> : null}
             </div>
           </div>
         </div>
@@ -2394,11 +2406,8 @@ function RouteSettingsCard({
           </div>
         ) : null}
 
+        {hasDefaultNotes ? (
         <div style={s.routeDefaults} aria-label="路由默认值说明">
-          <span>多选；全部不选 = 不声明该字段（宿主回落 text，不写空数组）。</span>
-          <span>未声明窗口 / 输出上限 / 输入模态的模型回落到这里的默认值；已声明自己的模型不受影响。</span>
-          <span>回落顺序：模型自己 → 内置目录 → 这里。</span>
-          <span>注意：这里只影响请求参数，不影响 DSH 压缩阈值 —— 后者只认模型自己声明的那一项。</span>
           {defaultRows.map((row) => (
             <React.Fragment key={row.key}>
               {row.blank ? (
@@ -2438,9 +2447,10 @@ function RouteSettingsCard({
             </React.Fragment>
           ))}
         </div>
+        ) : null}
 
         <div style={s.row}>
-          <Field label="缓存 (cacheRetention)" hint="留空 = 不声明">
+          <Field label="缓存 (cacheRetention)" hint="留空 = 不声明缓存策略">
             <select
               style={s.select}
               value={form.cacheRetention}
@@ -2456,7 +2466,7 @@ function RouteSettingsCard({
               ) : null}
             </select>
           </Field>
-          <Field label="传输 (transport)" hint="留空 = 不声明">
+          <Field label="传输 (transport)" hint="留空 = 不声明传输方式">
             <select
               style={s.select}
               value={form.transport}
@@ -2474,10 +2484,6 @@ function RouteSettingsCard({
           </Field>
         </div>
 
-        <div style={s.sub}>
-          改动字段：{changedLabels.length === 0 ? "无（保存已禁用）" : changedLabels.join(" / ")}
-        </div>
-
         {Object.keys(errors).length > 0 ? (
           <div style={s.err}>有字段未通过校验，修正前不会产出任何 op。</div>
         ) : null}
@@ -2485,13 +2491,15 @@ function RouteSettingsCard({
 
         <details style={s.details}>
           <summary style={s.summary}>
-            保存将写入的 settingsOps（{plan.ops.length} 条）· 点击展开
+            将写入的配置项（{plan.ops.length} 条）· 点击展开
           </summary>
           <pre style={s.pre}>{JSON.stringify(plan.ops, null, 2)}</pre>
         </details>
 
         <div style={s.editorFooter}>
-          <span style={s.sub}>写入走宿主 configForms（修订号围栏 + 冲突自动重读）。</span>
+          <span style={s.sub}>
+            改动字段：{changedLabels.length === 0 ? "无（保存已禁用）" : changedLabels.join(" / ")}
+          </span>
           <span style={{ display: "flex", gap: GAP.sm, flexWrap: "wrap", alignItems: "center" }}>
             {deleteBlocked === null ? null : <span style={s.fieldHint}>{deleteBlocked}</span>}
             {provider === undefined ? <span style={s.fieldHint}>该路由已不存在</span> : null}
@@ -2520,6 +2528,7 @@ function RouteSettingsCard({
               disabled={!canSave}
               onClick={save}
               aria-label="保存路由设置"
+              title="只写改动过的字段；冲突时会自动重读配置"
             >
               {busy ? "保存中…" : "保存设置"}
             </button>
@@ -2828,7 +2837,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           entries: [],
           error: typeof response?.error?.message === "string" && response.error.message !== ""
             ? response.error.message
-            : "宿主未返回原因",
+            : "未返回原因",
         });
       } catch (error) {
         if (!disposed) {
@@ -2906,7 +2915,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           status: "error",
           configured: false,
           writable: false,
-          error: credentialErrorMessage(response, "宿主未返回原因"),
+          error: credentialErrorMessage(response, "未返回原因"),
         });
       } catch (error) {
         settle({
@@ -2959,7 +2968,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           status: "error",
           configured: false,
           writable: false,
-          error: credentialErrorMessage(response, "宿主未返回原因"),
+          error: credentialErrorMessage(response, "未返回原因"),
         });
       } catch (error) {
         settle({
@@ -3040,7 +3049,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           continue;
         }
         failed = true;
-        error = credentialErrorMessage(response, "宿主未返回原因");
+        error = credentialErrorMessage(response, "未返回原因");
         break;
       }
       if (disposed || generation !== overviewGeneration.current) return;
@@ -3375,7 +3384,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       const ok = await scope.mutate([plan.op]);
       if (!ok) {
         // 不清空表单：用户核对后可以原样重试（mutate 自带修订号围栏）。
-        setCreateError("创建被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试");
+        setCreateError("创建被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试");
         return;
       }
       setRevealCreatedRoute(plan.providerId);
@@ -3543,7 +3552,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         setToast({ tone: "good", text: `已把 ${movedId} 移到第 ${to + 1} 位` });
       } else {
         if (focusHandle) pendingHandleFocus.current = from;
-        setToast({ tone: "bad", text: "排序未保存（宿主拒绝或修订号冲突），列表保持原顺序，请核对后重试" });
+        setToast({ tone: "bad", text: "排序未保存（系统拒绝或配置已变化），列表保持原顺序，请核对后重试" });
       }
     } catch (error) {
       if (focusHandle) pendingHandleFocus.current = from;
@@ -3664,7 +3673,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         closeEditor();
         setDeleteTarget(null);
       } else {
-        setToast({ tone: "bad", text: "批量删除被宿主拒绝（修订号冲突或校验失败），批量操作未执行；已重新读取当前配置，请核对后重试" });
+        setToast({ tone: "bad", text: "批量删除被系统拒绝（配置已变化或校验失败），批量操作未执行；已重新读取当前配置，请核对后重试" });
       }
     } catch (error) {
       setToast({ tone: "bad", text: `批量删除异常：${error?.message ?? error}` });
@@ -3694,7 +3703,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         closeEditor();
         setDeleteTarget(null);
       } else {
-        setToast({ tone: "bad", text: "批量修改被宿主拒绝（修订号冲突或校验失败），批量操作未执行；已重新读取当前配置，请核对后重试" });
+        setToast({ tone: "bad", text: "批量修改被系统拒绝（配置已变化或校验失败），批量操作未执行；已重新读取当前配置，请核对后重试" });
       }
     } catch (error) {
       setToast({ tone: "bad", text: `批量修改异常：${error?.message ?? error}` });
@@ -3761,7 +3770,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         setModelSelected(new Set());
         setBulkForm(null);
       } else {
-        setToast({ tone: "bad", text: "更新被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+        setToast({ tone: "bad", text: "更新被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试" });
       }
     } catch (error) {
       setToast({ tone: "bad", text: `更新异常：${error?.message ?? error}` });
@@ -3820,7 +3829,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         setBulkForm(null);
         if (editingIndex === deleteTarget.index) closeEditor();
       } else {
-        setToast({ tone: "bad", text: "删除被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+        setToast({ tone: "bad", text: "删除被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试" });
       }
     } catch (error) {
       setToast({ tone: "bad", text: `删除异常：${error?.message ?? error}` });
@@ -3867,7 +3876,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       if (generation !== fetchGeneration.current) return;
       if (!response.ok) {
         setFetchState("failed");
-        setFetchError(response.error?.message ?? "宿主拒绝了模型发现请求");
+        setFetchError(response.error?.message ?? "模型发现请求被拒绝");
         return;
       }
       const ids = [...new Set(
@@ -3949,7 +3958,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       setToast(
         ok
           ? { tone: "good", text: `已写入 ${routeId} / ${plan.written.length} 个模型` }
-          : { tone: "bad", text: "写入被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" },
+          : { tone: "bad", text: "写入被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试" },
       );
       if (ok) setAckReplace(false);
       return ok;
@@ -3993,7 +4002,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       setToast(
         ok
           ? { tone: "good", text: `已写入 ${routeId} / ${draft.id}` }
-          :           { tone: "bad", text: "写入被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" },
+          :           { tone: "bad", text: "写入被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试" },
       );
       if (ok) {
         const form = templateToForm(template);
@@ -4115,7 +4124,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         setCredentialRefresh((current) => current + 1);
       } else {
         setCredentialError(
-          `密钥保存失败：${redactSecret(credentialErrorMessage(response, "宿主拒绝写入"), credentialDraft)}`,
+          `密钥保存失败：${redactSecret(credentialErrorMessage(response, "凭据服务拒绝写入"), credentialDraft)}`,
         );
       }
     } catch (error) {
@@ -4136,7 +4145,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       if (response?.ok === true) {
         setCredentialRefresh((current) => current + 1);
       } else {
-        setCredentialError(`密钥清除失败：${credentialErrorMessage(response, "宿主拒绝删除")}`);
+        setCredentialError(`密钥清除失败：${credentialErrorMessage(response, "凭据服务拒绝删除")}`);
       }
     } catch (error) {
       setCredentialConfirmOpen(false);
@@ -4199,7 +4208,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     try {
       const ok = await scope.mutate(plan.ops);
       if (!ok) {
-        setToast({ tone: "bad", text: "保存被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试" });
+        setToast({ tone: "bad", text: "保存被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试" });
         return { ok: false, form };
       }
       const nextForm = routeFormFromProvider(providersOf(scope.getSnapshot())[routeId]);
@@ -4252,14 +4261,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       if (routeDeleteRemovesKey(keyState)) {
         const described = await credentialOps.describe([target.ref]);
         if (described?.ok !== true) {
-          const message = `无法确认密钥 ${target.ref} 的状态：${credentialErrorMessage(described, "宿主未返回原因")}；路由配置未改动`;
+          const message = `无法确认密钥 ${target.ref} 的状态：${credentialErrorMessage(described, "未返回原因")}；路由配置未改动`;
           setToast({ tone: "bad", text: message });
           return { ok: false, message };
         }
         if (described.value?.[target.ref]?.configured === true) {
           const removed = await credentialOps.unset(target.ref);
           if (removed?.ok !== true) {
-            const message = `删除密钥失败：${credentialErrorMessage(removed, "宿主拒绝删除")}；路由配置未改动`;
+            const message = `删除密钥失败：${credentialErrorMessage(removed, "凭据服务拒绝删除")}；路由配置未改动`;
             setToast({ tone: "bad", text: message });
             return { ok: false, message };
           }
@@ -4273,10 +4282,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         setToast({
           tone: "bad",
           text: keyRemoved
-            ? `删除被宿主拒绝（修订号冲突或校验失败）；密钥 ${target.ref} 已删除，路由配置未改动，请核对后重试`
-            : "删除被宿主拒绝（修订号冲突或校验失败），已重新读取当前配置，请核对后重试",
+            ? `删除被系统拒绝（配置已变化或校验失败）；密钥 ${target.ref} 已删除，路由配置未改动，请核对后重试`
+            : "删除被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试",
         });
-        return { ok: false, message: "删除被宿主拒绝" };
+        return { ok: false, message: "删除被系统拒绝" };
       }
       const remaining = Object.keys(providersOf(scope.getSnapshot()));
       setRouteId(remaining[0] ?? "");
@@ -4321,19 +4330,18 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   return (
     <div style={s.page}>
       <div>
-        <h2 style={s.h}>ModelPilot · 模型配置助手</h2>
-        <p style={s.sub}>
-          输入模型 ID，引擎按「用户档案 → 路由目录 → 模板 → 预设」合成字段，只写字段级最小补丁。
-          写入走宿主 configForms（修订号围栏 + 冲突自动重读）。
-          {status === "unavailable" ? " 当前配置档案未提供该命名空间。" : ""}
-        </p>
+        <h2 style={s.h}>
+          ModelPilot · 模型配置助手
+          <Tip text={"输入模型 ID 后，按用户档案 → 目录 → 模板 → 预设合成字段。\n只写入改动过的字段，冲突时自动重读配置。"} />
+        </h2>
+        {status === "unavailable" ? <p style={s.sub}>当前配置档案未提供该命名空间。</p> : null}
       </div>
 
-      {!writable ? <div style={s.warn}>当前配置不可写（writable: false），仅只读预览；请检查是否处于只读连接或内存模式。</div> : null}
+      {!writable ? <div style={s.warn}>当前配置不可写，仅只读预览；请检查是否处于只读连接或内存模式。</div> : null}
       {status === "loading" ? <div style={s.sub}>正在读取 DSH 配置…</div> : null}
       {status === "ready" && routes.length === 0 ? (
         <div style={s.warn}>
-          当前没有配置 pi-ai 路由。点「+ 新建路由」从宿主目录添加，或直接自定义一条。
+          当前没有配置模型路由。点「+ 新建路由」从内置目录添加，或直接自定义一条。
         </div>
       ) : null}
 
@@ -4372,14 +4380,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                 disabled={!writable}
                 onClick={openCreateRoute}
                 aria-label="新建路由"
-                title={writable ? "从宿主目录新建一条路由，或自定义" : "当前配置不可写，无法创建路由"}
+                title={writable ? "从内置目录新建一条路由，或自定义" : "当前配置不可写，无法创建路由"}
               >
                 + 新建路由
               </button>
             </div>
             <div style={s.hintLine} />
           </div>
-          <Field label="模型 ID（原样写入）" hint="" style={{ flex: "0 1 190px" }}>
+          <Field label="模型 ID" hint="输入后可在下方预览；ID 会原样写入" style={{ flex: "0 1 190px" }}>
             <div style={s.comboBox}>
               <input
                 id="modelpilot-model-id"
@@ -4823,6 +4831,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         <div style={s.row}>
           <TokenCountField
             label="上下文窗口 (contextWindow)"
+            hint="留空 = 不写该字段，由运行时决定"
             value={contextWindow}
             candidates={CONTEXT_WINDOW_CANDIDATES}
             error={contextWindowError}
@@ -4833,6 +4842,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           />
           <TokenCountField
             label="输出上限 (maxTokens)"
+            hint="同时限制单次输出，并从上下文窗口预留；填得越大能装的历史越少。"
             value={maxTokens}
             candidates={MAX_TOKENS_CANDIDATES}
             error={maxTokensError}
@@ -4842,7 +4852,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             onChange={(e) => changeTokenCount(e, maxTokens, setMaxTokens, setMaxTokensError)}
           />
           <div style={s.levels}>
-            <span style={s.label}>推理档位（多选；全不选则不写 reasoningEfforts）</span>
+            <span style={s.label}>推理档位（多选）<Tip text="全不选 = 不设置推理档位，不会清空已有配置" /></span>
             <div style={s.levelChips}>
               {PI_AI_LEVELS.map((level) => {
                 const checked = reasoningLevels.includes(level);
@@ -4865,7 +4875,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             </div>
             {reasoningGuard ? <div style={s.err}>{reasoningGuard}</div> : null}
             {reasoningLevels.length === 0 ? (
-              <span style={s.sub}>全不选：本次投影不写 reasoningEfforts，沿用目录能力事实。</span>
+              <span style={s.sub}>全不选：本次不写入推理档位，沿用内置目录的值。</span>
             ) : null}
             <ReasoningApiValues
               levels={reasoningLevels}
@@ -4940,27 +4950,25 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               </div>
             ))}
           </div>
-          <div style={s.label}>批量投影结果（写出 {batchProjection.written.length} 条）</div>
+          <div style={s.label}>批量写入结果（{batchProjection.written.length} 条）</div>
           <div style={s.sub}>
             {batchProjection.ops.map((op) => `${op.path.join(".")} ← ${op.value?.id ?? ""}`).join(" · ")}
           </div>
           <details style={s.details}>
             <summary style={s.summary}>
-              settingsOps（{batchProjection.ops.length} 条）· 点击展开
+              配置项（{batchProjection.ops.length} 条）· 点击展开
             </summary>
             <pre style={s.pre}>{JSON.stringify(batchProjection.ops, null, 2)}</pre>
           </details>
         </>
       ) : null}
 
-      {modelId.trim() === "" ? (
-        batchProjection ? null : <div style={s.sub}>填入模型 ID 后这里显示将要写入的内容。</div>
-      ) : (
+      {modelId.trim() === "" ? null : (
         <>
-          <div style={s.label}>投影结果（写出的只有这些字段）</div>
+          <div style={s.label}>将写入的字段</div>
           <details style={s.details}>
             <summary style={s.summary}>
-              settingsOps（{projection?.settingsOps?.length ?? 0} 条）· 点击展开
+              配置项（{projection?.settingsOps?.length ?? 0} 条）· 点击展开
             </summary>
             <pre style={s.pre}>{JSON.stringify(projection?.settingsOps ?? [], null, 2)}</pre>
           </details>
@@ -4983,14 +4991,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             <label style={{ ...s.warn, display: "flex", gap: GAP.sm, alignItems: "flex-start", cursor: "pointer" }}>
               <input type="checkbox" checked={ackReplace} onChange={(e) => setAckReplace(e.target.checked)} style={{ marginTop: 2 }} />
               <span>
-                该路由是目录路由，写入 models 会<b>整体替换</b>它的模型目录，上列
+                该路由的模型来自内置目录，写入会<b>整体替换</b>目录，上列
                 {gate.removedCatalogIds?.length ?? 0} 个条目将从该路由消失。我确认继续。
               </span>
             </label>
           ) : null}
 
           {routeModels.some((m) => m?.id === modelId.trim()) ? (
-            <div style={s.err}>该路由已有同名模型条目，宿主会拒绝重复写入。</div>
+            <div style={s.err}>该路由已有同名模型条目，无法重复写入。</div>
           ) : null}
         </>
       )}
@@ -5092,13 +5100,6 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       </section>
 
       {toast ? <div style={toast.tone === "good" ? s.ok : s.err}>{toast.text}</div> : null}
-
-      <p style={s.sub}>
-        支持的推理档位：{PI_AI_LEVELS.join(" / ")}　·　输入模态：{MODALITIES.join(" / ")}
-        <br />
-        maxTokens 有两个作用：① 这个模型最多能输出多少；② 每次请求默认预留多少输出量。
-        后者会从上下文窗口里扣掉，填得越大能装的历史越少。
-      </p>
 
       {pickerOpen ? (
         <ModelPicker

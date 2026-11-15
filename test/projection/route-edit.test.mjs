@@ -199,18 +199,18 @@ test("countRouteDefaultUsers：没有模型时两个字段都没有受影响条�
 });
 
 test("describeRouteDefaultUsage：每条写清未声明什么，并标注另一个字段已声明", () => {
-  assert.equal(describeRouteDefaultUsage({ id: "a" }), "未声明 contextWindow / maxTokens");
+  assert.equal(describeRouteDefaultUsage({ id: "a" }), "未声明窗口 / 输出上限");
   assert.equal(
     describeRouteDefaultUsage({ id: "a", contextWindow: 128000 }),
-    "未声明 maxTokens（已声明 contextWindow）",
+    "未声明输出上限（已声明窗口）",
   );
   assert.equal(
     describeRouteDefaultUsage({ id: "a", maxTokens: 8192 }),
-    "未声明 contextWindow（已声明 maxTokens）",
+    "未声明窗口（已声明输出上限）",
   );
   assert.equal(
     describeRouteDefaultUsage({ id: "a", contextWindow: 128000, maxTokens: 8192 }),
-    "已声明 contextWindow / maxTokens",
+    "已声明窗口 / 输出上限",
   );
 });
 
@@ -246,15 +246,15 @@ test("routeDefaultCountParts：未知字段直接报错，不拼出没有标签�
 test("describeHostDefaultFallback：留空回落到内置常量 / text，而不是「不限制」", () => {
   assert.equal(
     describeHostDefaultFallback("defaultContextWindow"),
-    "默认上下文：留空 → 宿主使用内置默认值 1,000,000（1M）",
+    "默认上下文：留空 → 使用内置默认值 1,000,000（1M）",
   );
   assert.equal(
     describeHostDefaultFallback("defaultMaxTokens"),
-    "默认输出上限：留空 → 宿主使用内置默认值 128,000（128K）",
+    "默认输出上限：留空 → 使用内置默认值 128,000（128K）",
   );
   assert.equal(
     describeHostDefaultFallback("defaultInput"),
-    "默认输入模态：留空 → 宿主使用内置默认值 text（未声明 input 的模型按纯文本处理）",
+    "默认输入模态：留空 → 使用内置默认值 text（按纯文本处理）",
   );
   assert.equal(describeHostDefaultFallback("defaultTopK"), null);
   assert.deepEqual(HOST_ROUTE_DEFAULT_FALLBACKS, {
@@ -410,9 +410,9 @@ test("countRouteDefaultUsers：只声明 input 的模型在模态计数里不受
 });
 
 test("describeRouteDefaultInputUsage：写清 input 未声明 / 空数组 / 已声明", () => {
-  assert.equal(describeRouteDefaultInputUsage({ id: "a" }), "未声明 input（路由默认值生效）");
-  assert.equal(describeRouteDefaultInputUsage({ id: "a", input: [] }), "已声明 input（空数组：一个模态都不开）");
-  assert.equal(describeRouteDefaultInputUsage({ id: "a", input: ["text", "image"] }), "已声明 input（text / image）");
+  assert.equal(describeRouteDefaultInputUsage({ id: "a" }), "未声明输入模态（路由默认值生效）");
+  assert.equal(describeRouteDefaultInputUsage({ id: "a", input: [] }), "已声明输入模态（一个都不开）");
+  assert.equal(describeRouteDefaultInputUsage({ id: "a", input: ["text", "image"] }), "已声明输入模态（text / image）");
 });
 
 test("routeDefaultCountParts / describeRouteDefaultCount：模态字段用自己的措辞", () => {

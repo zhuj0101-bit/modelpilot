@@ -193,7 +193,7 @@ const HELPERS_SOURCE = String.raw`
   const routeSelect = () => document.querySelector('section[aria-label="当前路由"] select');
   const headerText = () => {
     const button = byAria("展开全部路由") ?? byAria("收起全部路由");
-    return (button?.innerText ?? "").replace(/\s+/g, " ").trim();
+    return (button?.innerText ?? "").replace(/ⓘ/g, "").replace(/\s+/g, " ").trim();
   };
   const table = () => byAria("全部路由清单");
   const rows = () => [...(table()?.querySelectorAll("tbody tr") ?? [])];

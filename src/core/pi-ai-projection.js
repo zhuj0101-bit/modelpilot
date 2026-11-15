@@ -55,7 +55,7 @@ export function projectPiAi(draft, hostState, { routeId, mode = "create", index,
 
   // 互斥 [audit 02-S3：resolveRouteModels 同时提供两种通道会拒绝]
   if (Object.keys(overrides).length > 0 && ((isCreate && append) || models !== undefined)) {
-    result.warnings.push({ code: "models-overrides-exclusive", message: `路由 "${routeId}" 已在用 modelOverrides；写 models 数组会被宿主拒绝` });
+    result.warnings.push({ code: "models-overrides-exclusive", message: `路由 "${routeId}" 已有模型覆盖设置，不能同时写入模型清单` });
     result.unsupportedControls.push({ control: "models-channel", reason: "overrides-channel-conflict" });
     return result;
   }
@@ -173,7 +173,7 @@ export function projectPiAi(draft, hostState, { routeId, mode = "create", index,
   }
   for (const key of Object.keys(draft)) {
     if (key === "id" || key === "reasoning") continue;
-    if (!WHITELIST.includes(key)) result.warnings.push({ code: "unknown-key-dropped", message: `draft.${key} 不在 pi-ai 白名单内；宿主会丢弃它` });
+    if (!WHITELIST.includes(key)) result.warnings.push({ code: "unknown-key-dropped", message: `字段 ${key} 不在支持范围内，写入时会被忽略` });
   }
 
   if (isCreate) {

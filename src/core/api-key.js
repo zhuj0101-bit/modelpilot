@@ -28,7 +28,7 @@ export const CREDENTIAL_TEXT = Object.freeze({
   configured: "已配置",
   unconfigured: "未配置",
   readOnlySuffix: "（由环境变量提供，不可从此处修改）",
-  editorHint: "密钥只写入宿主的凭据存储，不会出现在配置文件中。",
+  editorHint: "密钥单独保存，不会写进配置文件。",
 });
 
 /**

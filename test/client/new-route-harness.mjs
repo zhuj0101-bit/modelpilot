@@ -191,7 +191,7 @@ ${CATALOG_SOURCE}
       initial: {
         createButton: byAria("新建路由")?.textContent.trim() ?? null,
         route: routeSelect()?.value ?? null,
-        emptyWarning: document.body.innerText.includes("当前没有配置 pi-ai 路由"),
+        emptyWarning: document.body.innerText.includes("当前没有配置模型路由"),
         routes: [...(routeSelect()?.options ?? [])].map((option) => option.value),
       },
     };
@@ -220,7 +220,7 @@ function scenarioBody(scenario) {
       dialogOpen: dialog() !== null,
       route: routeSelect()?.value ?? null,
       routes: [...(routeSelect()?.options ?? [])].map((option) => option.value),
-      emptyWarning: document.body.innerText.includes("当前没有配置 pi-ai 路由"),
+      emptyWarning: document.body.innerText.includes("当前没有配置模型路由"),
       cardOpen: cardOpen(),
       provider: snapshot.value.providers["anthropic"] ?? null,
       credentialCalls: credentialCalls.length,
@@ -231,7 +231,7 @@ function scenarioBody(scenario) {
     return String.raw`
     await openDialog(0);
     result.loading = {
-      text: dialog()?.innerText.includes("正在读取宿主目录…") === true,
+      text: dialog()?.innerText.includes("正在读取目录…") === true,
       dialogOpen: dialog() !== null,
       dialogText: dialog()?.innerText ?? null,
       catalogCalls,
@@ -341,7 +341,7 @@ function scenarioBody(scenario) {
       createDisabled: createButton().disabled,
       protocol: byAria("协议")?.value,
       modelsVisible: byAria("模型 ID") !== null,
-      hint: dialog()?.innerText.includes("目录未描述") === true,
+      hint: [...(dialog()?.querySelectorAll("[title]") ?? [])].some((element) => element.title.includes("目录未描述")),
     };
 
     createButton().click();
@@ -370,7 +370,7 @@ function scenarioBody(scenario) {
     result.known = {
       modelsVisible: byAria("模型 ID") !== null,
       hint: dialog()?.innerText.includes("无需列出模型") === true,
-      providerHint: fieldText("provider id"),
+      providerHint: byAria("provider id")?.closest("label")?.querySelector("[title]")?.title ?? "",
       createDisabled: createButton().disabled,
     };
     createButton().click();
@@ -399,7 +399,7 @@ function scenarioBody(scenario) {
     result.failed = {
       mutations: mutations.length,
       dialogOpen: dialog() !== null,
-      error: dialog()?.innerText.includes("创建被宿主拒绝") === true,
+      error: dialog()?.innerText.includes("创建被系统拒绝") === true,
       provider: byAria("provider id")?.value ?? null,
       baseURL: byAria("接口地址")?.value ?? null,
       models: byAria("模型 ID")?.value ?? null,
