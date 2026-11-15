@@ -2,8 +2,12 @@
 //
 // 与 #19 / #31 同一套最小 React 渲染器：把打包后的 Workbench 渲染成真实
 // DOM，派发真实 DragEvent / KeyboardEvent / click，读回插入线、mutate 参数、
-// 列表顺序、aria-label 与 sr-only 节点的计算样式。断言在
+// 列表顺序、行容器的 aria-label / title 与行内摘要节点的计算样式。断言在
 // grouped-view-fixes.test.mjs 里。
+//
+// 工单 #34：工单 #32 给行容器加的 aria-label 不生效（div → generic 角色，
+// ARIA 1.2 禁止可访问名），摘要实际由紧凑模式的 sr-only 节点 / 详细模式的
+// 可见摘要提供；这里按实际生效的那一种读回。
 
 import { SHIM_SOURCE, THEME_TOKEN_FIXTURE } from "./layout-harness.mjs";
 import { GROUPING_ROUTE_SOURCE } from "./model-list-grouping-harness.mjs";
@@ -96,10 +100,17 @@ ${GROUPING_ROUTE_SOURCE}
   const groupSummaryOf = (key) => [...document.querySelectorAll('[aria-label^="模型分组 "]')]
     .find((button) => button.children[1].textContent === key)
     ?.parentElement?.querySelector(":scope > span")?.textContent ?? "";
-  const ariaLabels = () => Object.fromEntries(rows().map((row) => [
+  // 工单 #34：行容器不再挂 aria-label（generic 角色的可访问名被 ARIA 1.2
+  // 禁止），这里读回的是「没有」以及行内真正进入阅读顺序的摘要节点。
+  const rowAriaLabels = () => Object.fromEntries(rows().map((row) => [
     row.getAttribute("data-model-key"),
-    row.getAttribute("aria-label") ?? "",
+    row.getAttribute("aria-label"),
   ]));
+  const summaryTexts = () => Object.fromEntries(rows().map((row) => {
+    const id = row.getAttribute("data-model-key");
+    const sr = srOf(id);
+    return [id, sr === null ? summaryNodeOf(id)?.textContent ?? "" : sr.textContent];
+  }));
   const snapshotOrder = () => providers["preview-chat"].models.map((model) => model.id);
   const srStyleOf = (node) => {
     const style = getComputedStyle(node);
@@ -157,22 +168,28 @@ ${GROUPING_ROUTE_SOURCE}
 
   const result = { scheme: getComputedStyle(document.documentElement).colorScheme };
 
-  // ── 1. 紧凑模式（默认）：可访问名与 sr-only 摘要 ──
+  // ── 1. 紧凑模式（默认）：行内 sr-only 摘要，行容器不可命名 ──
   result.compact = {
     order: listOrder(),
-    labels: ariaLabels(),
+    rowAriaLabels: rowAriaLabels(),
     rows: rows().map((row) => {
       const id = row.getAttribute("data-model-key");
       const sr = srOf(id);
+      const name = nameOf(id);
+      const edit = row.querySelector('[aria-label^="编辑模型 "]');
       return {
         id,
         group: groupOf(id),
-        label: row.getAttribute("aria-label") ?? "",
-        rowTitle: row.getAttribute("title") ?? "",
-        nameTitle: nameOf(id)?.getAttribute("title") ?? "",
-        nameText: nameOf(id)?.textContent ?? "",
+        rowTitle: row.getAttribute("title"),
+        nameTitle: name.getAttribute("title"),
+        nameText: name.textContent,
         visibleSummary: summaryNodeOf(id)?.textContent ?? "",
         sr: sr === null ? null : srStyleOf(sr),
+        // 阅读顺序：短 ID → 摘要 → 操作按钮。
+        nameBeforeSummary: sr !== null
+          && (name.compareDocumentPosition(sr) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+        summaryBeforeActions: sr !== null && edit !== null
+          && (sr.compareDocumentPosition(edit) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
         rowHeight: row.getBoundingClientRect().height,
       };
     }),
@@ -309,20 +326,20 @@ ${GROUPING_ROUTE_SOURCE}
     toast: toastText(),
   };
 
-  // ── 8. 详细模式：摘要可见、title 仍在，且 aria-label 与紧凑一致 ──
-  const compactLabels = result.compact.labels;
+  // ── 8. 详细模式：摘要可见、行容器没有 title，也没有 aria-label ──
+  const compactSummaries = summaryTexts();
   click("详细视图");
   await sleep(30);
   result.detailed = {
-    labels: ariaLabels(),
+    rowAriaLabels: rowAriaLabels(),
     srCount: document.querySelectorAll("[data-modelpilot-sr-summary]").length,
     rowTitles: Object.fromEntries(rows().map((row) => [
       row.getAttribute("data-model-key"),
-      row.getAttribute("title") ?? "",
+      row.getAttribute("title"),
     ])),
     nameTitles: Object.fromEntries(rows().map((row) => {
       const id = row.getAttribute("data-model-key");
-      return [id, nameOf(id)?.getAttribute("title") ?? ""];
+      return [id, nameOf(id)?.getAttribute("title")];
     })),
     mixedSummaryText: summaryNodeOf("jxf/dsv4-pro-reason")?.textContent ?? "",
     mixedSummaryTitle: summaryNodeOf("jxf/dsv4-pro-reason")?.getAttribute("title") ?? "",
@@ -337,17 +354,18 @@ ${GROUPING_ROUTE_SOURCE}
     storage: window.localStorage.getItem("modelpilot.model-list-density.v1"),
   };
 
-  // ── 9. 切回紧凑：可访问名不变，sr-only 节点恢复 ──
+  // ── 9. 切回紧凑：摘要文本不变，sr-only 节点恢复 ──
   click("紧凑视图");
   await sleep(30);
   result.compactAgain = {
-    labels: ariaLabels(),
+    rowAriaLabels: rowAriaLabels(),
+    summaries: summaryTexts(),
     srCount: document.querySelectorAll("[data-modelpilot-sr-summary]").length,
     order: listOrder(),
     mutations: mutations.length,
     storage: window.localStorage.getItem("modelpilot.model-list-density.v1"),
   };
-  result.compactLabelsBeforeSwitch = compactLabels;
+  result.compactSummariesBeforeSwitch = compactSummaries;
   result.initialOrder = INITIAL_ORDER;
 
   document.getElementById("result").textContent = JSON.stringify(result);

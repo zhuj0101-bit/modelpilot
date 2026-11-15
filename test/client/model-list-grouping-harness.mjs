@@ -106,8 +106,8 @@ ${GROUPING_ROUTE_SOURCE}
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const DENSITY_KEY = ${JSON.stringify(DENSITY_KEY)};
-  // 工单 #32：行 aria-label 现在含摘要；结构断言用稳定属性，视觉文本排除
-  // 视觉隐藏的 sr-only 摘要节点。
+  // 工单 #34：行容器不再挂 aria-label / title；结构断言用稳定的 data-model-key，
+  // 视觉文本排除视觉隐藏的 sr-only 摘要节点。
   const rows = () => [...document.querySelectorAll("[data-model-key]")];
   const listOrder = () => rows().map((row) => row.getAttribute("data-model-key"));
   const groupButtons = () => [...document.querySelectorAll('[aria-label^="模型分组 "]')];

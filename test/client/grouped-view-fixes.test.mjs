@@ -1,9 +1,13 @@
 // 工单 #32：分组视图下的两处行为失配 —— 跨组拖动必须被拒绝，紧凑模式的
 // 摘要必须在键盘 / 触屏 / 读屏下也能拿到。
 //
+// 工单 #34：复核发现 #32 给行容器加的 aria-label 按规范不生效（div → generic
+// 角色，ARIA 1.2 禁止可访问名），摘要只保留行内的 sr-only 节点（紧凑）与可见
+// 摘要（详细）；详细模式行容器也不再挂与摘要抢 tooltip 的 title。
+//
 // 在 light / dark 两套宿主 token 下渲染打包后的 lib/client.js，派发真实
 // DragEvent / KeyboardEvent / click，读回插入线、mutate 参数、列表顺序、
-// aria-label 与 sr-only 节点的计算样式。Chrome 不可用时 skip。
+// 行容器属性与行内摘要节点的计算样式。Chrome 不可用时 skip。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -59,6 +63,9 @@ const KEYBOARD_ORDER = [
   "standalone",
 ];
 const SHARED_SUMMARY = "窗口 131K · 输出 8K · text · 4 档";
+const DETAILED_SUMMARY = "窗口 200K · 输出 66K · text / image · 非推理";
+/** 每行摘要的唯一来源：紧凑看 sr-only，详细看可见摘要 / 组头共享摘要。 */
+const expectedSummary = (id) => (id === "jxf/dsv4-pro-reason" ? DETAILED_SUMMARY : SHARED_SUMMARY);
 
 for (const scheme of ["light", "dark"]) {
   test(`${scheme} 主题：默认紧凑且渲染不写盘`, async (t) => {
@@ -166,22 +173,23 @@ for (const scheme of ["light", "dark"]) {
     assert.match(result.keyboard.toast, /已把 jxf\/dsv4\.1-pro 移到第 6 位/);
   });
 
-  test(`${scheme} 主题：紧凑模式行 aria-label 含完整摘要（模型 xxx。窗口…·输出…）`, async (t) => {
+  // 工单 #34 问题一（方案 A）：行容器是 div → ARIA generic 角色，ARIA 1.2
+  // 禁止 generic 有可访问名，所以 aria-label 在浏览器无障碍树里会被丢弃。
+  // 摘要因此只保留行内的 sr-only 节点（紧凑）或可见摘要（详细），不再二选一。
+  // 方案 B（给每行 role="group" 再保留 aria-label）必须为命名而改变每一行的
+  // 语义；摘要也只剩可访问名这一个通道。故选 A：行内节点就是唯一来源。
+  test(`${scheme} 主题：紧凑行容器没有 aria-label / title，摘要只经 sr-only 节点进入阅读顺序`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     for (const row of result.compact.rows) {
-      const prefix = `模型 ${row.id}。`;
-      assert.equal(row.label.startsWith(prefix), true, `${row.id} 的可访问名以完整 id 开头`);
-      assert.match(row.label.slice(prefix.length), /^窗口 .+ · 输出 .+ · .+ · .+$/, `${row.id} 的摘要四段齐全`);
-    }
-    const acme = result.compact.rows.find((row) => row.id === "acme/zeta");
-    assert.equal(acme.label, `模型 acme/zeta。${SHARED_SUMMARY}`, "组内共享摘要也进入可访问名");
-    for (const id of ["jxf/dsv4-pro-reason", "standalone"]) {
-      const row = result.compact.rows.find((item) => item.id === id);
-      assert.match(row.label, /窗口 (131K|200K) · 输出 (8K|66K)/);
+      assert.equal(result.compact.rowAriaLabels[row.id], null, `${row.id} 的行容器不挂 aria-label`);
+      assert.equal(row.rowTitle, null, "紧凑行容器不挂完整 id 的 title");
+      assert.notEqual(row.sr, null, `${row.id} 有 sr-only 摘要节点`);
+      assert.equal(row.sr.text, expectedSummary(row.id), `${row.id} 的摘要由 sr-only 节点提供`);
+      assert.equal(row.nameBeforeSummary, true, "阅读顺序：短 ID 在摘要之前");
+      assert.equal(row.summaryBeforeActions, true, "阅读顺序：摘要在操作按钮之前");
     }
     assert.equal(result.compact.rows.some((row) => row.visibleSummary !== ""), false, "紧凑视觉上仍不显示摘要");
-    assert.equal(result.compact.rows.every((row) => row.rowTitle === ""), true, "紧凑行容器仍不挂完整 id 的 title");
     for (const row of result.compact.rows) {
       assert.equal(row.nameTitle.split("\n")[0], row.id, "鼠标悬停仍能读到完整 id");
       assert.match(row.nameTitle.split("\n")[1] ?? "", /^窗口：模型声明 (131K|200K)$/, "悬停仍保留逐字段来源说明");
@@ -194,7 +202,7 @@ for (const scheme of ["light", "dark"]) {
     for (const row of result.compact.rows) {
       assert.notEqual(row.sr, null, `${row.id} 有 sr-only 摘要节点`);
       const { sr } = row;
-      assert.equal(sr.text, row.label.slice(`模型 ${row.id}。`.length), "sr-only 文本与 aria-label 摘要一致");
+      assert.equal(sr.text, expectedSummary(row.id), "sr-only 节点就是摘要的唯一来源");
       assert.notEqual(sr.display, "none", "不能用 display:none（读屏会一起丢掉）");
       assert.notEqual(sr.visibility, "hidden", "不能用 visibility:hidden");
       assert.equal(sr.position, "absolute");
@@ -211,10 +219,9 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.compact.rows.length, INITIAL_ORDER.length);
   });
 
-  test(`${scheme} 主题：详细模式摘要可见、title 仍在，aria-label 与紧凑一致`, async (t) => {
+  test(`${scheme} 主题：详细模式摘要可见、行容器不再挂 title / aria-label`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
-    assert.deepEqual(result.detailed.labels, result.compact.labels, "两种密度的可访问信息一致");
     assert.equal(result.detailed.srCount, 0, "详细模式不重复堆 sr-only 节点");
     assert.match(result.detailed.mixedSummaryText, /窗口 200K/, "混合摘要的行内显示自己的摘要");
     assert.match(result.detailed.mixedSummaryTitle, /^窗口：模型声明 200K/, "详细模式摘要的 title 仍在");
@@ -222,22 +229,35 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.detailed.acmeGroupSummary, SHARED_SUMMARY, "共享摘要仍在组头");
     assert.equal(result.detailed.jxfGroupSummary, "", "混合摘要的组头仍留空");
     for (const row of result.compact.rows) {
-      assert.equal(result.detailed.rowTitles[row.id], row.id, "详细模式行容器仍挂完整 id 的 title");
-      assert.equal(result.detailed.nameTitles[row.id], "", "详细模式短 id 不重复挂 title");
+      // 工单 #34 问题四：详细模式行容器不再和摘要抢同一个 tooltip；短 ID 本来
+      // 就显示在行里，title={modelKey} 是冗余信息，悬停说明只由摘要 span 提供。
+      assert.equal(result.detailed.rowTitles[row.id], null, "详细模式行容器不挂 title");
+      assert.equal(result.detailed.rowAriaLabels[row.id], null, "详细模式行容器不挂 aria-label");
+      assert.equal(result.detailed.nameTitles[row.id], null, "详细模式短 id 不重复挂 title");
       assert.equal(result.detailed.rowHeights[row.id] > row.rowHeight, true, "详细行高于紧凑行");
     }
     assert.equal(result.detailed.storage, "detailed");
     assert.equal(result.detailed.mutations, 2, "切换密度不写盘");
   });
 
-  test(`${scheme} 主题：切换密度不改变 aria-label，sr-only 节点随紧凑恢复`, async (t) => {
+  test(`${scheme} 主题：切换密度不改变摘要文本，sr-only 节点随紧凑恢复`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
-    assert.deepEqual(result.compactAgain.labels, result.compactLabelsBeforeSwitch);
-    assert.deepEqual(result.compactAgain.labels, result.detailed.labels);
+    assert.deepEqual(result.compactAgain.summaries, result.compactSummariesBeforeSwitch);
+    for (const row of result.compact.rows) {
+      assert.equal(result.compactAgain.summaries[row.id], expectedSummary(row.id));
+    }
     assert.equal(result.compactAgain.srCount, INITIAL_ORDER.length);
     assert.deepEqual(result.compactAgain.order, KEYBOARD_ORDER);
     assert.equal(result.compactAgain.storage, "compact");
     assert.equal(result.compactAgain.mutations, 2);
   });
 }
+
+test("源码：摘要只有一处来源，行容器不再挂 aria-label / title", () => {
+  const source = readFileSync(join(root, "src", "client", "index.jsx"), "utf8");
+  // 验收：grep 只能命中一个节点；行容器上的 aria-label 与 sr-only 只能存在其一。
+  assert.equal((source.match(/data-modelpilot-sr-summary/g) ?? []).length, 1);
+  assert.equal(source.includes("aria-label={`模型 ${modelKey}。${rowSummary.text}`}"), false);
+  assert.equal(source.includes("{...(compact ? {} : { title: modelKey })}"), false);
+});

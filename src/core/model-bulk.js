@@ -195,8 +195,12 @@ export function planBulkFields(models, selection, patch, routeId) {
   }
 
   let changed = false;
+  // 工单 #34：选中判断走 Set.has；indexes 最坏等于 list.length，线性扫描会
+  // 变成 O(n×m)，而 bulkLivePlan 每次渲染都会重算。输出顺序仍由 indexes
+  // （已去重升序）决定，未选中项保持同一引用。
+  const selected = new Set(indexes);
   const next = list.map((model, index) => {
-    if (!indexes.includes(index)) return model;
+    if (!selected.has(index)) return model;
     const row = { ...model };
     if (maxTokens !== undefined) row.maxTokens = maxTokens;
     if (input !== undefined) row.input = [...input];
