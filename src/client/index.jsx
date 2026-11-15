@@ -17,6 +17,15 @@ import {
 import { estimateContextBudget } from "../core/context-budget.js";
 import { projectPiAi } from "../core/pi-ai-projection.js";
 import {
+  DESCRIBE_BATCH_SIZE,
+  OVERVIEW_KEY_TEXT,
+  buildRouteOverview,
+  credentialCellOf,
+  describeBatches,
+  describeOverviewSummary,
+  overviewCredentialRefs,
+} from "../core/route-overview.js";
+import {
   describeTemplate,
   formToTemplate,
   readDefaultTemplate,
@@ -404,6 +413,63 @@ const s = {
     cursor: "pointer", fontSize: FONT.caption, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
   },
   routeBody: { display: "flex", flexDirection: "column", gap: GAP.md, marginTop: GAP.sm },
+  // 全部路由总览（工单 #24）：页面顶部的折叠清单，默认只露一行摘要。
+  // 标题用区块级字号；展开后是真实表格（表头 + 每行一条路由）。
+  overviewSummary: {
+    display: "flex", alignItems: "center", gap: GAP.xs,
+    width: "100%", padding: 0, border: "none", background: "transparent",
+    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit", textAlign: "left",
+    cursor: "pointer", fontSize: FONT.section, fontWeight: 600, userSelect: "none", lineHeight: 1.6,
+  },
+  overviewBody: { display: "flex", flexDirection: "column", gap: GAP.sm, marginTop: GAP.xs },
+  overviewStatus: {
+    fontSize: FONT.caption, lineHeight: 1.5,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  overviewNote: {
+    fontSize: FONT.hint, lineHeight: 1.5,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  overviewTable: { width: "100%", borderCollapse: "collapse", fontSize: FONT.caption },
+  overviewTh: {
+    padding: "5px 8px", textAlign: "left", verticalAlign: "bottom",
+    fontSize: FONT.label, fontWeight: 500,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+    borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.28))",
+  },
+  overviewTd: { padding: "6px 8px", textAlign: "left", verticalAlign: "middle" },
+  // 行可点：hover 反馈与模型行一致（120ms 背景过渡）。
+  overviewRow: { cursor: "pointer", transition: `background-color ${ROW_HOVER_MS}ms ease` },
+  overviewRowHover: { background: "var(--dsw-alias-interactive-bg-hover, rgba(90,140,230,0.22))" },
+  // 当前路由不靠底色（会和 hover 混淆）：首列加 2px 品牌色竖线 + 「当前」徽标。
+  overviewRowCurrent: { cursor: "default" },
+  overviewTdCurrent: {
+    borderLeft: "2px solid var(--dsw-alias-brand-primary, var(--dsw-alias-state-business-primary, currentColor))",
+    paddingLeft: 6,
+  },
+  overviewRouteId: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontWeight: 600,
+    fontSize: FONT.body, color: "var(--dsw-alias-label-primary, inherit)",
+    overflowWrap: "anywhere",
+  },
+  overviewCurrentBadge: {
+    marginLeft: GAP.sm, padding: "1px 6px", borderRadius: RADIUS.sm, fontSize: FONT.hint,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+  },
+  overviewKey: { display: "inline-flex", alignItems: "center", gap: GAP.xs },
+  overviewKeyLoading: {
+    fontSize: FONT.body,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  overviewActionCell: { textAlign: "right", whiteSpace: "nowrap" },
+  overviewSwitch: {
+    padding: "3px 9px", fontSize: FONT.hint, borderRadius: RADIUS.sm, cursor: "pointer",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+    background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1))",
+    color: "var(--dsw-alias-label-primary, inherit)", fontFamily: "inherit", whiteSpace: "nowrap",
+  },
+  overviewSwitchDisabled: { opacity: 0.6, cursor: "default" },
   // 连接测试结果：文字色直接取宿主 state-* 主色，左侧同色描边再做一层编码；
   // 底色用中性 layer，避免把宿主的实心 secondary 色当成浅色底。
   connectionResult: {
@@ -453,6 +519,12 @@ const s = {
   credentialDotOff: {
     background: "transparent",
     border: "1px solid var(--dsw-alias-border-l4, rgba(128,128,128,0.32))",
+  },
+  // 「未知」不是「未配置」：用问号字形 + 告警色描边 / 淡底，三态在深浅色下
+  // 都能只靠字形区分，颜色只是第二重编码。
+  credentialDotUnknown: {
+    background: "var(--dsw-alias-state-warn-secondary, rgba(220,150,40,0.14))",
+    border: "1px solid var(--dsw-alias-state-warn-primary, #b7791f)",
   },
   credentialText: { fontSize: FONT.body, color: "var(--dsw-alias-label-primary, inherit)" },
   credentialActions: { display: "flex", alignItems: "center", gap: GAP.sm, marginLeft: "auto" },
@@ -1772,6 +1844,157 @@ function ClearCredentialDialog({ reference, busy, onCancel, onConfirm }) {
 }
 
 /**
+ * 全部路由总览（工单 #24）：跨路由的只读清单 + 点行切换。
+ *
+ * 三种密钥状态（● 已配置 / ○ 未配置 / ? 未知）与「正在读取」分开展示：
+ * 查询进行中绝不把任何一行说成「未配置」，读失败也不混进「未配」。
+ * 总览自身不编辑路由字段；编辑仍在下方「路由设置」卡片。
+ */
+function RouteOverviewCard({
+  rows,
+  overview,
+  routeId,
+  open,
+  hovered,
+  onToggle,
+  onHover,
+  onSwitch,
+  onRetry,
+}) {
+  const status = overview?.status ?? "idle";
+  const info = overview?.info ?? {};
+  const loading = status === "loading";
+  const failed = status === "partial";
+  const summary = describeOverviewSummary(rows, info, status);
+  const errorText =
+    typeof overview?.error === "string" && overview.error !== "" ? `（${overview.error}）` : "";
+  const dotStyleFor = (kind) => {
+    if (kind === "configured") return s.credentialDotOn;
+    if (kind === "unconfigured") return s.credentialDotOff;
+    return s.credentialDotUnknown;
+  };
+
+  return (
+    <section style={s.sectionCard} aria-label="全部路由">
+      <button
+        type="button"
+        style={s.overviewSummary}
+        aria-expanded={open}
+        aria-label={open ? "收起全部路由" : "展开全部路由"}
+        onClick={onToggle}
+      >
+        {open ? "▾" : "▶"} {summary}
+      </button>
+
+      {open ? (
+        <div style={s.overviewBody}>
+          {loading ? (
+            <div style={s.overviewStatus} role="status" aria-label="全部路由密钥状态">
+              {OVERVIEW_KEY_TEXT.loading}
+            </div>
+          ) : null}
+
+          {failed ? (
+            <div style={s.warn} role="alert" aria-label="全部路由密钥状态读取失败">
+              部分密钥状态读取失败{errorText}，未读取的行显示「? 未知」，已读取的行不受影响。
+              <button
+                type="button"
+                style={s.btnSmall}
+                onClick={onRetry}
+                aria-label="重试读取全部路由密钥状态"
+              >
+                重试
+              </button>
+            </div>
+          ) : null}
+
+          {rows.length === 0 ? (
+            <div style={s.overviewNote}>当前没有配置任何路由。</div>
+          ) : (
+            <table style={s.overviewTable} aria-label="全部路由清单">
+              <thead>
+                <tr>
+                  <th style={s.overviewTh} scope="col">路由</th>
+                  <th style={s.overviewTh} scope="col">模型数</th>
+                  <th style={s.overviewTh} scope="col">密钥</th>
+                  <th style={s.overviewTh} scope="col">协议</th>
+                  <th style={{ ...s.overviewTh, textAlign: "right" }} scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const current = row.id === routeId;
+                  const cell = credentialCellOf(row.ref, info, { loading });
+                  const rowStyle = {
+                    ...s.overviewRow,
+                    ...(current ? s.overviewRowCurrent : null),
+                    ...(hovered === row.id ? s.overviewRowHover : null),
+                  };
+                  return (
+                    <tr
+                      key={row.id}
+                      style={rowStyle}
+                      aria-label={`路由 ${row.id}`}
+                      onMouseEnter={() => onHover(row.id)}
+                      onMouseLeave={() => onHover("")}
+                      onClick={() => onSwitch(row.id)}
+                    >
+                      <td style={current ? { ...s.overviewTd, ...s.overviewTdCurrent } : s.overviewTd}>
+                        <span style={s.overviewRouteId}>{row.id}</span>
+                        {current ? <span style={s.overviewCurrentBadge}>当前</span> : null}
+                      </td>
+                      <td style={s.overviewTd}>
+                        {row.modelCount === 0 ? "未设置" : row.modelCount}
+                      </td>
+                      <td style={s.overviewTd}>
+                        <span style={s.overviewKey} aria-label={`密钥状态 ${row.id}`}>
+                          {cell.kind === "loading" ? (
+                            <span style={s.overviewKeyLoading}>…</span>
+                          ) : (
+                            <React.Fragment>
+                              <span
+                                style={{ ...s.credentialDot, ...dotStyleFor(cell.kind) }}
+                                aria-hidden="true"
+                              >
+                                {cell.glyph}
+                              </span>
+                              <span style={s.credentialText}>{cell.text}</span>
+                            </React.Fragment>
+                          )}
+                        </span>
+                      </td>
+                      <td style={s.overviewTd}>{row.api === "" ? "未指定" : row.api}</td>
+                      <td style={{ ...s.overviewTd, ...s.overviewActionCell }}>
+                        <button
+                          type="button"
+                          style={current
+                            ? { ...s.overviewSwitch, ...s.overviewSwitchDisabled }
+                            : s.overviewSwitch}
+                          disabled={current}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSwitch(row.id);
+                          }}
+                          aria-label={`切换到 ${row.id}`}
+                        >
+                          {current ? "当前" : "切换"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+
+          <div style={s.overviewNote}>点任意行切换当前路由；密钥只显示状态，不显示密钥内容。</div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/**
  * 路由（provider）级字段编辑卡片。
  *
  * 默认折叠；展开后可编辑十个路由级字段。写入只产出叶子 set / unset，
@@ -2253,6 +2476,13 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const routes = Object.keys(providers);
   const writable = snap?.writable !== false;
 
+  // 总览行每次渲染都从最新快照重算：增删路由、改 apiKeyEnv 后无需手动刷新。
+  // 这里刻意不用 useMemo —— 宿主快照可能复用 providers 对象，而渲染读到的
+  // 始终是新值；只有引用名真正变化（或重新展开 / 重试）才触发新的 describe。
+  const overviewRows = buildRouteOverview(providers);
+  const overviewRefs = overviewCredentialRefs(overviewRows);
+  const overviewRefsKey = overviewRefs.join("\u0000");
+
   // 协议清单从宿主命名空间 schema 现读：宿主加了新协议我们自动跟上；读不到
   // （旧宿主 / schema 形态变化 / 描述镜像尚未就绪）时退回内置七种并在卡片上标注。
   const apiChoices = React.useMemo(() => {
@@ -2355,6 +2585,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const connectionTestGeneration = React.useRef(0);
   // 三个默认值的「哪些模型会用到」清单各自折叠；按模型字段名存。
   const [routeDefaultUsageOpen, setRouteDefaultUsageOpen] = React.useState({ contextWindow: false, maxTokens: false, input: false });
+
+  // 全部路由总览（工单 #24）：默认折叠；只有展开时才批量 describe 所有引用名。
+  // info 按引用名缓存三种密钥状态，error 只在某一批失败时出现（该批及之后为未知）。
+  const [overviewOpen, setOverviewOpen] = React.useState(false);
+  const [overview, setOverview] = React.useState({ status: "idle", info: {}, error: "" });
+  const [overviewRefresh, setOverviewRefresh] = React.useState(0);
+  const [overviewHover, setOverviewHover] = React.useState("");
+  const overviewGeneration = React.useRef(0);
 
   // 新建路由（工单 #21）：目录读取、表单、校验与提交状态全部留在 Workbench，
   // 弹窗组件保持无 hook；创建成功后用 revealCreatedRoute 让路由卡片自动展开。
@@ -2556,6 +2794,56 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       disposed = true;
     };
   }, [routeCardOpen, credentialReference, credentialRefresh, credentialOps]);
+
+  // 总览的批量密钥状态：折叠时直接返回（不发请求）；展开后按 64 个一批查询。
+  // 路由增删 / apiKeyEnv 变化（快照订阅重算 refs）与保存 / 清除密钥
+  // （credentialRefresh）都会重跑；generation 作废旧请求的迟到结果。
+  React.useEffect(() => {
+    if (!overviewOpen) {
+      overviewGeneration.current += 1;
+      return undefined;
+    }
+    const refs = overviewRefs;
+    if (refs.length === 0) {
+      overviewGeneration.current += 1;
+      setOverview({ status: "ready", info: {}, error: "" });
+      return undefined;
+    }
+    const generation = ++overviewGeneration.current;
+    // 重新查询时清空旧结果：读的过程中任何一行都不能显示上一轮的「未配置」。
+    setOverview({ status: "loading", info: {}, error: "" });
+    let disposed = false;
+    (async () => {
+      const info = {};
+      let failed = false;
+      let error = "";
+      for (const batch of describeBatches(refs, DESCRIBE_BATCH_SIZE)) {
+        let response;
+        try {
+          response = await credentialOps.describe(batch);
+        } catch (failure) {
+          if (disposed || generation !== overviewGeneration.current) return;
+          failed = true;
+          error = String(failure?.message ?? failure);
+          break;
+        }
+        if (disposed || generation !== overviewGeneration.current) return;
+        if (response?.ok === true && response.value !== null && typeof response.value === "object") {
+          Object.assign(info, response.value);
+          continue;
+        }
+        failed = true;
+        error = credentialErrorMessage(response, "宿主未返回原因");
+        break;
+      }
+      if (disposed || generation !== overviewGeneration.current) return;
+      setOverview({ status: failed ? "partial" : "ready", info, error });
+    })();
+    return () => {
+      disposed = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overviewOpen, overviewRefsKey, overviewRefresh, credentialRefresh, credentialOps]);
 
   const userRoute = routeId ? userProviders[routeId] : undefined;
   const routeModels = Array.isArray(route?.models) ? route.models : [];
@@ -3435,6 +3723,21 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setRouteCardOpen((current) => !current);
   }
 
+  /** 总览与下拉框共用同一个切换入口：点当前行不做任何事（不重置表单）。 */
+  function selectRoute(nextId) {
+    if (nextId === routeId || nextId === "") return;
+    setRouteId(nextId);
+    setAckReplace(false);
+  }
+
+  function toggleOverview() {
+    setOverviewOpen((current) => !current);
+  }
+
+  function retryOverview() {
+    setOverviewRefresh((current) => current + 1);
+  }
+
   /** 就地展开 / 收起某个默认值的受影响模型清单（不弹窗）。 */
   function toggleRouteDefaultUsage(modelField) {
     setRouteDefaultUsageOpen((current) => ({ ...current, [modelField]: !current[modelField] }));
@@ -3552,6 +3855,18 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         </div>
       ) : null}
 
+      <RouteOverviewCard
+        rows={overviewRows}
+        overview={overview}
+        routeId={routeId}
+        open={overviewOpen}
+        hovered={overviewHover}
+        onToggle={toggleOverview}
+        onHover={setOverviewHover}
+        onSwitch={selectRoute}
+        onRetry={retryOverview}
+      />
+
       <section style={s.sectionCard} aria-label="当前路由">
         <div style={s.sectionTitle}>当前路由</div>
         <div style={s.row}>
@@ -3561,7 +3876,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               <select
                 style={{ ...s.select, flex: "1 1 auto", width: 0 }}
                 value={routeId}
-                onChange={(e) => { setRouteId(e.target.value); setAckReplace(false); }}
+                onChange={(e) => selectRoute(e.target.value)}
               >
                 {routes.map((r) => (
                   <option key={r} value={r}>{r}</option>
