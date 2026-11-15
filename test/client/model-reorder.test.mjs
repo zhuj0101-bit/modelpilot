@@ -29,8 +29,8 @@ function rgbOf(hex) {
   return `rgb(${(number >> 16) & 0xff}, ${(number >> 8) & 0xff}, ${number & 0xff})`;
 }
 
-const INITIAL_ORDER = ["jxf/dsv4.1-flash", "jxf/dsv4.1-pro", "tx/deepseek-v4.1-flash", "qwen/complete"];
-const AFTER_DRAG = ["jxf/dsv4.1-pro", "tx/deepseek-v4.1-flash", "jxf/dsv4.1-flash", "qwen/complete"];
+const INITIAL_ORDER = ["jxf/dsv4.1-flash", "jxf/dsv4.1-pro", "jxf/tx-deepseek-v4.1-flash", "jxf/qwen-complete"];
+const AFTER_DRAG = ["jxf/dsv4.1-pro", "jxf/tx-deepseek-v4.1-flash", "jxf/dsv4.1-flash", "jxf/qwen-complete"];
 
 for (const scheme of ["light", "dark"]) {
   test(`${scheme} 主题：每条模型行左侧有拖动手柄与只读序号`, async (t) => {
@@ -119,7 +119,7 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     assert.equal(result.arrowDown.mutations, 2, "方向键又写了一次");
-    assert.deepEqual(result.arrowDown.order, ["jxf/dsv4.1-pro", "jxf/dsv4.1-flash", "tx/deepseek-v4.1-flash", "qwen/complete"]);
+    assert.deepEqual(result.arrowDown.order, ["jxf/dsv4.1-pro", "jxf/dsv4.1-flash", "jxf/tx-deepseek-v4.1-flash", "jxf/qwen-complete"]);
     assert.equal(result.arrowDown.toast, true, "成功 toast");
     assert.equal(result.arrowUp.mutations, 3);
     assert.deepEqual(result.arrowUp.order, AFTER_DRAG);
@@ -129,7 +129,7 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme);
     assert.equal(result.home.mutations, 4);
-    assert.deepEqual(result.home.order, ["qwen/complete", "jxf/dsv4.1-pro", "tx/deepseek-v4.1-flash", "jxf/dsv4.1-flash"]);
+    assert.deepEqual(result.home.order, ["jxf/qwen-complete", "jxf/dsv4.1-pro", "jxf/tx-deepseek-v4.1-flash", "jxf/dsv4.1-flash"]);
     assert.equal(result.end.mutations, 5);
     assert.deepEqual(result.end.order, AFTER_DRAG);
   });
@@ -149,7 +149,7 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.editorAfterMove.editorOpenBefore, true, "先打开第一行的编辑表单");
     assert.equal(result.editorAfterMove.editorOpenAfter, false, "重排后编辑表单收起，避免指向另一条模型");
     assert.equal(result.editorAfterMove.mutations, 7);
-    assert.deepEqual(result.editorAfterMove.order, ["tx/deepseek-v4.1-flash", "jxf/dsv4.1-pro", "jxf/dsv4.1-flash", "qwen/complete"]);
+    assert.deepEqual(result.editorAfterMove.order, ["jxf/tx-deepseek-v4.1-flash", "jxf/dsv4.1-pro", "jxf/dsv4.1-flash", "jxf/qwen-complete"]);
   });
 
   test(`${scheme} 主题：只有一个模型时手柄禁用`, async (t) => {

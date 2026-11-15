@@ -21,6 +21,8 @@ export const MODEL_LIST_PROBE_SOURCE = String.raw`
   try {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
+  // 工单 #31 默认紧凑；本夹具验证 #25 的搜索 / 批量行为，用详细模式保持行高夹具稳定。
+  window.localStorage.setItem("modelpilot.model-list-density.v1", "detailed");
 
   const route = {
     id: "preview-chat",
