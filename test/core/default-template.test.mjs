@@ -13,14 +13,25 @@ const repo = await import(pathToFileURL(join(root, "src", "core", "default-templ
 
 const {
   DEFAULT_TEMPLATE_KEY,
+  builtinDefaultTemplate,
   describeTemplate,
   formToTemplate,
+  hasStoredDefaultTemplate,
   normalizeTemplate,
   readDefaultTemplate,
   removeDefaultTemplate,
   templateToForm,
   writeDefaultTemplate,
 } = repo;
+
+const BUILTIN = {
+  version: 1,
+  contextWindow: "128000",
+  maxTokens: "8192",
+  inputText: true,
+  inputImage: false,
+  reasoningLevels: ["off", "low", "medium", "high"],
+};
 
 function memoryStorage() {
   const map = new Map();
@@ -39,8 +50,10 @@ const sample = {
   reasoningLevels: ["off", "low", "medium", "high"],
 };
 
-test("空 storage：readDefaultTemplate 返回 null", () => {
-  assert.equal(readDefaultTemplate(memoryStorage()), null);
+test("空 storage：readDefaultTemplate 回落到内置「基础对话」预设", () => {
+  assert.deepEqual(readDefaultTemplate(memoryStorage()), BUILTIN);
+  assert.deepEqual(builtinDefaultTemplate(), BUILTIN);
+  assert.equal(hasStoredDefaultTemplate(memoryStorage()), false);
 });
 
 test("写入后读回：字段逐一相等", () => {
@@ -57,28 +70,32 @@ test("两个模态都没勾：写入返回 false 且 storage 未变化", () => {
   assert.equal(storage.getItem(DEFAULT_TEMPLATE_KEY), before);
 });
 
-test("storage 里的 JSON 损坏：返回 null 且不抛", () => {
+test("storage 里的 JSON 损坏：回落内置预设且不抛", () => {
   const storage = memoryStorage();
   storage.setItem(DEFAULT_TEMPLATE_KEY, "{bad");
-  assert.equal(readDefaultTemplate(storage), null);
+  assert.deepEqual(readDefaultTemplate(storage), BUILTIN);
+  assert.equal(hasStoredDefaultTemplate(storage), false);
 });
 
-test("storage 里的结构不合法：返回 null", () => {
+test("storage 里的结构不合法：回落内置预设", () => {
   const storage = memoryStorage();
   storage.setItem(DEFAULT_TEMPLATE_KEY, "{}");
-  assert.equal(readDefaultTemplate(storage), null);
+  assert.deepEqual(readDefaultTemplate(storage), BUILTIN);
+  assert.equal(hasStoredDefaultTemplate(storage), false);
 });
 
-test("removeDefaultTemplate 后读回 null", () => {
+test("removeDefaultTemplate 后回落到内置预设", () => {
   const storage = memoryStorage();
   writeDefaultTemplate(storage, sample);
   assert.equal(removeDefaultTemplate(storage), true);
-  assert.equal(readDefaultTemplate(storage), null);
+  assert.deepEqual(readDefaultTemplate(storage), BUILTIN);
+  assert.equal(hasStoredDefaultTemplate(storage), false);
 });
 
-test("getItem 抛异常（隐私模式）：返回 null 且不抛", () => {
+test("getItem 抛异常（隐私模式）：回落内置预设且不抛", () => {
   const storage = { getItem: () => { throw new Error("denied"); } };
-  assert.equal(readDefaultTemplate(storage), null);
+  assert.deepEqual(readDefaultTemplate(storage), BUILTIN);
+  assert.equal(hasStoredDefaultTemplate(storage), false);
 });
 
 test("setItem 抛异常：返回 false 且不抛", () => {
@@ -86,10 +103,18 @@ test("setItem 抛异常：返回 false 且不抛", () => {
   assert.equal(writeDefaultTemplate(storage, sample), false);
 });
 
-test("storage 为 undefined：三个函数安全返回 null / false / false", () => {
-  assert.equal(readDefaultTemplate(undefined), null);
+test("storage 为 undefined：读取回落内置预设，写入 / 删除安全返回 false", () => {
+  assert.deepEqual(readDefaultTemplate(undefined), BUILTIN);
+  assert.equal(hasStoredDefaultTemplate(undefined), false);
   assert.equal(writeDefaultTemplate(undefined, sample), false);
   assert.equal(removeDefaultTemplate(undefined), false);
+});
+
+test("存储里有合法模板：优先使用用户模板，不被内置预设覆盖", () => {
+  const storage = memoryStorage();
+  writeDefaultTemplate(storage, sample);
+  assert.deepEqual(readDefaultTemplate(storage), { version: 1, ...sample });
+  assert.equal(hasStoredDefaultTemplate(storage), true);
 });
 
 test("templateToForm(null)：空表单 + 默认档位", () => {

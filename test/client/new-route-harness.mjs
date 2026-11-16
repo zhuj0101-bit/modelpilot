@@ -192,6 +192,7 @@ ${CATALOG_SOURCE}
         createButton: byAria("新建路由")?.textContent.trim() ?? null,
         route: routeSelect()?.value ?? null,
         emptyWarning: document.body.innerText.includes("当前没有配置模型路由"),
+        emptyGuidance: document.body.innerText.includes("第一次用可以先用「基础对话」预设，它会填好上下文窗口与输出上限。"),
         routes: [...(routeSelect()?.options ?? [])].map((option) => option.value),
       },
     };
@@ -415,6 +416,58 @@ function scenarioBody(scenario) {
       cardOpen: cardOpen(),
       provider: snapshot.value.providers["my-relay"] ?? null,
     };
+`;
+  }
+  if (scenario === "custom-presets") {
+    return String.raw`
+    await openDialog();
+    await pickCustom();
+    const baseURLPresetChips = () =>
+      [...document.querySelectorAll('[aria-label^="接口地址预设 "]')].map((element) => element.textContent.trim());
+    const readPresetState = () => ({
+      baseURL: byAria("接口地址")?.value ?? null,
+      protocol: byAria("协议")?.value ?? null,
+      note: dialog()?.innerText.includes("已保留你输入的接口地址") === true,
+      mutations: mutations.length,
+    });
+    const clickBaseURLPreset = async (label) => {
+      buttonByAria("接口地址预设 " + label).click();
+      await sleep(20);
+    };
+
+    result.initial = {
+      ...readPresetState(),
+      chips: baseURLPresetChips(),
+      hasInput: byAria("接口地址") !== null,
+    };
+
+    // OpenAI 兼容：只填形状（以 /v1 结尾、不编造域名）+ 切协议。
+    await clickBaseURLPreset("OpenAI 兼容 …/v1");
+    result.openai = {
+      ...readPresetState(),
+      endsWithV1: (byAria("接口地址")?.value ?? "").endsWith("/v1"),
+    };
+
+    // Anthropic：换协议，形状仍是 /v1。
+    await clickBaseURLPreset("Anthropic …/v1");
+    result.anthropic = {
+      ...readPresetState(),
+      endsWithV1: (byAria("接口地址")?.value ?? "").endsWith("/v1"),
+    };
+
+    // 用户手输过地址：再点 chip 保留输入并提示，不静默覆盖。
+    setValue(byAria("接口地址"), "https://my-relay.invalid/v1");
+    await sleep(10);
+    result.manual = readPresetState();
+    await clickBaseURLPreset("Anthropic …/v1");
+    result.afterManual = {
+      ...readPresetState(),
+      preserved: byAria("接口地址")?.value === "https://my-relay.invalid/v1",
+    };
+
+    // 「留空自己填」是明确的清空动作：任何时候都执行，并复位提示。
+    await clickBaseURLPreset("留空自己填");
+    result.cleared = readPresetState();
 `;
   }
   if (scenario === "theme") {

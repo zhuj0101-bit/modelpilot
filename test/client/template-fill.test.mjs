@@ -50,6 +50,17 @@ const TEMPLATE_FORM = {
   levels: ["off", "low"],
 };
 
+const BUILTIN_FORM = {
+  contextWindow: "128000",
+  maxTokens: "8192",
+  text: true,
+  image: false,
+  levels: ["off", "low", "medium", "high"],
+};
+
+const BUILTIN_HINT =
+  "内置模板：基础对话 · 上下文 128000（128K） · 输出 8192（8K） · text · off,low,medium,high";
+
 const EMPTY_FORM = {
   contextWindow: "",
   maxTokens: "",
@@ -139,33 +150,38 @@ for (const scheme of ["light", "dark"]) {
     assert.match(save.listText, /窗口 131K · 输出 8K · text \/ image · 2 档/);
   });
 
-  test(`${scheme} 主题：无模板时编辑按钮禁用并说明，点击不改变表单`, async (t) => {
+  test(`${scheme} 主题：首次打开（无存储）就用内置「基础对话」模板`, async (t) => {
     if (chrome === null) return skip(t);
-    const { edit } = await probe(scheme, "none", null);
-    assert.equal(edit.initial.fill.disabled, true);
+    const { edit, create } = await probe(scheme, "none", null);
+    assert.equal(edit.initial.fill.disabled, false);
     assert.equal(edit.initial.fill.text, "填入默认模板");
-    assert.equal(edit.initial.hint, "尚未设置默认模板，先在新增表单里「存为默认模板」");
-    assert.equal(edit.initial.clickNoop, true);
-    assert.equal(edit.initial.saveDisabled, true);
+    assert.equal(edit.initial.hint, BUILTIN_HINT);
     assert.equal(edit.initial.state.contextWindow, "1000000");
     assert.equal(edit.initial.state.maxTokens, "32768");
+    // 点「填入默认模板」把编辑表单从模型现有值换成内置预设值。
+    assert.equal(edit.initial.clickNoop, false);
+    assert.deepEqual(edit.filled.state, {
+      name: "jxf/dsv4.1-flash",
+      ...BUILTIN_FORM,
+    });
     assert.equal(edit.cancelled.mutations, 0);
+
+    assert.deepEqual(create.initial, BUILTIN_FORM);
+    assert.equal(create.fill.disabled, false);
+    assert.equal(create.fill.text, "填入默认模板");
+    assert.equal(create.hintLine, BUILTIN_HINT);
+    assert.equal(create.clickNoop, true);
   });
 
-  test(`${scheme} 主题：无模板时新增表单的填入按钮同样禁用`, async (t) => {
+  test(`${scheme} 主题：存过自己的模板后摘要显示用户模板，不显示内置预设`, async (t) => {
     if (chrome === null) return skip(t);
-    const { create } = await probe(scheme, "none", null);
-    assert.equal(create.fill.disabled, true);
-    assert.equal(create.fill.text, "填入默认模板");
-    assert.equal(create.hintLine, "尚未设置默认模板");
-    assert.equal(create.clickNoop, true);
-    assert.deepEqual(create.initial, {
-      contextWindow: "",
-      maxTokens: "",
-      text: true,
-      image: false,
-      levels: ["off", "low", "medium", "high"],
-    });
+    const { edit, create } = await probe(scheme, "with", TEMPLATE_SEED);
+    const expectedHint =
+      "默认模板：上下文 131072（131K） · 输出 8192（8K） · text + image · off,low";
+    assert.equal(edit.initial.hint, expectedHint);
+    assert.equal(create.hintLine, expectedHint);
+    assert.ok(!edit.initial.hint.includes("内置模板"));
+    assert.ok(!create.hintLine.includes("内置模板"));
   });
 
   test(`${scheme} 主题：新增表单点清空后再填入，五个字段恢复模板值`, async (t) => {
@@ -175,7 +191,7 @@ for (const scheme of ["light", "dark"]) {
     assert.deepEqual(create.initial, expected);
     assert.equal(create.fill.disabled, false);
     assert.equal(create.fill.text, "填入默认模板");
-    assert.equal(create.sameRow, true);
+    assert.equal(create.sameBarAsPresets, true);
 
     assert.deepEqual(create.afterClear, expected);
     assert.deepEqual(create.mutated, {
@@ -210,7 +226,7 @@ for (const scheme of ["light", "dark"]) {
     assert.deepEqual(op.value[0].reasoningEfforts, { off: null, low: "low", medium: "medium", high: "high_reasoning" });
   });
 
-  test(`${scheme} 主题：按钮与提示行跟随 token，禁用样式可辨识`, async (t) => {
+  test(`${scheme} 主题：按钮与提示行跟随 token，内置模板摘要可辨识`, async (t) => {
     if (chrome === null) return skip(t);
     const withResult = await probe(scheme, "with", TEMPLATE_SEED);
     const noneResult = await probe(scheme, "none", null);
@@ -226,13 +242,13 @@ for (const scheme of ["light", "dark"]) {
     assert.match(withResult.create.fill.inlineStyle, /--dsw-alias-interactive-bg-hover/);
     assert.ok(withResult.create.fill.ratio >= 4.5, `新增填入按钮对比度 ${withResult.create.fill.ratio}`);
 
-    const disabled = noneResult.disabledTheme.editorFill;
-    assert.equal(disabled.disabled, true);
-    assert.equal(disabled.opacity, "0.55");
-    assert.match(disabled.inlineStyle, /not-allowed/);
-    assert.ok(disabled.ratio >= 4.5, `禁用按钮对比度 ${disabled.ratio}`);
-    assert.equal(noneResult.disabledTheme.hint.text, "尚未设置默认模板，先在新增表单里「存为默认模板」");
-    assert.equal(noneResult.disabledTheme.hint.color, token(scheme, "--dsw-alias-label-primary"));
-    assert.ok(noneResult.disabledTheme.hint.ratio >= 4.5, `无模板提示对比度 ${noneResult.disabledTheme.hint.ratio}`);
+    const builtin = noneResult.builtinTheme;
+    assert.equal(builtin.editorFill.disabled, false);
+    assert.equal(builtin.editorFill.opacity, "1");
+    assert.doesNotMatch(builtin.editorFill.inlineStyle, /not-allowed/);
+    assert.ok(builtin.editorFill.ratio >= 4.5, `内置模板填入按钮对比度 ${builtin.editorFill.ratio}`);
+    assert.equal(builtin.hint.text, BUILTIN_HINT);
+    assert.equal(builtin.hint.color, token(scheme, "--dsw-alias-label-primary"));
+    assert.ok(builtin.hint.ratio >= 4.5, `内置模板摘要对比度 ${builtin.hint.ratio}`);
   });
 }

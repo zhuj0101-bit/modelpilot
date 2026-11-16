@@ -158,12 +158,14 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   const editorHint = () => {
     const spans = [...(editor()?.querySelectorAll("span") ?? [])];
     const node = spans.find((element) => element.textContent.startsWith("默认模板："))
+      ?? spans.find((element) => element.textContent.startsWith("内置模板："))
       ?? spans.find((element) => element.textContent.startsWith("尚未设置默认模板"));
     return node?.innerText ?? "";
   };
   const createHint = () => {
     const spans = [...document.querySelectorAll("span")];
     const node = spans.find((element) => element.textContent.startsWith("默认模板："))
+      ?? spans.find((element) => element.textContent.startsWith("内置模板："))
       ?? spans.find((element) => element.textContent.startsWith("尚未设置默认模板"));
     return node?.innerText ?? "";
   };
@@ -221,7 +223,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     },
     hintLine: createHint(),
   };
-  result.create.sameRow = createFill().parentElement === buttonByText("存为默认模板").parentElement;
+  result.create.sameBarAsPresets = createFill().parentElement === document.querySelector('[aria-label="模型预设"]');
   const createBeforeClick = createState();
   createFill().click();
   result.create.clickNoop = JSON.stringify(createState()) === JSON.stringify(createBeforeClick);
@@ -280,7 +282,9 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   };
 
   // 按钮 / 提示行的 token 与对比度（有模板态）。
-  const hintNode = [...editor().querySelectorAll("span")].find((node) => node.textContent.startsWith("默认模板："));
+  const hintNode = [...editor().querySelectorAll("span")].find(
+    (node) => node.textContent.startsWith("默认模板：") || node.textContent.startsWith("内置模板："),
+  );
   result.edit.theme = {
     fill: {
       inlineStyle: editorFill().getAttribute("style") ?? "",
@@ -297,6 +301,24 @@ ${MODEL_EDIT_ROUTE_SOURCE}
       ratio: contrast(parseColor(styleOf(hintNode).color), effectiveBackground(hintNode)),
     },
   };
+
+  // ── 无存储 → 内置「基础对话」态：按钮可用、摘要主题（在保存关闭编辑前读） ──
+  result.builtinTheme = seed === null ? {
+    editorFill: {
+      disabled: editorFill()?.disabled ?? false,
+      inlineStyle: editorFill()?.getAttribute("style") ?? "",
+      opacity: styleOf(editorFill()).opacity,
+      ratio: contrast(parseColor(styleOf(editorFill()).color), effectiveBackground(editorFill())),
+    },
+    hint: (() => {
+      const node = [...(editor()?.querySelectorAll("span") ?? [])].find((element) => element.textContent.startsWith("内置模板："));
+      return node === undefined ? null : {
+        text: node.innerText,
+        color: styleOf(node).color,
+        ratio: contrast(parseColor(styleOf(node).color), effectiveBackground(node)),
+      };
+    })(),
+  } : null;
 
   // 取消不写入。
   byAria("取消编辑").click();
@@ -315,24 +337,6 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   result.save.lastOps = mutations[mutations.length - 1];
   result.save.savedRow = JSON.parse(JSON.stringify(route.models[0]));
   result.save.listText = document.querySelector('[aria-label="该路由的模型列表"]')?.innerText ?? "";
-
-  // ── 无模板态：按钮禁用样式与提示 ──
-  result.disabledTheme = seed === null ? {
-    editorFill: {
-      disabled: editorFill()?.disabled ?? false,
-      inlineStyle: editorFill()?.getAttribute("style") ?? "",
-      opacity: styleOf(editorFill()).opacity,
-      ratio: contrast(parseColor(styleOf(editorFill()).color), effectiveBackground(editorFill())),
-    },
-    hint: (() => {
-      const node = [...editor().querySelectorAll("span")].find((element) => element.textContent.startsWith("尚未设置默认模板"));
-      return node === undefined ? null : {
-        text: node.innerText,
-        color: styleOf(node).color,
-        ratio: contrast(parseColor(styleOf(node).color), effectiveBackground(node)),
-      };
-    })(),
-  } : null;
 
   document.getElementById("result").textContent = JSON.stringify(result);
   } catch (error) {

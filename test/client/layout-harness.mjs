@@ -323,6 +323,17 @@ export const FIXTURE_SOURCE = String.raw`
 (() => {
   const client = window.__CLIENT__;
   if (!client) throw new Error("client bundle did not register");
+  // 工单 #40 起，没有用户模板时表单会自动填入内置「基础对话」预设。
+  // 本夹具只测提示行 / 候选面板的布局，先存一份 token 为空的合法模板，
+  // 保持「空表单」这个被测场景不变。
+  window.localStorage.setItem("modelpilot.default-template.v1", JSON.stringify({
+    version: 1,
+    contextWindow: "",
+    maxTokens: "",
+    inputText: true,
+    inputImage: false,
+    reasoningLevels: ["off", "low", "medium", "high"],
+  }));
 
   const route = {
     id: "preview-model-existing",
