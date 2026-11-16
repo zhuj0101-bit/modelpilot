@@ -5,7 +5,13 @@
 // 写进 configForms 会变成 provider 配置的一部分。
 //
 // 所有 storage 访问都包了 try/catch —— 隐私模式或禁用存储时
-// 读取失败应退化成「没有模板」，而不是让整页崩掉。
+// 读取失败应退化成内置预设，而不是让整页崩掉。
+//
+// 工单 #40：读不到用户模板时回落到内置的「基础对话」预设。这样第一次打开
+// 插件就有可用的模板，「填入默认模板」不再是需要先手动配一条模型的循环依赖。
+// 用户自己存的模板优先级始终高于内置预设。
+
+import { MODEL_PRESETS, presetToTemplate } from "./model-presets.js";
 
 /** localStorage key；结构变化时换版本号。 */
 export const DEFAULT_TEMPLATE_KEY = "modelpilot.default-template.v1";
@@ -41,10 +47,18 @@ export function normalizeTemplate(value) {
 }
 
 /**
- * 从 storage 读出默认模板；没有、损坏或不可读时返回 null。
+ * 内置回落的模板：基础对话预设。
+ * 先走 presetToTemplate，再交给 normalizeTemplate 补 version 与结构收敛。
+ */
+export function builtinDefaultTemplate() {
+  return normalizeTemplate(presetToTemplate(MODEL_PRESETS[0]));
+}
+
+/**
+ * 读取 storage 里的用户模板；没有、损坏或不可读时返回 null。
  * @param {Pick<Storage,"getItem">|undefined} storage
  */
-export function readDefaultTemplate(storage) {
+function readStoredTemplate(storage) {
   if (!storage || typeof storage.getItem !== "function") return null;
   try {
     const raw = storage.getItem(DEFAULT_TEMPLATE_KEY);
@@ -53,6 +67,23 @@ export function readDefaultTemplate(storage) {
   } catch {
     return null;
   }
+}
+
+/**
+ * 从 storage 读出默认模板；用户没存过、数据损坏或不可读时回落到
+ * 内置「基础对话」预设（不再返回 null）。
+ * @param {Pick<Storage,"getItem">|undefined} storage
+ */
+export function readDefaultTemplate(storage) {
+  return readStoredTemplate(storage) ?? builtinDefaultTemplate();
+}
+
+/**
+ * storage 里是否有一份合法的用户模板；用于界面区分「默认模板」与「内置模板」。
+ * @param {Pick<Storage,"getItem">|undefined} storage
+ */
+export function hasStoredDefaultTemplate(storage) {
+  return readStoredTemplate(storage) !== null;
 }
 
 /**

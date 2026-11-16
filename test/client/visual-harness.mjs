@@ -63,6 +63,17 @@ export const VISUAL_PROBE_SOURCE = String.raw`
   if (!client) throw new Error("client bundle did not register");
   // 工单 #31 默认紧凑；本夹具继续测量详细模式的摘要 / 字号 / 对比度。
   window.localStorage.setItem("modelpilot.model-list-density.v1", "detailed");
+  // 工单 #40：没有用户模板时新增表单会自动填入内置「基础对话」预设，
+  // 顺带显示预算提示。本夹具测的是列表摘要的最暗文字，先存一份 token 为空
+  // 的合法模板，保持原来「新增表单为空」的测量场景。
+  window.localStorage.setItem("modelpilot.default-template.v1", JSON.stringify({
+    version: 1,
+    contextWindow: "",
+    maxTokens: "",
+    inputText: true,
+    inputImage: false,
+    reasoningLevels: ["off", "low", "medium", "high"],
+  }));
 
 ${MODEL_EDIT_ROUTE_SOURCE}
   const providers = { "preview-chat": route };

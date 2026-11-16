@@ -41,13 +41,16 @@ import {
   keyRenameTarget,
 } from "../core/key-rename.js";
 import {
+  builtinDefaultTemplate,
   describeTemplate,
   formToTemplate,
+  hasStoredDefaultTemplate,
   readDefaultTemplate,
   removeDefaultTemplate,
   templateToForm,
   writeDefaultTemplate,
 } from "../core/default-template.js";
+import { MODEL_PRESETS, detectPreset, presetToForm } from "../core/model-presets.js";
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
 import {
   TOKEN_INPUT,
@@ -134,6 +137,32 @@ const LLM_NS = "llm-pi-ai";
 // token 字段的候选清单按 #5 写死，不做成用户配置。
 const CONTEXT_WINDOW_CANDIDATES = Object.freeze([8192, 32768, 65536, 131072, 200000, 262144, 1000000]);
 const MAX_TOKENS_CANDIDATES = Object.freeze([4096, 8192, 16384, 32768, 65536, 131072]);
+
+// 中转站地址只填形状，不编造具体域名：用户必须把主机名换成自己的。
+const RELAY_BASE_URL_SHAPE = "https://你的中转站域名/v1";
+
+/**
+ * 「自定义」新建路由的接口地址格式 chip（工单 #40）。
+ * 协议名对刚装插件的用户是黑话，点一下同时把形状与协议都摆好。
+ * `api: null` 表示只清空地址，不改协议。
+ */
+const BASE_URL_PRESETS = Object.freeze([
+  Object.freeze({ id: "openai", label: "OpenAI 兼容 …/v1", api: "openai-completions", baseURL: RELAY_BASE_URL_SHAPE }),
+  Object.freeze({ id: "anthropic", label: "Anthropic …/v1", api: "anthropic-messages", baseURL: RELAY_BASE_URL_SHAPE }),
+  Object.freeze({ id: "empty", label: "留空自己填", api: null, baseURL: "" }),
+]);
+
+/**
+ * 模板摘要：用户存过就是「默认模板」，没存过就是内置「基础对话」预设。
+ * template 为 null 只可能来自外部传入（当前读取路径永远回落到内置预设）。
+ */
+function templateSummaryText(template, source) {
+  if (template === null) return "尚未设置默认模板";
+  const description = describeTemplate(template, humanizeTokenCount);
+  return source === "stored"
+    ? `默认模板：${description}`
+    : `内置模板：${MODEL_PRESETS[0].label} · ${description}`;
+}
 
 /**
  * token 输入是否合法。与 diffRow 共用 classifyTokenInput（工单 #38 问题 3）：
@@ -765,7 +794,9 @@ const s = {
   budget: { fontSize: FONT.hint, lineHeight: 1.55, color: "var(--dsw-alias-label-primary, inherit)" },
   budgetWarn: {
     padding: "6px 9px", borderRadius: RADIUS.sm, fontSize: FONT.hint, lineHeight: 1.55,
-    color: "var(--dsw-alias-state-error-primary, #e05252)",
+    // 工单 #40：首次打开的内置预设会填出预算提示；错误色前景在告警底上只有
+    // 3.72 对比度。前景继承主文字色（与 s.warn 一致），告警语义由 ⚠ / 边框 /
+    // 底色承担，深色与浅色都 ≥ 4.5。
     background: "var(--dsw-alias-state-warn-tertiary, rgba(220,150,40,0.12))",
     border: "1px solid var(--dsw-alias-state-warn-secondary, rgba(220,150,40,0.34))",
   },
@@ -1250,6 +1281,7 @@ function NewRouteDialog({
   baseURL,
   baseURLError,
   baseURLHint,
+  baseURLNote,
   api,
   apiChoices,
   apiKeyEnv,
@@ -1269,6 +1301,7 @@ function NewRouteDialog({
   onProviderIdBlur,
   onBaseURLChange,
   onBaseURLBlur,
+  onApplyBaseURLPreset,
   onApiChange,
   onApiKeyEnvChange,
   onModelIdsChange,
@@ -1346,6 +1379,24 @@ function NewRouteDialog({
                 />
               </Field>
             </div>
+            <div style={s.templateBar} role="group" aria-label="常见接口地址格式">
+              <span style={s.fieldHint}>常见格式：</span>
+              {BASE_URL_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  style={{ ...s.chip, cursor: "pointer", fontFamily: "inherit" }}
+                  aria-label={`接口地址预设 ${preset.label}`}
+                  title={preset.id === "empty" ? "清空接口地址，自己输入" : `填入 ${RELAY_BASE_URL_SHAPE} 的形状，并把协议切成 ${preset.api}`}
+                  onClick={() => onApplyBaseURLPreset(preset.id)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            {baseURLNote !== "" ? (
+              <div style={s.fieldHint} role="status">{baseURLNote}</div>
+            ) : null}
             <div style={s.row}>
               <Field label="协议" style={{ flex: "1 1 220px" }}>
                 <select
@@ -1581,6 +1632,7 @@ function EditModelForm({
   modelId,
   form,
   template,
+  templateSource,
   errors,
   formError,
   projection,
@@ -1634,9 +1686,7 @@ function EditModelForm({
           填入默认模板
         </button>
         <span style={s.fieldHint}>
-          {template === null
-            ? "尚未设置默认模板，先在新增表单里「存为默认模板」"
-            : `默认模板：${describeTemplate(template, humanizeTokenCount)}`}
+          {templateSummaryText(template, templateSource)}
         </span>
       </div>
 
@@ -2235,7 +2285,11 @@ function RouteOverviewCard({
           ) : null}
 
           {rows.length === 0 ? (
-            <div style={s.overviewNote}>当前没有配置任何路由。</div>
+            <div style={s.overviewNote}>
+              <div>当前没有配置任何路由。</div>
+              <div>先点右上角「+ 新建路由」：从目录里选一个提供商，或选「自定义」填中转站地址。</div>
+              <div>第一次用可以先用「基础对话」预设，它会填好上下文窗口与输出上限。</div>
+            </div>
           ) : (
             <table style={s.overviewTable} aria-label="全部路由清单">
               <thead>
@@ -2909,6 +2963,11 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }, []);
 
   const [template, setTemplate] = React.useState(() => readDefaultTemplate(storage));
+  // 工单 #40：区分「用户存的模板」与「内置基础对话预设」，只影响摘要文案与
+  // 是否显示「清除」；两种模板填入表单的行为完全相同。
+  const [templateSource, setTemplateSource] = React.useState(
+    () => (hasStoredDefaultTemplate(storage) ? "stored" : "builtin"),
+  );
 
   // 工单 #31：列表密度的全局前端偏好；读不到 / 非法值一律回落 compact。
   const [modelDensity, setModelDensity] = React.useState(() => readModelListDensity(storage));
@@ -2994,6 +3053,9 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const [createModelIds, setCreateModelIds] = React.useState("");
   const [createProviderIdTouched, setCreateProviderIdTouched] = React.useState(false);
   const [createBaseURLTouched, setCreateBaseURLTouched] = React.useState(false);
+  // 工单 #40：用户手输过接口地址后再点格式 chip，保留输入并给出提示，
+  // 不静默覆盖。空串表示没有提示。
+  const [createBaseURLNote, setCreateBaseURLNote] = React.useState("");
   const [createBusy, setCreateBusy] = React.useState(false);
   const [createError, setCreateError] = React.useState("");
   const createFocusRef = React.useRef(null);
@@ -3033,6 +3095,16 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }, [template]);
 
   const reasoningGuard = reasoningLevelsGuard(reasoningLevels);
+
+  // 工单 #40：当前表单值命中哪个内置预设。任何字段被改动都会让它变成 null，
+  // chip 的高亮必须跟着消失，不能残留「你还在基础对话上」的假状态。
+  const detectedPreset = detectPreset({
+    contextWindow,
+    maxTokens,
+    inputText,
+    inputImage,
+    reasoningLevels,
+  });
 
   React.useEffect(() => {
     if (routeId === "" && routes.length > 0) setRouteId(routes[0]);
@@ -3741,6 +3813,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setCreateModelIds("");
     setCreateProviderIdTouched(false);
     setCreateBaseURLTouched(false);
+    setCreateBaseURLNote("");
     setCreateBusy(false);
     setCreateError("");
   }
@@ -3758,6 +3831,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setCreateProviderId("");
     setCreateProviderIdTouched(false);
     setCreateBaseURLTouched(false);
+    setCreateBaseURLNote("");
     setCreateError("");
   }
 
@@ -3770,7 +3844,74 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   function changeCreateBaseURL(value) {
     setCreateBaseURL(value);
     setCreateBaseURLTouched(true);
+    setCreateBaseURLNote("");
     setCreateError("");
+  }
+
+  /**
+   * 工单 #40：套用接口地址格式 chip。
+   *
+   * 用户手输过地址（createBaseURLTouched）并且当前非空时只提示、不覆盖；
+   * 「留空自己填」是明确的清空动作，任何时候都执行，也把「手输过」状态复位，
+   * 让用户随后可以重新点其它格式。
+   */
+  function applyBaseURLPreset(id) {
+    const preset = BASE_URL_PRESETS.find((candidate) => candidate.id === id);
+    if (preset === undefined) return;
+    if (preset.id === "empty") {
+      setCreateBaseURL("");
+      setCreateBaseURLTouched(false);
+      setCreateBaseURLNote("");
+      setCreateError("");
+      return;
+    }
+    if (createBaseURLTouched && createBaseURL.trim() !== "") {
+      setCreateBaseURLNote("已保留你输入的接口地址；要套用格式请先点「留空自己填」");
+      return;
+    }
+    setCreateBaseURL(preset.baseURL);
+    // 协议只切到宿主 schema 真的提供的值，避免 select 落到不存在的选项。
+    if (preset.api !== null && createProtocolChoices.includes(preset.api)) {
+      setCreateApi(preset.api);
+    }
+    setCreateBaseURLNote("");
+    setCreateError("");
+  }
+
+  /** 工单 #40：预设只填表单状态，不写任何配置。 */
+  function applyModelPreset(preset) {
+    const form = presetToForm(preset);
+    if (form === null) return;
+    setContextWindow(form.contextWindow);
+    setMaxTokens(form.maxTokens);
+    setContextWindowError(false);
+    setMaxTokensError(false);
+    setInputText(form.inputText);
+    setInputImage(form.inputImage);
+    setReasoningLevels(form.reasoningLevels);
+    setReasoningApiValues({});
+  }
+
+  /** 新增表单的「填入默认模板」：模板字段整体替换，显示名 / 模型 ID 不动。 */
+  function fillCreateTemplate() {
+    if (template === null) return;
+    const form = templateToForm(template);
+    setContextWindow(form.contextWindow);
+    setMaxTokens(form.maxTokens);
+    setContextWindowError(false);
+    setMaxTokensError(false);
+    setInputText(form.inputText);
+    setInputImage(form.inputImage);
+    setReasoningLevels(form.reasoningLevels);
+    setReasoningApiValues({});
+  }
+
+  /** 清除用户模板后回落到内置基础对话：模板仍然可用，不是「没有模板」。 */
+  function clearDefaultTemplate() {
+    removeDefaultTemplate(storage);
+    setTemplate(builtinDefaultTemplate());
+    setTemplateSource("builtin");
+    setToast({ tone: "good", text: "已清除默认模板，回落到内置「基础对话」" });
   }
 
   /** 唯一写入路径：先校验出 1 条 set，再调用宿主 mutate。 */
@@ -5114,6 +5255,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             modelId={editModelId}
             form={editForm}
             template={template}
+            templateSource={templateSource}
             errors={editErrors}
             formError={editFormError}
             projection={editProjection}
@@ -5151,7 +5293,9 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       {status === "loading" ? <div style={s.sub}>正在读取 DSH 配置…</div> : null}
       {status === "ready" && routes.length === 0 ? (
         <div style={s.warn}>
-          当前没有配置模型路由。点「+ 新建路由」从内置目录添加，或直接自定义一条。
+          <div>当前没有配置模型路由。</div>
+          <div>先点右上角「+ 新建路由」：从目录里选一个提供商，或选「自定义」填中转站地址。</div>
+          <div>第一次用可以先用「基础对话」预设，它会填好上下文窗口与输出上限。</div>
         </div>
       ) : null}
 
@@ -5637,6 +5781,47 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
 
       <section style={s.formCard} aria-label="新增模型">
         <div style={s.sectionTitle}>新增模型</div>
+        {/*
+          工单 #40：首次打开就能看到三个内置预设。点 chip 只填表单，不写配置；
+          chip 的高亮来自 detectPreset —— 用户改过任何一个字段就全部取消高亮。
+        */}
+        <div style={s.templateBar} role="group" aria-label="模型预设">
+          {MODEL_PRESETS.map((preset) => {
+            const active = detectedPreset === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                style={active
+                  ? { ...s.chip, ...s.chipOn, cursor: "pointer", fontFamily: "inherit" }
+                  : { ...s.chip, cursor: "pointer", fontFamily: "inherit" }}
+                aria-pressed={active}
+                aria-label={`预设 ${preset.label}`}
+                title={preset.hint}
+                onClick={() => applyModelPreset(preset)}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+          <span style={{ flex: "1 1 auto" }} />
+          <button
+            type="button"
+            style={template === null ? { ...s.btnSmall, opacity: 0.55, cursor: "not-allowed" } : s.btnSmall}
+            disabled={template === null}
+            onClick={fillCreateTemplate}
+            aria-label="填入默认模板"
+            title={template === null ? "先在新增表单里「存为默认模板」" : ""}
+          >
+            填入默认模板
+          </button>
+          <span style={s.fieldHint}>{templateSummaryText(template, templateSource)}</span>
+          {templateSource === "stored" ? (
+            <button type="button" style={s.btnLink} onClick={clearDefaultTemplate}>
+              清除
+            </button>
+          ) : null}
+        </div>
         <div style={s.row}>
           <TokenCountField
             label="上下文窗口 (contextWindow)"
@@ -5859,52 +6044,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               return;
             }
             setTemplate(readDefaultTemplate(storage));
+            setTemplateSource("stored");
             setToast({ tone: "good", text: "已保存为默认模板" });
           }}
         >
           存为默认模板
         </button>
-        <button
-          type="button"
-          style={template === null ? { ...s.btnSmall, opacity: 0.55, cursor: "not-allowed" } : s.btnSmall}
-          disabled={template === null}
-          onClick={() => {
-            if (template === null) return;
-            const form = templateToForm(template);
-            setContextWindow(form.contextWindow);
-            setMaxTokens(form.maxTokens);
-            setContextWindowError(false);
-            setMaxTokensError(false);
-            setInputText(form.inputText);
-            setInputImage(form.inputImage);
-            setReasoningLevels(form.reasoningLevels);
-            setReasoningApiValues({});
-          }}
-          aria-label="填入默认模板"
-        >
-          填入默认模板
-        </button>
-      </div>
-
-      <div style={s.hintLine}>
-        {template === null ? (
-          <span style={s.fieldHint}>尚未设置默认模板</span>
-        ) : (
-          <>
-            <span style={s.fieldHint}>默认模板：{describeTemplate(template, humanizeTokenCount)}</span>
-            <button
-              type="button"
-              style={s.btnLink}
-              onClick={() => {
-                removeDefaultTemplate(storage);
-                setTemplate(null);
-                setToast({ tone: "good", text: "已清除默认模板" });
-              }}
-            >
-              清除
-            </button>
-          </>
-        )}
       </div>
       </section>
 
@@ -5941,7 +6086,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         <ModelPicker
           models={remoteModels}
           existing={existingModelIds}
-          hasTemplate={template !== null}
+          hasTemplate={templateSource === "stored"}
           overridesInUse={overridesInUse}
           catalogWarning={catalogWarning}
           busy={busy}
@@ -5972,6 +6117,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           baseURL={createBaseURL}
           baseURLError={createBaseURLError}
           baseURLHint="必填，以 http:// 或 https:// 开头"
+          baseURLNote={createBaseURLNote}
           api={createApi}
           apiChoices={createProtocolChoices}
           apiKeyEnv={createApiKeyEnv}
@@ -5994,6 +6140,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           onProviderIdBlur={() => setCreateProviderIdTouched(true)}
           onBaseURLChange={changeCreateBaseURL}
           onBaseURLBlur={() => setCreateBaseURLTouched(true)}
+          onApplyBaseURLPreset={applyBaseURLPreset}
           onApiChange={(value) => {
             setCreateApi(value);
             setCreateError("");
