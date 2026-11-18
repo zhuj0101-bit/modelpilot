@@ -136,13 +136,15 @@ export const VIEW_MODE_BOOT_SOURCE = String.raw`
     .find((text) => text.includes("窗口")) ?? "";
   const srCount = () => document.querySelectorAll("[data-modelpilot-sr-summary]").length;
   const snapshotOrder = () => providers["preview-chat"].models.map((model) => model.id);
+  // 工单 #41：选中态分段按钮文字前多了一个固定宽度的 ✓ 槽；比较文字时剥掉。
+  const plainText = (element) => element.textContent.replace(/[\s\u00a0✓]/g, "");
   const viewState = () => ({
     flat: find("平铺视图")?.getAttribute("aria-pressed") ?? "",
     grouped: find("分组视图")?.getAttribute("aria-pressed") ?? "",
     flatTitle: find("平铺视图")?.getAttribute("title") ?? "",
     groupedTitle: find("分组视图")?.getAttribute("title") ?? "",
-    flatText: find("平铺视图")?.textContent ?? "",
-    groupedText: find("分组视图")?.textContent ?? "",
+    flatText: plainText(find("平铺视图")),
+    groupedText: plainText(find("分组视图")),
     stored: window.localStorage.getItem(VIEW_KEY),
   });
   const densityState = () => ({

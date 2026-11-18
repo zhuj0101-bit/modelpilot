@@ -105,7 +105,8 @@ test("推理档位 chip 不折行：flex-wrap nowrap + 横向滚动", () => {
   assert.match(source, /levelChips: \{[\s\S]*?overflowX: "auto"/);
   const uses = source.match(/style=\{s\.levelChips\}/g) ?? [];
   assert.ok(uses.length >= 4, `新增 / 编辑两个表单的 chip 与操作行都使用同一容器，实际 ${uses.length}`);
-  assert.ok(source.includes("s.levelChipOn"), "选中态 chip 样式");
+  assert.ok(source.includes("s.toggleOn"), "选中态使用共享 toggleOn");
+  assert.ok(source.includes("s.toggleOff"), "未选中态使用共享 toggleOff");
 });
 
 test("主操作独占一行右对齐，次要操作为文字链接", () => {
@@ -164,14 +165,16 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.titles.form, "新增模型");
   });
 
-  test(`${scheme} 主题：所有可见文字对比度 ≥ 4.5（含 label-tertiary 摘要行）`, async (t) => {
+  test(`${scheme} 主题：所有可见文字对比度 ≥ 4.5（含摘要行与选中按钮）`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实视觉测量");
     const result = await probe(scheme);
     assert.ok(
       result.contrast.ratio >= 4.5,
       `对比度 ${result.contrast.ratio} 不达标：${result.contrast.where}`,
     );
-    assert.match(result.contrast.where, /窗口 1M/, "最暗的文字是 tertiary 摘要行");
+    // 工单 #41 起，选中按钮改成强调色实底 + 主色前景，浅色下 4.76 略低于
+    // tertiary 摘要行，成为全页最暗文字；两者都必须 ≥ 4.5。
+    assert.match(result.contrast.where, /窗口 1M|BUTTON:✓/, "最暗的文字是摘要行或选中按钮文字");
   });
 
   test(`${scheme} 主题：五级字号逐级递减且互不相同`, async (t) => {
@@ -214,9 +217,11 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.chips.overflowX, "auto");
     assert.equal(result.chips.tops.length, 7, "七个档位");
     assert.equal(new Set(result.chips.tops).size, 1, "七个 chip 同一行");
-    assert.equal(result.chips.selectedBackground, extra(scheme, "--dsw-alias-button-ghost-active-fill"));
-    assert.equal(result.chips.unselectedBackground, "rgba(0, 0, 0, 0)");
-    assert.equal(result.chips.selectedBorder, extra(scheme, "--dsw-alias-button-ghost-active-border"));
+    // 工单 #41：选中态改为主题强调色实底 + 2px 强调色边框；未选中态用页面底色。
+    // 暗色下旧值（#43454a 填充 / #81858c 1px 边框）与未选中只差 1.64。
+    assert.equal(result.chips.selectedBackground, rgbOf(THEME_TOKENS[scheme]["--dsw-alias-state-business-primary"]));
+    assert.equal(result.chips.unselectedBackground, rgbOf(THEME_TOKENS[scheme]["--dsw-alias-bg-base"]));
+    assert.equal(result.chips.selectedBorder, rgbOf(THEME_TOKENS[scheme]["--dsw-alias-state-business-primary"]));
     assert.ok(result.chips.narrow.scrollWidth > result.chips.narrow.clientWidth, "窄容器出现横向滚动");
     assert.equal(new Set(result.chips.narrow.tops).size, 1, "横向滚动时仍不折行");
   });

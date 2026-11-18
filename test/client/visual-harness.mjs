@@ -187,8 +187,10 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   // ── 推理档位 chip：不折行、窄容器横向滚动、选中 / 未选中底色 ──
   const levelLabels = [...document.querySelectorAll("label")]
     .filter((element) => element.querySelector('input[type="checkbox"]'));
-  const offLabel = levelLabels.find((element) => element.textContent.trim() === "off");
-  const minimalLabel = levelLabels.find((element) => element.textContent.trim() === "minimal");
+  // 工单 #41：选中态 chip 文字前多了一个固定宽度的 ✓ 槽；比较标签时剥掉。
+  const plainText = (element) => element.textContent.replace(/[\s\u00a0✓]/g, "");
+  const offLabel = levelLabels.find((element) => plainText(element) === "off");
+  const minimalLabel = levelLabels.find((element) => plainText(element) === "minimal");
   const chipContainer = offLabel.parentElement;
   const chipTops = () => [...chipContainer.children].map((element) => Math.round(rect(element).top));
   result.chips = {

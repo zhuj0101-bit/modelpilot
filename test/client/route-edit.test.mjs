@@ -295,20 +295,32 @@ for (const scheme of ["light", "dark"]) {
     );
   });
 
-  test(`${scheme} 主题：默认输入模态 chip 选中态可辨识，文字对比度 ≥ 4.5`, async (t) => {
+  test(`${scheme} 主题：默认输入模态 chip 选中态可辨识，填充对比度 ≥ 3.0`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
     const result = await probe(scheme, "input:schema");
     assert.equal(result.theme.selected.checked, true);
     assert.equal(result.theme.unselected.checked, false);
-    assert.notEqual(result.theme.selected.border, result.theme.unselected.border, "选中态边框与未选中不同");
-    assert.notEqual(result.theme.selected.background, "rgba(0, 0, 0, 0)", "chip 背景不能透明");
+    // 工单 #41：不能只比对 border 字符串 —— 旧样式 #ffffff1f 与 #81858c 也
+    // 「不相等」，但填充只差 1.64，用户依然看不出勾选。这里验真实填充对比度。
+    assert.ok(
+      result.theme.fillContrast >= 3.0,
+      `选中/未选中填充对比度 ${result.theme.fillContrast}`,
+    );
+    assert.ok(
+      result.theme.selected.borderWidth > result.theme.unselected.borderWidth,
+      `选中边框 ${result.theme.selected.borderWidth}px 应大于未选中 ${result.theme.unselected.borderWidth}px`,
+    );
+    assert.ok(result.theme.selected.fontWeight >= 600, `选中字重 ${result.theme.selected.fontWeight}`);
+    assert.ok(result.theme.unselected.fontWeight <= 400, `未选中字重 ${result.theme.unselected.fontWeight}`);
+    assert.equal(result.theme.selected.mark, true, "选中态文字前应有勾选标记");
+    assert.equal(result.theme.unselected.mark, false, "未选中态不应有勾选标记");
     assert.ok(
       result.theme.selected.ratio >= 4.5,
-      `选中 chip 对比度 ${result.theme.selected.ratio}（${result.theme.selected.color} / ${result.theme.selected.background}）`,
+      `选中 chip 文字对比度 ${result.theme.selected.ratio}（${result.theme.selected.color} / ${result.theme.selected.background}）`,
     );
     assert.ok(
       result.theme.unselected.ratio >= 4.5,
-      `未选中 chip 对比度 ${result.theme.unselected.ratio}`,
+      `未选中 chip 文字对比度 ${result.theme.unselected.ratio}`,
     );
   });
 
