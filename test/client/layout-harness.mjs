@@ -711,6 +711,9 @@ export const THEME_PROBE_SOURCE = String.raw`
   const input = cwInput();
   const checkbox = document.querySelector('input[type="checkbox"]');
   const chip = checkbox.closest("label");
+  // 工单 #41：选中 / 未选中 chip 分别用强调色实底与页面底色，两者都要跟随 token。
+  const checkboxOff = [...document.querySelectorAll('input[type="checkbox"]')].find((element) => !element.checked);
+  const chipOff = checkboxOff.closest("label");
   const panel = document.querySelector('[role="listbox"]');
   const pre = document.querySelector("pre");
   const error = [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "请输入正整数");
@@ -738,6 +741,7 @@ export const THEME_PROBE_SOURCE = String.raw`
     },
     checkbox: { colorScheme: style(checkbox).colorScheme },
     chip: { background: style(chip).backgroundColor },
+    chipOff: { background: style(chipOff).backgroundColor },
     panel: {
       background: style(panel).backgroundColor,
       color: style(panel).color,

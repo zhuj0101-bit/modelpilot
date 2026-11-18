@@ -127,9 +127,11 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     setter.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   };
+  // 工单 #41：选中态 chip 文字前多了一个固定宽度的 ✓ 槽；比较标签时剥掉。
+  const plainText = (element) => element.textContent.replace(/[\s\u00a0✓]/g, "");
   const createCheckbox = (text) =>
     [...document.querySelectorAll("label")].find(
-      (element) => element.textContent.trim() === text && element.querySelector("input[aria-label]") === null,
+      (element) => plainText(element) === text && element.querySelector("input[aria-label]") === null,
     )?.querySelector("input");
   const createLevels = () =>
     ["off", "minimal", "low", "medium", "high", "xhigh", "max"].filter((level) => createCheckbox(level)?.checked);

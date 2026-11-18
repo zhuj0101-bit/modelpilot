@@ -76,14 +76,16 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const byAria = (label) => document.querySelector('[aria-label="' + label + '"]');
     const chips = () => [...document.querySelectorAll('[aria-label^="预设 "]')];
+    // 工单 #41：选中态 chip 文字前多了一个固定宽度的 ✓ 槽；比较标签时剥掉。
+    const plainText = (element) => element.textContent.replace(/[\s\u00a0✓]/g, "");
     const chipState = () => chips().map((element) => ({
-      label: element.textContent.trim(),
+      label: plainText(element),
       pressed: element.getAttribute("aria-pressed"),
       title: element.getAttribute("title") ?? "",
     }));
     const createCheckbox = (text) =>
       [...document.querySelectorAll("label")].find(
-        (element) => element.textContent.trim() === text && element.querySelector("input[aria-label]") === null,
+        (element) => plainText(element) === text && element.querySelector("input[aria-label]") === null,
       )?.querySelector("input");
     const levels = () =>
       ["off", "minimal", "low", "medium", "high", "xhigh", "max"].filter((level) => createCheckbox(level)?.checked);

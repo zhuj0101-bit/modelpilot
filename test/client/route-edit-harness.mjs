@@ -811,7 +811,11 @@ ${HELPERS}
       checked: modalChipInput(value).checked,
       background: styleOf(label).backgroundColor,
       border: styleOf(label).borderTopColor,
+      borderWidth: Number.parseFloat(styleOf(label).borderTopWidth) || 0,
+      fontWeight: Number(styleOf(label).fontWeight),
       color: styleOf(label).color,
+      mark: String(label.textContent).includes("✓"),
+      fill: effectiveBackground(label),
       ratio: contrast(parseColor(styleOf(label).color), effectiveBackground(label)),
     };
   };
@@ -835,6 +839,7 @@ ${HELPERS}
   result.theme = {
     selected: chipInfo("image"),
     unselected: chipInfo("text"),
+    fillContrast: contrast(effectiveBackground(chipLabel("image")), effectiveBackground(chipLabel("text"))),
   };
 
   // ── 2. 点「2 个」就地展开：空数组算已声明，只列未声明 input 的模型 ──

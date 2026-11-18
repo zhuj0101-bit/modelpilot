@@ -32,9 +32,25 @@ const UNWIRED_CORE_MODULES = Object.freeze([
   "apply-service.js",
   // 等 P1-07 接线：三态用户档案仓库（P1-06）。
   "profile-repository.js",
+  // 工单 #41：选中态对比度公式。生产端只用 CSS 变量表达样式，对比度由
+  // 浏览器测试验证；这个纯逻辑模块只被 node:test 引用。
+  "toggle-style.js",
 ]);
 
 const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs"]);
+const TEXT_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".json", ".md", ".yml", ".yaml"]);
+
+/** 列出仓库内可能写死样式名的文本文件（跳过依赖、版本库与构建缓存）。 */
+function listTextFiles(dir) {
+  const files = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name === ".git") continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...listTextFiles(full));
+    else if (TEXT_EXTENSIONS.has(extname(entry.name))) files.push(full);
+  }
+  return files;
+}
 
 /** 递归列出 src/ 下所有 JS 源码。 */
 function listSourceFiles(dir) {
@@ -190,4 +206,27 @@ test("零引用核心模块必须与未接线白名单一致", () => {
       "接线后请把模块从白名单删除。",
     ].join("\n"),
   );
+});
+
+// ── 工单 #41：旧选中态样式名清除守护 ──────────────────────────────────────
+//
+// chip / levelChip / segmentedButton 三组「只改填充与 1px 边框」的旧选中态
+// 是暗色主题下看不出勾选的根因。统一改用 toggleOn / toggleOff 之后，旧名字
+// 必须全仓消失，避免以后有人照着旧代码又写回去。名字在数组里拼接，这样
+// 「全仓 grep 旧名字」本身不会命中这条守护。
+const FORBIDDEN_TOGGLE_STYLE_NAMES = Object.freeze([
+  "chip" + "On",
+  "levelChip" + "On",
+  "segmentedButton" + "On",
+]);
+
+test("旧选中态样式名已全部删除，全仓无残留", () => {
+  const hits = [];
+  for (const file of listTextFiles(root)) {
+    const text = readFileSync(file, "utf8");
+    for (const name of FORBIDDEN_TOGGLE_STYLE_NAMES) {
+      if (text.includes(name)) hits.push(`${file}: ${name}`);
+    }
+  }
+  assert.deepEqual(hits, [], `旧选中态样式名仍有残留：\n${hits.join("\n")}`);
 });

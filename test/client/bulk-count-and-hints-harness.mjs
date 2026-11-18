@@ -237,8 +237,10 @@ export const TOAST_FIXTURE_SOURCE = String.raw`
         inDom: true,
       };
     };
+    // 工单 #41：选中态 chip 文字前多了一个固定宽度的 ✓ 槽；比较标签时剥掉。
+    const plainText = (element) => element.textContent.replace(/[\s\u00a0✓]/g, "");
     const modality = (name) => [...document.querySelectorAll("label")]
-      .find((label) => label.textContent.trim() === name)
+      .find((label) => plainText(label) === name)
       ?.querySelector('input[type="checkbox"]') ?? null;
 
     const result = {};

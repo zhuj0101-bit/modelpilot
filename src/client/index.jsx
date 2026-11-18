@@ -537,10 +537,6 @@ const s = {
     color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
     font: "inherit", fontSize: FONT.hint, cursor: "pointer",
   },
-  segmentedButtonOn: {
-    background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.12))",
-    color: "var(--dsw-alias-label-primary, inherit)", fontWeight: 600,
-  },
   modelEmpty: {
     display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap",
     fontSize: FONT.caption, lineHeight: 1.6,
@@ -867,11 +863,6 @@ const s = {
     border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3))",
     background: "transparent", color: "var(--dsw-alias-label-primary, inherit)", cursor: "pointer",
   },
-  levelChipOn: {
-    background: "var(--dsw-alias-button-ghost-active-fill, var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1)))",
-    border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55)))",
-    fontWeight: 500,
-  },
   chip: {
     display: "inline-flex", alignItems: "center", gap: GAP.xs, padding: "3px 8px",
     borderRadius: RADIUS.sm, fontSize: FONT.hint,
@@ -879,10 +870,36 @@ const s = {
     background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1))",
     color: "var(--dsw-alias-label-primary, inherit)",
   },
-  chipOn: {
-    background: "var(--dsw-alias-button-ghost-active-fill, var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.1)))",
-    border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55)))",
+  // 工单 #41：选中态不再只靠填充深浅，而是四条冗余通道同时表达 ——
+  //   填充：主题强调色实底（深浅主题各自跟随 state-business-primary）；
+  //   边框：2px 强调色，未选中只有 1px；
+  //   字重：600（未选中 400）；
+  //   勾选标记：文字前的固定宽度 ✓ 槽（见 ToggleMark）。
+  // 选中态每边内边距少 1px，正好抵消边框多出的 1px：连续点击时内容位置与
+  // offsetWidth / offsetHeight 都不变，不会带着整行抖动。
+  toggleOn: {
+    background: "var(--dsw-alias-state-business-primary, rgba(90,140,230,0.75))",
+    border: "2px solid var(--dsw-alias-state-business-primary, rgba(90,140,230,0.75))",
+    // 强调色实底上必须用「主色前景」而不是 label-primary：暗色主题里
+    // label-primary 是浅色，压在浅蓝强调色上只有 2 左右的对比度。
+    color: "var(--dsw-alias-label-primary-foreground, var(--dsw-alias-label-primary, inherit))",
+    fontWeight: 600,
+    padding: "2px 7px",
+    boxSizing: "border-box",
+    lineHeight: 1.4,
   },
+  toggleOff: {
+    background: "var(--dsw-alias-bg-base, transparent)",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.32))",
+    fontWeight: 400,
+    padding: "3px 8px",
+    boxSizing: "border-box",
+    lineHeight: 1.4,
+  },
+  // 停用态既不是选中也不是可用：虚线边框 + 半透明 + 禁止光标。
+  toggleDisabled: { cursor: "not-allowed", borderStyle: "dashed", opacity: 0.5 },
+  // 固定宽度标记槽：未选中渲染不换行空格，选中渲染 ✓，宽度不抖动。
+  toggleMark: { display: "inline-block", width: "1em", textAlign: "center" },
   btnPrimary: {
     padding: "7px 14px", fontSize: FONT.body, borderRadius: RADIUS.sm, cursor: "pointer",
     border: "1px solid var(--dsw-alias-state-business-primary, rgba(90,140,230,0.55))",
@@ -939,6 +956,16 @@ const s = {
   createList: { minHeight: 176, maxHeight: 260, flex: "1 1 176px" },
   createModelField: { flex: "1 1 100%" },
 };
+
+/**
+ * 工单 #41：固定宽度的勾选标记槽。
+ *
+ * 未选中渲染不换行空格而不是空字符串 —— 槽宽恒定，切换时按钮宽度不跳；
+ * ✓ 对读屏是冗余信息（原生 checkbox / aria-pressed 已经表达状态），故隐藏。
+ */
+function ToggleMark({ on }) {
+  return <span style={s.toggleMark} aria-hidden="true">{on ? "✓" : "\u00a0"}</span>;
+}
 
 /** 字段标签后的说明入口：常驻文案只剩 ⓘ，完整说明放进原生 title 悬停。 */
 function Tip({ text }) {
@@ -1737,13 +1764,14 @@ function EditModelForm({
                 {PI_AI_LEVELS.map((level) => {
                   const checked = form.reasoningLevels.includes(level);
                   return (
-                    <label key={level} style={checked ? { ...s.levelChip, ...s.levelChipOn } : s.levelChip}>
+                    <label key={level} style={checked ? { ...s.levelChip, ...s.toggleOn } : { ...s.levelChip, ...s.toggleOff }}>
                       <input
                         type="checkbox"
                         checked={checked}
                         onChange={() => onToggleLevel(level)}
                         aria-label={`编辑档位 ${level}`}
                       />
+                      <ToggleMark on={checked} />
                       {level}
                     </label>
                   );
@@ -1772,21 +1800,25 @@ function EditModelForm({
       <BudgetHint contextWindow={form.contextWindow} maxTokens={form.maxTokens} />
 
       <div style={s.row}>
-        <label style={form.inputText ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
+        <label style={{ ...s.chip, ...(form.inputText ? s.toggleOn : s.toggleOff), cursor: "pointer" }}>
           <input
             type="checkbox"
             checked={form.inputText}
             onChange={(event) => onChange({ inputText: event.target.checked })}
             aria-label="编辑输入模态 text"
-          /> text
+          />
+          <ToggleMark on={form.inputText} />
+          text
         </label>
-        <label style={form.inputImage ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
+        <label style={{ ...s.chip, ...(form.inputImage ? s.toggleOn : s.toggleOff), cursor: "pointer" }}>
           <input
             type="checkbox"
             checked={form.inputImage}
             onChange={(event) => onChange({ inputImage: event.target.checked })}
             aria-label="编辑输入模态 image"
-          /> image
+          />
+          <ToggleMark on={form.inputImage} />
+          image
         </label>
       </div>
 
@@ -2645,7 +2677,7 @@ function RouteSettingsCard({
                 return (
                   <label
                     key={value}
-                    style={checked ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}
+                    style={{ ...s.chip, ...(checked ? s.toggleOn : s.toggleOff), cursor: "pointer" }}
                   >
                     <input
                       type="checkbox"
@@ -2653,6 +2685,7 @@ function RouteSettingsCard({
                       onChange={() => toggleModality(value)}
                       aria-label={`路由输入模态 ${value}`}
                     />
+                    <ToggleMark on={checked} />
                     {value}{declaredOnly ? "（当前值）" : ""}
                   </label>
                 );
@@ -5452,52 +5485,48 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             <div style={s.segmented} role="group" aria-label="列表视图">
               <button
                 type="button"
-                style={modelView === VIEW_FLAT
-                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
-                  : s.segmentedButton}
+                style={{ ...s.segmentedButton, ...(modelView === VIEW_FLAT ? s.toggleOn : s.toggleOff) }}
                 aria-pressed={modelView === VIEW_FLAT}
                 aria-label="平铺视图"
                 title="平铺：可自由拖动排序"
                 onClick={() => changeModelView(VIEW_FLAT)}
               >
+                <ToggleMark on={modelView === VIEW_FLAT} />
                 平铺
               </button>
               <button
                 type="button"
-                style={modelView === VIEW_GROUPED
-                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
-                  : s.segmentedButton}
+                style={{ ...s.segmentedButton, ...(modelView === VIEW_GROUPED ? s.toggleOn : s.toggleOff) }}
                 aria-pressed={modelView === VIEW_GROUPED}
                 aria-label="分组视图"
                 title="分组：按 id 前缀折叠，组内排序"
                 onClick={() => changeModelView(VIEW_GROUPED)}
               >
+                <ToggleMark on={modelView === VIEW_GROUPED} />
                 分组
               </button>
             </div>
             <div style={s.segmented} role="group" aria-label="列表密度">
               <button
                 type="button"
-                style={modelDensity === DENSITY_DETAILED
-                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
-                  : s.segmentedButton}
+                style={{ ...s.segmentedButton, ...(modelDensity === DENSITY_DETAILED ? s.toggleOn : s.toggleOff) }}
                 aria-pressed={modelDensity === DENSITY_DETAILED}
                 aria-label="详细视图"
                 title="显示每条模型的完整摘要"
                 onClick={() => changeModelDensity(DENSITY_DETAILED)}
               >
+                <ToggleMark on={modelDensity === DENSITY_DETAILED} />
                 详细
               </button>
               <button
                 type="button"
-                style={modelDensity === DENSITY_COMPACT
-                  ? { ...s.segmentedButton, ...s.segmentedButtonOn }
-                  : s.segmentedButton}
+                style={{ ...s.segmentedButton, ...(modelDensity === DENSITY_COMPACT ? s.toggleOn : s.toggleOff) }}
                 aria-pressed={modelDensity === DENSITY_COMPACT}
                 aria-label="紧凑视图"
                 title="只显示短 ID，摘要移到悬停提示"
                 onClick={() => changeModelDensity(DENSITY_COMPACT)}
               >
+                <ToggleMark on={modelDensity === DENSITY_COMPACT} />
                 紧凑
               </button>
             </div>
@@ -5613,20 +5642,20 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
                 {MODALITIES.map((modality) => {
                   const key = modality === "text" ? "inputText" : "inputImage";
                   const on = bulkForm[key] === true;
+                  const disabled = busy || !bulkForm.inputOn;
                   return (
                     <button
                       key={modality}
                       type="button"
-                      style={!bulkForm.inputOn
-                        ? { ...s.chip, ...s.btnDisabled }
-                        : on
-                          ? { ...s.chip, ...s.chipOn }
-                          : s.chip}
-                      disabled={busy || !bulkForm.inputOn}
+                      style={disabled
+                        ? { ...s.chip, ...s.toggleOff, ...s.toggleDisabled }
+                        : { ...s.chip, ...(on ? s.toggleOn : s.toggleOff) }}
+                      disabled={disabled}
                       aria-label={`批量输入模态 ${modality}`}
                       aria-pressed={on}
                       onClick={() => updateBulkForm({ [key]: !on })}
                     >
+                      <ToggleMark on={!disabled && on} />
                       {modality}
                     </button>
                   );
@@ -5647,20 +5676,20 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               <span style={s.bulkLevels}>
                 {PI_AI_LEVELS.map((level) => {
                   const on = bulkForm.levels.includes(level);
+                  const disabled = busy || !bulkForm.levelsOn;
                   return (
                     <button
                       key={level}
                       type="button"
-                      style={!bulkForm.levelsOn
-                        ? { ...s.chip, ...s.btnDisabled }
-                        : on
-                          ? { ...s.chip, ...s.chipOn }
-                          : s.chip}
-                      disabled={busy || !bulkForm.levelsOn}
+                      style={disabled
+                        ? { ...s.chip, ...s.toggleOff, ...s.toggleDisabled }
+                        : { ...s.chip, ...(on ? s.toggleOn : s.toggleOff) }}
+                      disabled={disabled}
                       aria-label={`批量推理档位 ${level}`}
                       aria-pressed={on}
                       onClick={() => toggleBulkLevel(level)}
                     >
+                      <ToggleMark on={!disabled && on} />
                       {level}
                     </button>
                   );
@@ -5792,14 +5821,13 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               <button
                 key={preset.id}
                 type="button"
-                style={active
-                  ? { ...s.chip, ...s.chipOn, cursor: "pointer", fontFamily: "inherit" }
-                  : { ...s.chip, cursor: "pointer", fontFamily: "inherit" }}
+                style={{ ...s.chip, ...(active ? s.toggleOn : s.toggleOff), cursor: "pointer", fontFamily: "inherit" }}
                 aria-pressed={active}
                 aria-label={`预设 ${preset.label}`}
                 title={preset.hint}
                 onClick={() => applyModelPreset(preset)}
               >
+                <ToggleMark on={active} />
                 {preset.label}
               </button>
             );
@@ -5851,12 +5879,13 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               {PI_AI_LEVELS.map((level) => {
                 const checked = reasoningLevels.includes(level);
                 return (
-                  <label key={level} style={checked ? { ...s.levelChip, ...s.levelChipOn } : s.levelChip}>
+                  <label key={level} style={checked ? { ...s.levelChip, ...s.toggleOn } : { ...s.levelChip, ...s.toggleOff }}>
                     <input
                       type="checkbox"
                       checked={checked}
                       onChange={() => setReasoningLevels((current) => toggleReasoningLevel(current, level))}
                     />
+                    <ToggleMark on={checked} />
                     {level}
                   </label>
                 );
@@ -5883,11 +5912,15 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
       <BudgetHint contextWindow={contextWindow} maxTokens={maxTokens} />
 
       <div style={s.row}>
-        <label style={inputText ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
-          <input type="checkbox" checked={inputText} onChange={(e) => setInputText(e.target.checked)} /> text
+        <label style={{ ...s.chip, ...(inputText ? s.toggleOn : s.toggleOff), cursor: "pointer" }}>
+          <input type="checkbox" checked={inputText} onChange={(e) => setInputText(e.target.checked)} />
+          <ToggleMark on={inputText} />
+          text
         </label>
-        <label style={inputImage ? { ...s.chip, ...s.chipOn, cursor: "pointer" } : { ...s.chip, cursor: "pointer" }}>
-          <input type="checkbox" checked={inputImage} onChange={(e) => setInputImage(e.target.checked)} /> image
+        <label style={{ ...s.chip, ...(inputImage ? s.toggleOn : s.toggleOff), cursor: "pointer" }}>
+          <input type="checkbox" checked={inputImage} onChange={(e) => setInputImage(e.target.checked)} />
+          <ToggleMark on={inputImage} />
+          image
         </label>
         <span style={{ ...s.chip, opacity: 0.75 }}>
           该路由现有模型条目 {routeModels.length} · 目录条目 {catalogIds.size}

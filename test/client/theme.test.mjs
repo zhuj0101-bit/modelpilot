@@ -105,7 +105,9 @@ for (const scheme of ["light", "dark"]) {
     assert.notEqual(result.panel.background, "rgb(255, 255, 255)", "深色下候选面板不应是白底");
     assert.equal(result.panel.color, token(scheme, "--dsw-alias-label-primary"));
     assert.equal(result.pre.background, token(scheme, "--dsw-alias-markdown-code-block"));
-    assert.equal(result.chip.background, token(scheme, "--dsw-alias-bg-layer-1"));
+    // 工单 #41：选中 chip 是强调色实底，未选中 chip 是页面底色。
+    assert.equal(result.chip.background, token(scheme, "--dsw-alias-state-business-primary"));
+    assert.equal(result.chipOff.background, token(scheme, "--dsw-alias-bg-base"));
     assertSourceHasNoHardcodedColors();
   });
 
