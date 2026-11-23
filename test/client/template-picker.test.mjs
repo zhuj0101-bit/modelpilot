@@ -94,6 +94,20 @@ test("存一份「我的 128K」：对话框关闭、下拉多一项、摘要与
   assert.equal(afterFirstSave.toast, "已保存模板「我的 128K」");
 });
 
+test("选中刚存的「我的 128K」点「填入」：三字段变 128000 / 8192 / text，mutations 为 0", async (t) => {
+  if (chrome === null) return skip(t);
+  const { firstFill } = await probe("empty");
+  assert.deepEqual(firstFill.state, {
+    contextWindow: "128000",
+    maxTokens: "8192",
+    text: true,
+    image: false,
+    levels: ["off", "low", "medium", "high"],
+  });
+  assert.equal(firstFill.mutations, 0, "「填入」只改表单，不写配置");
+  assert.match(firstFill.summary, /^模板：我的 128K · 上下文 128000（128K）/);
+});
+
 test("编辑模型表单与新增模型表单共用同一份库（下拉里立刻能看到）", async (t) => {
   if (chrome === null) return skip(t);
   const { afterFirstSave, edit, editClosed } = await probe("empty");

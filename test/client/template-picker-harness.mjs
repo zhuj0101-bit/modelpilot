@@ -272,6 +272,18 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     toast: toast(),
   };
 
+  // ── 1b. 选中刚存的「我的 128K」点「填入」：表单变 128000 / 8192 / text，mutations 0 ──
+  setValue(byAria("上下文窗口"), "11111");
+  setValue(byAria("输出上限"), "2222");
+  const mutationsBeforeFirstFill = mutations.length;
+  setSelect(createPicker().querySelector("select"), userOptions(createPicker())[0].value);
+  click(buttonIn(createPicker(), "填入模板"));
+  result.firstFill = {
+    state: createState(),
+    mutations: mutations.length - mutationsBeforeFirstFill,
+    summary: summaryOf(createPicker()),
+  };
+
   // ── 2. 编辑模型表单共用同一份库：打开编辑表单就能看到刚存的那份 ──
   click(byAria("编辑模型 jxf/dsv4.1-flash"));
   result.edit = {
