@@ -219,13 +219,23 @@ ${MODEL_EDIT_ROUTE_SOURCE}
       decoration: styleOf(element).textDecorationLine,
     };
   };
+  // 工单 #42：模板条上的动作按钮是 btnSmall（次要按钮），读回内联样式确认 token。
+  const secondaryOf = (text) => {
+    const element = buttonByText(text);
+    return {
+      background: styleOf(element).backgroundColor,
+      decoration: styleOf(element).textDecorationLine,
+      inlineStyle: element.getAttribute("style") ?? "",
+    };
+  };
   result.actions = {
     primaryChildren: primaryRow.children.length,
     primaryJustify: styleOf(primaryRow).justifyContent,
     primaryText: write.textContent.trim(),
     clear: linkOf("清空"),
-    saveTemplate: linkOf("存为默认模板"),
-    fillTemplate: linkOf("填入默认模板"),
+    newTemplate: secondaryOf("存为新模板"),
+    fillTemplate: secondaryOf("填入"),
+    manageTemplate: secondaryOf("管理"),
   };
 
   // ── 所有可见文字的对比度（含 label-tertiary 摘要行）──

@@ -1,4 +1,4 @@
-// 工单 #29 的浏览器夹具：编辑表单 / 新增表单的「填入默认模板」按钮。
+// 工单 #29 的浏览器夹具：编辑表单 / 新增表单的模板条（工单 #42 起是选择器 +「填入」）。
 //
 // 与 model-edit-harness 相同的思路：打包后的 Workbench 由最小 React 兼容渲染器
 // 渲染成真实 DOM，在 headless Chrome 里做真实点击并读回字段、投影 ops 与计算样式。
@@ -119,9 +119,9 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   const buttonByAria = (label) => buttons().find((element) => element.getAttribute("aria-label") === label);
   const buttonByText = (text) => buttons().find((element) => element.textContent.trim() === text);
   const editor = () => document.querySelector('[aria-label^="编辑表单"]');
-  const editorFill = () => editor() === null ? undefined : editor().querySelector('[aria-label="填入默认模板"]');
-  const createFill = () =>
-    buttons().find((element) => element.getAttribute("aria-label") === "填入默认模板" && element.closest('[aria-label^="编辑表单"]') === null);
+  const editorFill = () => editor() === null ? undefined : editor().querySelector('[aria-label="填入模板"]');
+  const createCard = () => document.querySelector('section[aria-label="新增模型"]');
+  const createFill = () => createCard() === null ? undefined : createCard().querySelector('[aria-label="填入模板"]');
   const setValue = (input, value) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
     setter.call(input, value);
@@ -157,20 +157,15 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   };
   const editorLine = (prefix) =>
     (editor()?.innerText ?? "").split("\n").find((line) => line.startsWith(prefix)) ?? "";
-  const editorHint = () => {
-    const spans = [...(editor()?.querySelectorAll("span") ?? [])];
-    const node = spans.find((element) => element.textContent.startsWith("默认模板："))
-      ?? spans.find((element) => element.textContent.startsWith("内置模板："))
-      ?? spans.find((element) => element.textContent.startsWith("尚未设置默认模板"));
+  // 工单 #42：摘要行以「模板：<名字>」或「内置模板：<名字>」开头。
+  const hintOf = (root) => {
+    const node = [...(root?.querySelectorAll("span") ?? [])].find(
+      (element) => element.textContent.startsWith("模板：") || element.textContent.startsWith("内置模板："),
+    );
     return node?.innerText ?? "";
   };
-  const createHint = () => {
-    const spans = [...document.querySelectorAll("span")];
-    const node = spans.find((element) => element.textContent.startsWith("默认模板："))
-      ?? spans.find((element) => element.textContent.startsWith("内置模板："))
-      ?? spans.find((element) => element.textContent.startsWith("尚未设置默认模板"));
-    return node?.innerText ?? "";
-  };
+  const editorHint = () => hintOf(editor());
+  const createHint = () => hintOf(createCard());
   const editorOps = () => {
     const pre = editor()?.querySelector("pre");
     return pre === null || pre === undefined ? [] : JSON.parse(pre.textContent);
@@ -225,12 +220,12 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     },
     hintLine: createHint(),
   };
-  result.create.sameBarAsPresets = createFill().parentElement === document.querySelector('[aria-label="模型预设"]');
+  result.create.pickerLabel = createFill().closest('[role="group"]')?.getAttribute("aria-label") ?? "";
   const createBeforeClick = createState();
   createFill().click();
   result.create.clickNoop = JSON.stringify(createState()) === JSON.stringify(createBeforeClick);
 
-  // ── 新增表单：清空 → 填入默认模板 ──
+  // ── 新增表单：清空 → 点「填入」 ──
   buttonByText("清空").click();
   result.create.afterClear = createState();
   setValue(byAria("上下文窗口"), "55555");
@@ -260,7 +255,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     theme: {},
   };
 
-  // ── 点「填入默认模板」：五个字段、显示名、改动字段、完整行 ops ──
+  // ── 点「填入」：五个字段、显示名、改动字段、完整行 ops ──
   const editBeforeClick = JSON.stringify(editorState());
   editorFill().click();
   result.edit.initial.clickNoop = JSON.stringify(editorState()) === editBeforeClick
@@ -285,7 +280,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
 
   // 按钮 / 提示行的 token 与对比度（有模板态）。
   const hintNode = [...editor().querySelectorAll("span")].find(
-    (node) => node.textContent.startsWith("默认模板：") || node.textContent.startsWith("内置模板："),
+    (node) => node.textContent.startsWith("模板：") || node.textContent.startsWith("内置模板："),
   );
   result.edit.theme = {
     fill: {
@@ -347,7 +342,7 @@ ${MODEL_EDIT_ROUTE_SOURCE}
 })();
 `;
 
-/** 以指定主题与模板种子组装「填入默认模板」页面。 */
+/** 以指定主题与模板种子组装模板条页面。 */
 export function buildTemplateFillHtml(bundleSource, scheme, seedTemplate) {
   if (scheme !== "light" && scheme !== "dark") throw new TypeError(`未知主题：${scheme}`);
   const seed = seedTemplate === null ? "null" : JSON.stringify(seedTemplate);

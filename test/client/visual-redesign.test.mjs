@@ -89,6 +89,8 @@ test("四个原生 select 统一 s.select（appearance:none + 自绘箭头）", 
   assert.doesNotMatch(source, /<select[^>]*style=\{s\.input\}/, "select 不再复用 input 样式");
   assert.ok(source.includes('appearance: "none"'), "appearance:none");
   assert.match(source, /const SELECT = Object\.freeze\(\{[\s\S]*?linear-gradient/, "自绘箭头");
+  // 工单 #42：模板下拉复用同一 SELECT 基样式（只收窄宽度），不另起一套外观。
+  assert.match(source, /templateSelect: \{ \.\.\.SELECT,/, "模板下拉复用 SELECT");
 });
 
 test("模型行有 hover 反馈与 120ms 过渡，编辑按钮内缩在行内", () => {
@@ -113,10 +115,12 @@ test("主操作独占一行右对齐，次要操作为文字链接", () => {
   assert.match(source, /primaryRow: \{[\s\S]*?justifyContent: "flex-end"/);
   assert.match(source, /linkRow: \{[\s\S]*?justifyContent: "flex-end"/);
   assert.match(source, /<button[\s\S]{0,2000}?style=\{s\.btnLink\}[\s\S]{0,2000}?>\s*清空\s*<\/button>/, "清空降级为链接");
-  assert.match(source, /<button[\s\S]{0,2000}?style=\{s\.btnLink\}[\s\S]{0,2000}?>\s*存为默认模板\s*<\/button>/, "存为默认模板降级为链接");
-  // 「填入默认模板」被既有模板测试钉住 secondary 按钮样式（token + disabled 态），
-  // 保持 btnSmall；它不是与主操作同尺寸的按钮。
-  assert.ok(/aria-label="填入默认模板"/.test(source));
+  // 工单 #42：模板条的动作（填入 / 存为新模板 / 管理）是 btnSmall 次要按钮，
+  // 不是主操作尺寸，也不再占据操作行。
+  for (const label of ["填入模板", "存为新模板", "管理模板"]) {
+    assert.ok(new RegExp(`aria-label="${label}"`).test(source), `模板条动作：${label}`);
+  }
+  assert.match(source, /style=\{s\.btnSmall\} onClick=\{onSaveAsNew\} aria-label="存为新模板"/);
 });
 
 test("既有 aria-label 全部保留", () => {
@@ -124,7 +128,8 @@ test("既有 aria-label 全部保留", () => {
     "路由设置", "展开路由设置", "收起路由设置", "该路由的模型列表", "新增模型",
     "删除路由", "保存路由设置", "路由显示名", "路由接口地址", "路由协议",
     "路由密钥引用", "路由默认上下文", "路由默认输出上限", "路由超时", "路由缓存",
-    "路由传输", "填入默认模板", "编辑显示名", "编辑上下文窗口", "编辑输出上限",
+    "路由传输", "填入模板", "存为新模板", "管理模板", "选择模板", "编辑显示名",
+    "编辑上下文窗口", "编辑输出上限", "模板名称", "保存模板", "取消保存模板",
     "保存修改", "删除模型", "取消编辑", "选择模型", "搜索模型", "确认目录替换",
     "删除模型确认", "删除路由确认", "确认删除", "取消删除", "确认删除路由",
     "取消删除路由", "展开候选",
@@ -198,10 +203,10 @@ for (const scheme of ["light", "dark"]) {
     assert.ok(result.actionInset >= 0 && result.actionInset <= 16, `行内操作按钮距行右边界 ${result.actionInset}px`);
   });
 
-  test(`${scheme} 主题：四个 select appearance:none 且高度一致`, async (t) => {
+  test(`${scheme} 主题：五个 select appearance:none 且高度一致`, async (t) => {
     if (chrome === null) return t.skip("未找到 Chrome/Chromium，跳过真实视觉测量");
     const result = await probe(scheme);
-    assert.equal(result.selects.length, 4, "路由 / 协议 / 缓存 / 传输");
+    assert.equal(result.selects.length, 5, "路由 / 协议 / 缓存 / 传输 + 模板下拉（工单 #42）");
     for (const select of result.selects) {
       assert.equal(select.appearance, "none");
       assert.equal(select.height, 29, "与输入框同高，既有布局断言保持 29px");
@@ -232,9 +237,12 @@ for (const scheme of ["light", "dark"]) {
     assert.equal(result.actions.primaryText, "写入 DSH 设置");
     assert.equal(result.actions.primaryChildren, 1, "主操作独占一行");
     assert.equal(result.actions.primaryJustify, "flex-end", "右对齐");
-    for (const key of ["clear", "saveTemplate"]) {
-      assert.equal(result.actions[key].background, "rgba(0, 0, 0, 0)", `${key} 不是实心按钮`);
-      assert.equal(result.actions[key].decoration, "underline", `${key} 是文字链接`);
+    assert.equal(result.actions.clear.background, "rgba(0, 0, 0, 0)", "清空不是实心按钮");
+    assert.equal(result.actions.clear.decoration, "underline", "清空是文字链接");
+    // 工单 #42：模板条的动作是 btnSmall 次要按钮（token + 无下划线），不是主操作。
+    for (const key of ["newTemplate", "fillTemplate", "manageTemplate"]) {
+      assert.match(result.actions[key].inlineStyle, /--dsw-alias-interactive-bg-hover/, `${key} 使用次要按钮底色 token`);
+      assert.equal(result.actions[key].decoration, "none", `${key} 不是文字链接`);
     }
   });
 }

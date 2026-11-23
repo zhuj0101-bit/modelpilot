@@ -27,6 +27,15 @@ const COMMON_SOURCE = String.raw`
     input.dispatchEvent(new Event("input", { bubbles: true }));
   };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /**
+   * 工单 #42：「存为新模板」是两步操作 —— 打开对话框、填名字、保存。
+   * 名字必须唯一（库内不允许重名），调用方按场景给不同名字。
+   */
+  const saveTemplate = (name) => {
+    click("存为新模板");
+    setText(document.querySelector('[role="dialog"][aria-label="存为新模板"] [aria-label="模板名称"]'), name);
+    click("保存模板");
+  };
   const toastRegion = () => document.querySelector("[data-modelpilot-toast]");
   const toastText = () => toastRegion()?.textContent ?? "";
   const mountWorkbench = (route) => {
@@ -247,7 +256,7 @@ export const TOAST_FIXTURE_SOURCE = String.raw`
     result.initial = snapshot();
 
     // ── 1. 成功提示：6 秒后淡出（opacity transition，不是 display:none），再移除 ──
-    click("存为默认模板");
+    saveTemplate("我的模板 1");
     await sleep(80);
     result.good = snapshot();
     await sleep(6000);
@@ -256,7 +265,7 @@ export const TOAST_FIXTURE_SOURCE = String.raw`
     result.gone = snapshot();
 
     // ── 2. 连续两次操作：第一条已被自动清掉，第二次只出现自己的文案 ──
-    click("存为默认模板");
+    saveTemplate("我的模板 2");
     await sleep(80);
     result.secondOperation = snapshot();
 
@@ -273,16 +282,18 @@ export const TOAST_FIXTURE_SOURCE = String.raw`
     result.afterBlurGone = snapshot();
 
     // ── 4. 报错提示：role=alert、不自动消失 ──
+    // 两个输入模态都没勾时保存：对话框里就地报错，页面提示是 role=alert 的报错。
     modality("text").click();
-    click("存为默认模板");
+    saveTemplate("我的模板 3");
     await sleep(80);
     result.bad = snapshot();
     await sleep(7000);
     result.badPersisted = snapshot();
+    click("取消保存模板");
 
     // ── 5. 卸载：清掉成功提示的 timer，不出现卸载后 setState ──
     modality("text").click();
-    click("存为默认模板");
+    saveTemplate("我的模板 3");
     await sleep(80);
     const pending = scheduled[scheduled.length - 1];
     window.__unmountComponent();

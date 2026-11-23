@@ -27,7 +27,9 @@ function probe(scheme) {
 }
 
 const skip = (t) => t.skip("未找到 Chrome/Chromium，跳过真实 DOM 测试");
-const GOOD_TEXT = "已保存为默认模板";
+// 工单 #42：保存模板的提示带上名字（库内不能重名，夹具每次换一个名字）。
+const GOOD_TEXT = "已保存模板「我的模板 1」";
+const GOOD_TEXT_SECOND = "已保存模板「我的模板 2」";
 const BAD_TEXT = "保存失败：模板至少需要一个输入模态（text 或 image）";
 
 for (const scheme of ["light", "dark"]) {
@@ -68,16 +70,16 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return skip(t);
     const { gone, secondOperation } = await probe(scheme);
     assert.equal(gone.text, "", "第二次操作前，第一条提示已经不在页面上");
-    assert.equal(secondOperation.text, GOOD_TEXT, "第二次只显示自己的文案，不叠加旧提示");
+    assert.equal(secondOperation.text, GOOD_TEXT_SECOND, "第二次只显示自己的文案，不叠加旧提示");
     assert.equal(secondOperation.tone, "good");
   });
 
   test(`${scheme} 主题：焦点在提示区域内时暂停计时，离开后继续消失`, async (t) => {
     if (chrome === null) return skip(t);
     const { focused, afterBlur, afterBlurGone } = await probe(scheme);
-    assert.equal(focused.text, GOOD_TEXT, "焦点在内时超过 6 秒仍然可读");
+    assert.equal(focused.text, GOOD_TEXT_SECOND, "焦点在内时超过 6 秒仍然可读");
     assert.equal(focused.inlineOpacity, "1");
-    assert.equal(afterBlur.text, GOOD_TEXT, "失焦后重新计时；淡出阶段文字还在");
+    assert.equal(afterBlur.text, GOOD_TEXT_SECOND, "失焦后重新计时；淡出阶段文字还在");
     assert.equal(afterBlur.inlineOpacity, "0");
     assert.equal(afterBlurGone.text, "", "失焦 6 秒 + 淡出后移除");
     assert.equal(afterBlurGone.tone, "");
