@@ -1,4 +1,4 @@
-// 工单 #29：编辑 / 新增表单的「填入默认模板」按钮。
+// 工单 #29：编辑 / 新增表单的模板条（工单 #42 起是选择器 +「填入」）。
 //
 // 与 model-edit.test.mjs 相同：headless Chrome 渲染打包后的 lib/client.js，
 // 做真实点击并读回表单值、改动字段、settingsOps 与计算样式；Chrome 不可用时 skip。
@@ -76,10 +76,10 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return skip(t);
     const { edit } = await probe(scheme, "with", TEMPLATE_SEED);
     assert.equal(edit.initial.fill.disabled, false);
-    assert.equal(edit.initial.fill.text, "填入默认模板");
+    assert.equal(edit.initial.fill.text, "填入");
     assert.equal(
       edit.initial.hint,
-      "默认模板：上下文 131072（131K） · 输出 8192（8K） · text + image · off,low",
+      "模板：我的模板 · 上下文 131072（131K） · 输出 8192（8K） · text + image · off,low",
     );
     assert.deepEqual(edit.initial.state, {
       name: "jxf/dsv4.1-flash",
@@ -102,7 +102,7 @@ for (const scheme of ["light", "dark"]) {
     });
     assert.equal(
       edit.filled.hint,
-      "默认模板：上下文 131072（131K） · 输出 8192（8K） · text + image · off,low",
+      "模板：我的模板 · 上下文 131072（131K） · 输出 8192（8K） · text + image · off,low",
     );
     assert.equal(edit.filled.changedLine, "改动字段：上下文窗口 / 输出上限 / 输入模态 / 推理档位");
     assert.equal(edit.filled.saveDisabled, false);
@@ -154,11 +154,11 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return skip(t);
     const { edit, create } = await probe(scheme, "none", null);
     assert.equal(edit.initial.fill.disabled, false);
-    assert.equal(edit.initial.fill.text, "填入默认模板");
+    assert.equal(edit.initial.fill.text, "填入");
     assert.equal(edit.initial.hint, BUILTIN_HINT);
     assert.equal(edit.initial.state.contextWindow, "1000000");
     assert.equal(edit.initial.state.maxTokens, "32768");
-    // 点「填入默认模板」把编辑表单从模型现有值换成内置预设值。
+    // 点「填入」把编辑表单从模型现有值换成内置预设值。
     assert.equal(edit.initial.clickNoop, false);
     assert.deepEqual(edit.filled.state, {
       name: "jxf/dsv4.1-flash",
@@ -168,7 +168,7 @@ for (const scheme of ["light", "dark"]) {
 
     assert.deepEqual(create.initial, BUILTIN_FORM);
     assert.equal(create.fill.disabled, false);
-    assert.equal(create.fill.text, "填入默认模板");
+    assert.equal(create.fill.text, "填入");
     assert.equal(create.hintLine, BUILTIN_HINT);
     assert.equal(create.clickNoop, true);
   });
@@ -177,7 +177,7 @@ for (const scheme of ["light", "dark"]) {
     if (chrome === null) return skip(t);
     const { edit, create } = await probe(scheme, "with", TEMPLATE_SEED);
     const expectedHint =
-      "默认模板：上下文 131072（131K） · 输出 8192（8K） · text + image · off,low";
+      "模板：我的模板 · 上下文 131072（131K） · 输出 8192（8K） · text + image · off,low";
     assert.equal(edit.initial.hint, expectedHint);
     assert.equal(create.hintLine, expectedHint);
     assert.ok(!edit.initial.hint.includes("内置模板"));
@@ -190,8 +190,8 @@ for (const scheme of ["light", "dark"]) {
     const expected = { ...TEMPLATE_FORM };
     assert.deepEqual(create.initial, expected);
     assert.equal(create.fill.disabled, false);
-    assert.equal(create.fill.text, "填入默认模板");
-    assert.equal(create.sameBarAsPresets, true);
+    assert.equal(create.fill.text, "填入");
+    assert.equal(create.pickerLabel, "新增模型模板");
 
     assert.deepEqual(create.afterClear, expected);
     assert.deepEqual(create.mutated, {

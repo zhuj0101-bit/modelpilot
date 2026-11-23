@@ -41,16 +41,31 @@ import {
   keyRenameTarget,
 } from "../core/key-rename.js";
 import {
-  builtinDefaultTemplate,
   describeTemplate,
   formToTemplate,
-  hasStoredDefaultTemplate,
-  readDefaultTemplate,
-  removeDefaultTemplate,
+  normalizeTemplate,
   templateToForm,
-  writeDefaultTemplate,
 } from "../core/default-template.js";
-import { MODEL_PRESETS, detectPreset, presetToForm } from "../core/model-presets.js";
+import {
+  TEMPLATE_MAX_COUNT,
+  TEMPLATE_NAME_MAX_LENGTH,
+  addLibraryTemplate,
+  findLibraryTemplate,
+  readTemplateLibrary,
+  readTemplateSelection,
+  removeLibraryTemplate,
+  renameLibraryTemplate,
+  updateLibraryTemplate,
+  writeTemplateLibrary,
+  writeTemplateSelection,
+} from "../core/template-library.js";
+import {
+  MODEL_PRESETS,
+  detectPreset,
+  findModelPreset,
+  presetToForm,
+  presetToTemplate,
+} from "../core/model-presets.js";
 import { PI_AI_LEVELS, MODALITIES, displayNameFromModelId, humanizeTokenCount } from "../core/domain.js";
 import {
   TOKEN_INPUT,
@@ -153,15 +168,61 @@ const BASE_URL_PRESETS = Object.freeze([
 ]);
 
 /**
- * 模板摘要：用户存过就是「默认模板」，没存过就是内置「基础对话」预设。
- * template 为 null 只可能来自外部传入（当前读取路径永远回落到内置预设）。
+ * 内置预设的模板值（工单 #42）。
+ *
+ * 模块级一次收敛：预设是常量，返回值对象也就稳定 —— 每次渲染重建新对象会让
+ * 「首次挂载填入表单」的 effect 依赖反复变化（虽然有 ref 守卫，但没必要抖）。
  */
-function templateSummaryText(template, source) {
-  if (template === null) return "尚未设置默认模板";
-  const description = describeTemplate(template, humanizeTokenCount);
-  return source === "stored"
-    ? `默认模板：${description}`
-    : `内置模板：${MODEL_PRESETS[0].label} · ${description}`;
+const BUILTIN_TEMPLATE_VALUES = new Map(
+  MODEL_PRESETS.map((preset) => [preset.id, normalizeTemplate(presetToTemplate(preset))]),
+);
+
+/** 选中项在 <select> 里的值：用户模板与内置预设分开编码，避免 id 撞车。 */
+function templateOptionValue(choice) {
+  return `${choice.kind}:${choice.id}`;
+}
+
+/** 解析 <select> 的值；非法值返回 null（不改变当前选择）。 */
+function parseTemplateOptionValue(value) {
+  if (typeof value !== "string") return null;
+  const separator = value.indexOf(":");
+  if (separator <= 0) return null;
+  const kind = value.slice(0, separator);
+  const id = value.slice(separator + 1);
+  if (id === "" || (kind !== "user" && kind !== "builtin")) return null;
+  return { kind, id };
+}
+
+/**
+ * 当前选中的模板（工单 #42）。
+ *
+ * - 选中的用户模板被删除后回落到第一份用户模板；
+ * - 用户模板全没了就回落到内置「基础对话」预设；
+ * - 内置预设永远可选、只读，返回值对象来自模块级常量。
+ */
+function resolveTemplateChoice(library, choice) {
+  const selected = choice !== null && choice.kind === "user" ? findLibraryTemplate(library, choice.id) : null;
+  if (selected !== null) {
+    return { kind: "user", id: selected.id, name: selected.name, values: selected.values };
+  }
+  if ((choice === null || choice.kind === "user") && library.templates.length > 0) {
+    const first = library.templates[0];
+    return { kind: "user", id: first.id, name: first.name, values: first.values };
+  }
+  const preset = (choice !== null && choice.kind === "builtin" ? findModelPreset(choice.id) : null)
+    ?? MODEL_PRESETS[0];
+  return { kind: "builtin", id: preset.id, name: preset.label, values: BUILTIN_TEMPLATE_VALUES.get(preset.id) };
+}
+
+/**
+ * 模板条下面的摘要：内置预设带「内置模板：<名字>」，用户模板带「模板：<名字>」，
+ * 冒号后的数值描述复用 describeTemplate，与工单 #29 的文案格式一致。
+ */
+function templateSummaryText(choice) {
+  const description = describeTemplate(choice.values, humanizeTokenCount);
+  return choice.kind === "builtin"
+    ? `内置模板：${choice.name} · ${description}`
+    : `模板：${choice.name} · ${description}`;
 }
 
 /**
@@ -774,8 +835,30 @@ const s = {
     fontSize: FONT.section, fontWeight: 600, minWidth: 0,
     overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   },
-  // 编辑表单顶部：填入默认模板 + 模板摘要 / 无模板说明。
+  // 编辑表单顶部 / 新增表单的模板条（工单 #42）：模板名 + 下拉 + 三个动作，
+  // 摘要单独一行，选中哪一份就显示哪一份的数值。
   templateBar: { display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap" },
+  templateBox: { display: "flex", flexDirection: "column", gap: GAP.xs, flex: "1 1 100%" },
+  templateSelect: { ...SELECT, minWidth: 160, maxWidth: 260, flex: "0 1 auto" },
+  templateSummary: {
+    fontSize: FONT.hint, lineHeight: 1.45,
+    color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, inherit))",
+  },
+  // 模板管理面板：每份模板一行，行内改名 / 覆盖 / 删除的二次确认都在原位展开。
+  templateManageList: {
+    display: "flex", flexDirection: "column",
+    border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.24))",
+    borderRadius: RADIUS.md,
+    maxHeight: 320, overflowY: "auto",
+  },
+  templateManageRow: {
+    display: "flex", flexDirection: "column", gap: GAP.xs,
+    padding: "6px 8px", fontSize: FONT.caption,
+    borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.16))",
+  },
+  templateManageLine: { display: "flex", alignItems: "center", gap: GAP.sm, flexWrap: "wrap", width: "100%" },
+  templateManageName: { fontWeight: 600, minWidth: 96, overflowWrap: "anywhere" },
+  templateManageEmpty: { padding: "10px 8px", fontSize: FONT.caption, lineHeight: 1.55 },
   modelEditor: {
     display: "flex", flexDirection: "column", gap: GAP.md, marginTop: GAP.xs, padding: "10px 12px",
     borderRadius: RADIUS.sm,
@@ -1651,6 +1734,240 @@ function ReasoningApiValues({ levels, apiValues, ariaPrefix, onChange }) {
 }
 
 /**
+ * 模板条（工单 #42）：新增模型表单与编辑模型表单共用同一个组件。
+ *
+ * 结构：`模板 [下拉] [填入] [存为新模板] [管理]` + 下一行摘要。下拉列出用户模板
+ * （按库顺序）+ 分隔线 + 三份内置预设（标「内置」、只读）。组件本身无 hook：
+ * 状态、库与当前表单值都在 Workbench，「存为新模板」与「用当前值覆盖」因此
+ * 能读到触发它的那个表单。
+ */
+function TemplatePicker({ ariaLabel, value, library, summary, onSelect, onFill, onSaveAsNew, onManage }) {
+  return (
+    <div style={s.templateBox} role="group" aria-label={ariaLabel}>
+      <div style={s.templateBar}>
+        <span style={s.label}>模板</span>
+        <select
+          style={s.templateSelect}
+          value={value}
+          aria-label="选择模板"
+          title="选一份模板；「填入」只改表单，不写配置"
+          onChange={(event) => onSelect(event.target.value)}
+        >
+          {library.templates.map((template) => (
+            <option key={template.id} value={`user:${template.id}`} data-template-kind="user">
+              {template.name}
+            </option>
+          ))}
+          {library.templates.length > 0 ? <option value="" disabled>────────</option> : null}
+          {MODEL_PRESETS.map((preset) => (
+            <option key={preset.id} value={`builtin:${preset.id}`} data-template-kind="builtin">
+              {preset.label}（内置）
+            </option>
+          ))}
+        </select>
+        <button type="button" style={s.btnSmall} onClick={onFill} aria-label="填入模板">填入</button>
+        <button type="button" style={s.btnSmall} onClick={onSaveAsNew} aria-label="存为新模板">存为新模板</button>
+        <button type="button" style={s.btnSmall} onClick={onManage} aria-label="管理模板">管理</button>
+      </div>
+      <span style={s.templateSummary}>{summary}</span>
+    </div>
+  );
+}
+
+/**
+ * 「存为新模板」的小对话框（工单 #42）：只有一个名称输入。
+ * 名称为空 / 超长 / 重名时就地报错、不关窗；Enter 保存、Esc 取消。
+ */
+function TemplateNameDialog({ name, error, onChange, onCancel, onConfirm }) {
+  return (
+    <div
+      style={s.overlay}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        style={s.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label="存为新模板"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onCancel();
+          if (event.key === "Enter" && event.target.tagName === "INPUT") onConfirm();
+        }}
+      >
+        <div style={s.pickerHeader}>
+          <span style={{ ...s.h, minWidth: 0, overflowWrap: "anywhere" }}>存为新模板</span>
+          <span style={s.pickerHint}>当前表单值</span>
+        </div>
+        <label style={s.field}>
+          <span style={s.label}>模板名称</span>
+          <input
+            style={s.input}
+            value={name}
+            placeholder="如 我的 128K 对话"
+            aria-label="模板名称"
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </label>
+        {error === "" ? null : <div style={s.err} role="alert">{error}</div>}
+        <div style={s.pickerFooter}>
+          <span style={s.pickerHint}>最多 {TEMPLATE_NAME_MAX_LENGTH} 个字，不能与库里的其他模板重名</span>
+          <span style={{ display: "flex", gap: GAP.sm }}>
+            <button type="button" style={s.btn} onClick={onCancel} aria-label="取消保存模板">取消</button>
+            <button type="button" style={s.btnPrimary} onClick={onConfirm} aria-label="保存模板">保存</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 模板管理面板（工单 #42）：列出库里每一份，行内改名 / 用当前值覆盖 / 删除。
+ *
+ * 「用当前值覆盖」与「删除」都在原位二次确认：覆盖回答「会覆盖原有参数」，
+ * 删除写明「删除后这一份参数不可恢复」。面板本身无 hook，状态在 Workbench。
+ */
+function TemplateManagePanel({
+  library,
+  state,
+  currentSummary,
+  onClose,
+  onBeginRename,
+  onRenameChange,
+  onRenameCommit,
+  onRenameCancel,
+  onRequestOverwrite,
+  onRequestDelete,
+  onConfirmOverwrite,
+  onConfirmDelete,
+  onCancelConfirm,
+}) {
+  return (
+    <div
+      style={s.overlay}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        // 工单 #42：模板管理比通用弹窗宽一点 —— 一行要放下名字 + 三个动作。
+        style={{ ...s.dialog, width: "min(640px, calc(100vw - 32px))" }}
+        role="dialog"
+        aria-modal="true"
+        aria-label="模板管理"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+        }}
+      >
+        <div style={s.pickerHeader}>
+          <span style={{ ...s.h, minWidth: 0, overflowWrap: "anywhere" }}>模板管理</span>
+          <span style={s.pickerHint}>{library.templates.length} / {TEMPLATE_MAX_COUNT} 份</span>
+        </div>
+        <div style={s.templateManageList}>
+          {library.templates.map((template) => {
+            const renaming = state.renameId === template.id;
+            const overwriting = state.confirmOverwriteId === template.id;
+            const deleting = state.confirmDeleteId === template.id;
+            return (
+              <div key={template.id} style={s.templateManageRow} aria-label={`模板 ${template.name}`}>
+                <div style={s.templateManageLine}>
+                  {renaming ? (
+                    <input
+                      style={{ ...s.input, minWidth: 120 }}
+                      value={state.renameName}
+                      aria-label="重命名模板输入"
+                      onChange={(event) => onRenameChange(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") onRenameCommit();
+                        if (event.key === "Escape") {
+                          // 先就地取消改名，不再冒泡到面板的 Esc（那会整块关掉）。
+                          event.stopPropagation();
+                          onRenameCancel();
+                        }
+                      }}
+                    />
+                  ) : (
+                    <span style={s.templateManageName}>{template.name}</span>
+                  )}
+                  <span style={{ flex: "1 1 auto" }} />
+                  {renaming ? (
+                    <>
+                      <button type="button" style={s.btnSmall} onClick={onRenameCommit} aria-label="确认改名">确认</button>
+                      <button type="button" style={s.btnLink} onClick={onRenameCancel} aria-label="取消改名">取消</button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      style={s.btnLink}
+                      onClick={() => onBeginRename(template)}
+                      aria-label={`改名 ${template.name}`}
+                    >
+                      改名
+                    </button>
+                  )}
+                  {overwriting ? (
+                    <>
+                      <span style={s.pickerHint}>用当前表单值覆盖这一份参数？</span>
+                      <button type="button" style={s.btnSmall} onClick={onConfirmOverwrite} aria-label="确认覆盖">确认覆盖</button>
+                      <button type="button" style={s.btnLink} onClick={onCancelConfirm} aria-label="取消覆盖">取消</button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      style={s.btnLink}
+                      onClick={() => onRequestOverwrite(template.id)}
+                      aria-label={`用当前值覆盖 ${template.name}`}
+                    >
+                      用当前值覆盖
+                    </button>
+                  )}
+                  {deleting ? (
+                    <>
+                      <span style={s.pickerHint}>删除后这一份参数不可恢复。</span>
+                      <button
+                        type="button"
+                        style={{ ...s.btnDanger, padding: "3px 9px", fontSize: FONT.hint }}
+                        onClick={onConfirmDelete}
+                        aria-label="确认删除模板"
+                      >
+                        确认删除
+                      </button>
+                      <button type="button" style={s.btnLink} onClick={onCancelConfirm} aria-label="取消删除模板">取消</button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      style={s.btnLink}
+                      onClick={() => onRequestDelete(template.id)}
+                      aria-label={`删除模板 ${template.name}`}
+                    >
+                      删除
+                    </button>
+                  )}
+                </div>
+                <span style={s.templateSummary}>{describeTemplate(template.values, humanizeTokenCount)}</span>
+                {renaming && state.renameError !== "" ? (
+                  <span style={s.fieldError} role="alert">{state.renameError}</span>
+                ) : null}
+              </div>
+            );
+          })}
+          {library.templates.length === 0 ? (
+            <p style={s.templateManageEmpty}>还没有自定义模板。改好参数后点「存为新模板」保存一份。</p>
+          ) : null}
+        </div>
+        <div style={s.pickerFooter}>
+          <span style={s.pickerHint}>{currentSummary}</span>
+          <button type="button" style={s.btn} onClick={onClose} aria-label="关闭模板管理">关闭</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 行内编辑表单。每个字段都预填现有值；保存按钮在改动集为空时禁用。
  * 表单状态由 Workbench 持有，便于把 diffRow 与 projectPiAi(update) 接起来。
  */
@@ -1658,8 +1975,7 @@ function EditModelForm({
   model,
   modelId,
   form,
-  template,
-  templateSource,
+  templatePicker,
   errors,
   formError,
   projection,
@@ -1672,7 +1988,6 @@ function EditModelForm({
   onTokenChange,
   onToggleLevel,
   onApiValueChange,
-  onFillTemplate,
   onSave,
   onCancel,
   onDelete,
@@ -1701,21 +2016,7 @@ function EditModelForm({
           × 收起
         </button>
       </div>
-      <div style={s.templateBar}>
-        <button
-          type="button"
-          style={template === null ? { ...s.btnSmall, opacity: 0.55, cursor: "not-allowed" } : s.btnSmall}
-          disabled={template === null}
-          onClick={onFillTemplate}
-          aria-label="填入默认模板"
-          title={template === null ? "先在新增表单里「存为默认模板」" : ""}
-        >
-          填入默认模板
-        </button>
-        <span style={s.fieldHint}>
-          {templateSummaryText(template, templateSource)}
-        </span>
-      </div>
+      <TemplatePicker {...templatePicker} />
 
       <div style={s.row}>
         <Field label="显示名（可选）" hint="">
@@ -2995,12 +3296,22 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     }
   }, []);
 
-  const [template, setTemplate] = React.useState(() => readDefaultTemplate(storage));
-  // 工单 #40：区分「用户存的模板」与「内置基础对话预设」，只影响摘要文案与
-  // 是否显示「清除」；两种模板填入表单的行为完全相同。
-  const [templateSource, setTemplateSource] = React.useState(
-    () => (hasStoredDefaultTemplate(storage) ? "stored" : "builtin"),
-  );
+  // 工单 #42：模板库 + 「最近选用」。库与选择是两份独立偏好：删库里的模板
+  // 不删选择 key（读的时候校验），选择指向已删除的模板时由界面回落到第一份
+  // 用户模板、再回落到内置「基础对话」。
+  const [templateLibrary, setTemplateLibrary] = React.useState(() => readTemplateLibrary(storage));
+  const [templateChoice, setTemplateChoice] = React.useState(() => {
+    const library = readTemplateLibrary(storage);
+    const stored = readTemplateSelection(storage, library);
+    if (stored !== null) return { kind: "user", id: stored };
+    if (library.templates.length > 0) return { kind: "user", id: library.templates[0].id };
+    return { kind: "builtin", id: MODEL_PRESETS[0].id };
+  });
+  // 「存为新模板」对话框：{ mode: "create"|"edit", name, error }；null = 关闭。
+  const [templateDialog, setTemplateDialog] = React.useState(null);
+  // 模板管理面板：mode 决定「用当前值覆盖」读哪份表单；行内的改名 / 覆盖 /
+  // 删除二次确认都是这个对象里的字段，null = 面板关闭。
+  const [templateManage, setTemplateManage] = React.useState(null);
 
   // 工单 #31：列表密度的全局前端偏好；读不到 / 非法值一律回落 compact。
   const [modelDensity, setModelDensity] = React.useState(() => readModelListDensity(storage));
@@ -3112,20 +3423,23 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const [credentialError, setCredentialError] = React.useState("");
   const [credentialConfirmOpen, setCredentialConfirmOpen] = React.useState(false);
 
+  // 工单 #42：当前选中的模板（用户模板或内置预设）。选中的那一份被删除后
+  // resolveTemplateChoice 会回落到第一份用户模板 / 内置「基础对话」。
+  const selectedTemplate = resolveTemplateChoice(templateLibrary, templateChoice);
+
   // 首次挂载：有模板就填进表单。只跑一次，用户之后的手动编辑不被覆盖。
   const templateApplied = React.useRef(false);
   React.useEffect(() => {
     if (templateApplied.current) return;
     templateApplied.current = true;
-    if (template === null) return;
-    const form = templateToForm(template);
+    const form = templateToForm(selectedTemplate.values);
     setContextWindow(form.contextWindow);
     setMaxTokens(form.maxTokens);
     setInputText(form.inputText);
     setInputImage(form.inputImage);
     setReasoningLevels(form.reasoningLevels);
     setReasoningApiValues({});
-  }, [template]);
+  }, [selectedTemplate.values]);
 
   const reasoningGuard = reasoningLevelsGuard(reasoningLevels);
 
@@ -3925,10 +4239,9 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setReasoningApiValues({});
   }
 
-  /** 新增表单的「填入默认模板」：模板字段整体替换，显示名 / 模型 ID 不动。 */
-  function fillCreateTemplate() {
-    if (template === null) return;
-    const form = templateToForm(template);
+  /** 把一份模板值整体填进新增表单：只改表单状态，显示名 / 模型 ID 不动。 */
+  function applyTemplateValues(values) {
+    const form = templateToForm(values);
     setContextWindow(form.contextWindow);
     setMaxTokens(form.maxTokens);
     setContextWindowError(false);
@@ -3939,12 +4252,210 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     setReasoningApiValues({});
   }
 
-  /** 清除用户模板后回落到内置基础对话：模板仍然可用，不是「没有模板」。 */
-  function clearDefaultTemplate() {
-    removeDefaultTemplate(storage);
-    setTemplate(builtinDefaultTemplate());
-    setTemplateSource("builtin");
-    setToast({ tone: "good", text: "已清除默认模板，回落到内置「基础对话」" });
+  /** 新增表单的「填入」：选中哪一份就填哪一份（不写配置，mutations 保持 0）。 */
+  function fillCreateTemplate() {
+    applyTemplateValues(selectedTemplate.values);
+  }
+
+  /** 编辑表单 / 新增表单的当前值 → 模板结构；两个模态都没勾时返回 null。 */
+  function templateValuesOfMode(mode) {
+    if (mode === "edit") {
+      if (editForm === null) return null;
+      return formToTemplate({
+        contextWindow: editForm.contextWindow,
+        maxTokens: editForm.maxTokens,
+        inputText: editForm.inputText,
+        inputImage: editForm.inputImage,
+        reasoningLevels: editForm.reasoningLevels,
+      });
+    }
+    return formToTemplate({ contextWindow, maxTokens, inputText, inputImage, reasoningLevels });
+  }
+
+  /** 选中一份模板并记住「最近选用」；内置预设只影响本次界面，不写选择 key。 */
+  function chooseTemplate(choice) {
+    setTemplateChoice(choice);
+    if (choice.kind === "user") writeTemplateSelection(storage, choice.id);
+  }
+
+  /** 下拉切换：只改选择与摘要，不把值填进表单。 */
+  function changeTemplateChoice(value) {
+    const parsed = parseTemplateOptionValue(value);
+    if (parsed === null) return;
+    if (parsed.kind === "user" && findLibraryTemplate(templateLibrary, parsed.id) === null) return;
+    if (parsed.kind === "builtin" && findModelPreset(parsed.id) === null) return;
+    chooseTemplate(parsed);
+  }
+
+  /** 打开「存为新模板」对话框；库已满时直接说明（不打开注定失败的对话框）。 */
+  function openTemplateDialog(mode) {
+    if (templateLibrary.templates.length >= TEMPLATE_MAX_COUNT) {
+      setToast({ tone: "bad", text: `最多保存 ${TEMPLATE_MAX_COUNT} 份模板` });
+      return;
+    }
+    setTemplateDialog({ mode, name: "", error: "" });
+  }
+
+  function changeTemplateDialogName(name) {
+    setTemplateDialog((current) => (current === null ? current : { ...current, name, error: "" }));
+  }
+
+  function closeTemplateDialog() {
+    setTemplateDialog(null);
+  }
+
+  /** 用触发对话框的那个表单的当前值新建一份模板。 */
+  function saveTemplateDialog() {
+    if (templateDialog === null) return;
+    const values = templateValuesOfMode(templateDialog.mode);
+    if (values === null) {
+      const message = "模板至少需要一个输入模态（text 或 image）";
+      setTemplateDialog((current) => (current === null ? current : { ...current, error: message }));
+      setToast({ tone: "bad", text: `保存失败：${message}` });
+      return;
+    }
+    const added = addLibraryTemplate(templateLibrary, templateDialog.name, values);
+    if (!added.ok) {
+      setTemplateDialog((current) => (current === null ? current : { ...current, error: added.error }));
+      return;
+    }
+    if (!writeTemplateLibrary(storage, added.library)) {
+      setTemplateDialog((current) => (current === null ? current : { ...current, error: "浏览器未开放本地存储" }));
+      return;
+    }
+    setTemplateLibrary(added.library);
+    chooseTemplate({ kind: "user", id: added.id });
+    setTemplateDialog(null);
+    setToast({ tone: "good", text: `已保存模板「${added.template.name}」` });
+  }
+
+  /** 打开管理面板；mode 决定「用当前值覆盖」读哪份表单。 */
+  function openTemplateManage(mode) {
+    setTemplateManage({
+      mode,
+      renameId: null,
+      renameName: "",
+      renameError: "",
+      confirmOverwriteId: null,
+      confirmDeleteId: null,
+    });
+  }
+
+  function closeTemplateManage() {
+    setTemplateManage(null);
+  }
+
+  /** 管理面板的局部状态补丁（行内改名 / 二次确认）。 */
+  function patchTemplateManage(patch) {
+    setTemplateManage((current) => (current === null ? current : { ...current, ...patch }));
+  }
+
+  function beginTemplateRename(template) {
+    patchTemplateManage({
+      renameId: template.id,
+      renameName: template.name,
+      renameError: "",
+      confirmOverwriteId: null,
+      confirmDeleteId: null,
+    });
+  }
+
+  function changeTemplateRenameName(name) {
+    patchTemplateManage({ renameName: name, renameError: "" });
+  }
+
+  function cancelTemplateRename() {
+    patchTemplateManage({ renameId: null, renameName: "", renameError: "" });
+  }
+
+  /** 回车确认改名；空 / 超长 / 重名时就地报错，不关输入框。 */
+  function commitTemplateRename() {
+    if (templateManage === null || templateManage.renameId === null) return;
+    const renamedId = templateManage.renameId;
+    const result = renameLibraryTemplate(templateLibrary, renamedId, templateManage.renameName);
+    if (!result.ok) {
+      patchTemplateManage({ renameError: result.error });
+      return;
+    }
+    if (!writeTemplateLibrary(storage, result.library)) {
+      patchTemplateManage({ renameError: "浏览器未开放本地存储" });
+      return;
+    }
+    const renamed = findLibraryTemplate(result.library, renamedId);
+    setTemplateLibrary(result.library);
+    patchTemplateManage({ renameId: null, renameName: "", renameError: "" });
+    setToast({ tone: "good", text: `已改名为「${renamed.name}」` });
+  }
+
+  function requestOverwriteTemplate(id) {
+    patchTemplateManage({ confirmOverwriteId: id, confirmDeleteId: null, renameId: null, renameError: "" });
+  }
+
+  /** 用触发面板的那个表单的当前值覆盖这一份（名字不变）。 */
+  function confirmOverwriteTemplate() {
+    if (templateManage === null || templateManage.confirmOverwriteId === null) return;
+    const id = templateManage.confirmOverwriteId;
+    const values = templateValuesOfMode(templateManage.mode);
+    if (values === null) {
+      patchTemplateManage({ confirmOverwriteId: null });
+      setToast({ tone: "bad", text: "保存失败：模板至少需要一个输入模态（text 或 image）" });
+      return;
+    }
+    const result = updateLibraryTemplate(templateLibrary, id, values);
+    if (!result.ok) {
+      patchTemplateManage({ confirmOverwriteId: null });
+      setToast({ tone: "bad", text: `覆盖失败：${result.error}` });
+      return;
+    }
+    if (!writeTemplateLibrary(storage, result.library)) {
+      patchTemplateManage({ confirmOverwriteId: null });
+      setToast({ tone: "bad", text: "保存失败：浏览器未开放本地存储" });
+      return;
+    }
+    const updated = findLibraryTemplate(result.library, id);
+    setTemplateLibrary(result.library);
+    patchTemplateManage({ confirmOverwriteId: null });
+    setToast({ tone: "good", text: `已用当前表单值覆盖「${updated.name}」` });
+  }
+
+  function requestDeleteTemplate(id) {
+    patchTemplateManage({ confirmDeleteId: id, confirmOverwriteId: null, renameId: null, renameError: "" });
+  }
+
+  /** 删除一份模板；删的正好是当前选中项时回落到第一份用户模板 / 内置「基础对话」。 */
+  function confirmDeleteTemplate() {
+    if (templateManage === null || templateManage.confirmDeleteId === null) return;
+    const id = templateManage.confirmDeleteId;
+    const target = findLibraryTemplate(templateLibrary, id);
+    const result = removeLibraryTemplate(templateLibrary, id);
+    if (!result.ok) {
+      patchTemplateManage({ confirmDeleteId: null });
+      return;
+    }
+    if (!writeTemplateLibrary(storage, result.library)) {
+      patchTemplateManage({ confirmDeleteId: null });
+      setToast({ tone: "bad", text: "保存失败：浏览器未开放本地存储" });
+      return;
+    }
+    setTemplateLibrary(result.library);
+    patchTemplateManage({ confirmDeleteId: null });
+    if (templateChoice.kind === "user" && templateChoice.id === id) {
+      chooseTemplate(result.library.templates.length > 0
+        ? { kind: "user", id: result.library.templates[0].id }
+        : { kind: "builtin", id: MODEL_PRESETS[0].id });
+    }
+    setToast({ tone: "good", text: `已删除模板「${target.name}」` });
+  }
+
+  /** 取消行内的覆盖 / 删除二次确认。 */
+  function cancelTemplateConfirm() {
+    patchTemplateManage({ confirmOverwriteId: null, confirmDeleteId: null });
+  }
+
+  /** 管理面板底部：说明「用当前值覆盖」读的是哪份表单。 */
+  function templateFormSummary(mode) {
+    if (templateValuesOfMode(mode) === null) return "当前表单没有可保存的模板值（需要勾选 text 或 image）";
+    return `「用当前值覆盖」使用${mode === "edit" ? "编辑" : "新增"}表单的当前值`;
   }
 
   /** 唯一写入路径：先校验出 1 条 set，再调用宿主 mutate。 */
@@ -4418,15 +4929,14 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   }
 
   /**
-   * 把已保存的默认模板填进编辑表单。
+   * 把当前选中的模板填进编辑表单（工单 #42：与新增表单共用同一个选择器）。
    *
    * templateToForm 不返回 name，浅合并不会动显示名。模板里为空的字段会
    * 如实清空表单值 —— 这是「整体替换」，不是「只覆盖有值的字段」。
    */
   function fillEditTemplate() {
-    if (template === null) return;
     // 模板不含 API 参数值：整体替换时一并清空，避免旧的映射残留在新档位上。
-    const next = { ...templateToForm(template), reasoningApiValues: {} };
+    const next = { ...templateToForm(selectedTemplate.values), reasoningApiValues: {} };
     updateEditForm(next);
     // 模板只校验结构、不校验 token 文案；与输入层共用判定，坏值立刻标红。
     setEditErrors({
@@ -4653,7 +5163,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     return planBatchSelection(
       ids,
       { providers, catalogModels: catalogIds },
-      { routeId, template, ackedReplacement },
+      { routeId, template: selectedTemplate.values, ackedReplacement },
     );
   }
 
@@ -4713,7 +5223,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           :           { tone: "bad", text: "写入被系统拒绝（配置已变化或校验失败），已重新读取当前配置，请核对后重试" },
       );
       if (ok) {
-        const form = templateToForm(template);
+        const form = templateToForm(selectedTemplate.values);
         displayNameTouched.current = false;
         setModelId("");
         setDisplayName("");
@@ -5161,6 +5671,29 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     error: credential.error,
   };
 
+  // 工单 #42：两处模板条共用同一个组件，只是「填入 / 存为新模板 / 管理」的
+  // 目标表单不同 —— 编辑表单读编辑表单的当前值，新增表单读新增表单的当前值。
+  const templatePickerBase = {
+    value: templateOptionValue(selectedTemplate),
+    library: templateLibrary,
+    summary: templateSummaryText(selectedTemplate),
+    onSelect: changeTemplateChoice,
+  };
+  const createTemplatePicker = {
+    ...templatePickerBase,
+    ariaLabel: "新增模型模板",
+    onFill: fillCreateTemplate,
+    onSaveAsNew: () => openTemplateDialog("create"),
+    onManage: () => openTemplateManage("create"),
+  };
+  const editTemplatePicker = {
+    ...templatePickerBase,
+    ariaLabel: "编辑模型模板",
+    onFill: fillEditTemplate,
+    onSaveAsNew: () => openTemplateDialog("edit"),
+    onManage: () => openTemplateManage("edit"),
+  };
+
   /**
    * 渲染一行模型（工单 #39）：分组视图与平铺视图共用这一份 JSX，调用方只决定
    * 显示名、序号、位置与组头摘要。position 是它在所在容器里的位置（首行不加
@@ -5287,8 +5820,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             model={model}
             modelId={editModelId}
             form={editForm}
-            template={template}
-            templateSource={templateSource}
+            templatePicker={editTemplatePicker}
             errors={editErrors}
             formError={editFormError}
             projection={editProjection}
@@ -5301,7 +5833,6 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
             onTokenChange={changeEditToken}
             onToggleLevel={toggleEditLevel}
             onApiValueChange={changeEditApiValue}
-            onFillTemplate={fillEditTemplate}
             onSave={saveEdit}
             onCancel={closeEditor}
             onDelete={requestDelete}
@@ -5832,24 +6363,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
               </button>
             );
           })}
-          <span style={{ flex: "1 1 auto" }} />
-          <button
-            type="button"
-            style={template === null ? { ...s.btnSmall, opacity: 0.55, cursor: "not-allowed" } : s.btnSmall}
-            disabled={template === null}
-            onClick={fillCreateTemplate}
-            aria-label="填入默认模板"
-            title={template === null ? "先在新增表单里「存为默认模板」" : ""}
-          >
-            填入默认模板
-          </button>
-          <span style={s.fieldHint}>{templateSummaryText(template, templateSource)}</span>
-          {templateSource === "stored" ? (
-            <button type="button" style={s.btnLink} onClick={clearDefaultTemplate}>
-              清除
-            </button>
-          ) : null}
         </div>
+        {/*
+          工单 #42：模板条从「一个按钮」升级成选择器 —— 用户模板 + 内置预设
+          （只读）同在一个下拉里，选中哪一份，「填入」就填哪一份的值。
+        */}
+        <TemplatePicker {...createTemplatePicker} />
         <div style={s.row}>
           <TokenCountField
             label="上下文窗口 (contextWindow)"
@@ -6044,7 +6563,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           type="button"
           style={s.btnLink}
           onClick={() => {
-            const form = templateToForm(template);
+            const form = templateToForm(selectedTemplate.values);
             displayNameTouched.current = false;
             setModelId("");
             setDisplayName("");
@@ -6062,26 +6581,6 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           }}
         >
           清空
-        </button>
-        <button
-          type="button"
-          style={s.btnLink}
-          onClick={() => {
-            const next = formToTemplate({ contextWindow, maxTokens, inputText, inputImage, reasoningLevels });
-            if (next === null) {
-              setToast({ tone: "bad", text: "保存失败：模板至少需要一个输入模态（text 或 image）" });
-              return;
-            }
-            if (!writeDefaultTemplate(storage, next)) {
-              setToast({ tone: "bad", text: "保存失败：浏览器未开放本地存储" });
-              return;
-            }
-            setTemplate(readDefaultTemplate(storage));
-            setTemplateSource("stored");
-            setToast({ tone: "good", text: "已保存为默认模板" });
-          }}
-        >
-          存为默认模板
         </button>
       </div>
       </section>
@@ -6119,7 +6618,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         <ModelPicker
           models={remoteModels}
           existing={existingModelIds}
-          hasTemplate={templateSource === "stored"}
+          hasTemplate={templateLibrary.templates.length > 0}
           overridesInUse={overridesInUse}
           catalogWarning={catalogWarning}
           busy={busy}
@@ -6189,6 +6688,34 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
           onCancel={closeCreateRoute}
           onConfirm={createRoute}
           onRetryCatalog={() => setCreateReload((current) => current + 1)}
+        />
+      ) : null}
+
+      {templateDialog !== null ? (
+        <TemplateNameDialog
+          name={templateDialog.name}
+          error={templateDialog.error}
+          onChange={changeTemplateDialogName}
+          onCancel={closeTemplateDialog}
+          onConfirm={saveTemplateDialog}
+        />
+      ) : null}
+
+      {templateManage !== null ? (
+        <TemplateManagePanel
+          library={templateLibrary}
+          state={templateManage}
+          currentSummary={templateFormSummary(templateManage.mode)}
+          onClose={closeTemplateManage}
+          onBeginRename={beginTemplateRename}
+          onRenameChange={changeTemplateRenameName}
+          onRenameCommit={commitTemplateRename}
+          onRenameCancel={cancelTemplateRename}
+          onRequestOverwrite={requestOverwriteTemplate}
+          onRequestDelete={requestDeleteTemplate}
+          onConfirmOverwrite={confirmOverwriteTemplate}
+          onConfirmDelete={confirmDeleteTemplate}
+          onCancelConfirm={cancelTemplateConfirm}
         />
       ) : null}
 
