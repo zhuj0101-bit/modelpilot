@@ -394,7 +394,8 @@ test("readTemplateSelection：值指向已删除的模板 → null（不是返�
   assert.equal(writeTemplateSelection(storage, removedId), true);
   const afterRemoval = removeLibraryTemplate(library, removedId).library;
   assert.equal(readTemplateSelection(storage, afterRemoval), null);
-  assert.equal(storage.getItem(TEMPLATE_SELECTION_KEY), removedId, "值的删除由界面在回落后覆盖");
+  // 工单 #43：存储值改成编码值 user:<id>（选择本身不删，回落由界面覆盖）。
+  assert.equal(storage.getItem(TEMPLATE_SELECTION_KEY), `user:${removedId}`, "值的删除由界面在回落后覆盖");
 });
 
 test("writeTemplateSelection / readTemplateSelection：指向存在的模板时返回该 id", () => {
@@ -402,8 +403,9 @@ test("writeTemplateSelection / readTemplateSelection：指向存在的模板时�
   const library = libraryOf(["一", "二"]);
   const id = library.templates[1].id;
   assert.equal(writeTemplateSelection(storage, id), true);
-  assert.equal(readTemplateSelection(storage, library), id);
-  assert.equal(storage.getItem(TEMPLATE_SELECTION_KEY), id);
+  // 工单 #43：签名从「裸 id」变成 { kind, id }，存储值是与下拉 option 同构的编码值。
+  assert.deepEqual(readTemplateSelection(storage, library), { kind: "user", id });
+  assert.equal(storage.getItem(TEMPLATE_SELECTION_KEY), `user:${id}`);
 });
 
 test("readTemplateSelection：空串 / 非字符串值 → null；writeTemplateSelection 空 id → false", () => {
@@ -415,4 +417,71 @@ test("readTemplateSelection：空串 / 非字符串值 → null；writeTemplateS
   assert.equal(readTemplateSelection(storage, library), null);
   assert.equal(writeTemplateSelection(storage, ""), false);
   assert.equal(writeTemplateSelection(storage, null), false);
+});
+
+// ── 工单 #43 缺陷 2：最近选用的编码值（内置预设也持久化） ────────────────────
+
+test("writeTemplateSelection / readTemplateSelection：内置预设也持久化", () => {
+  const storage = memoryStorage();
+  const library = libraryOf(["一"]);
+  assert.equal(writeTemplateSelection(storage, { kind: "builtin", id: "long" }), true);
+  assert.equal(storage.getItem(TEMPLATE_SELECTION_KEY), "builtin:long", "与下拉 option 的 value 同构");
+  assert.deepEqual(readTemplateSelection(storage, library), { kind: "builtin", id: "long" });
+  // 换一份内置预设同样持久化（工单 #43 之前这里根本不写 key）。
+  assert.equal(writeTemplateSelection(storage, { kind: "builtin", id: "coding" }), true);
+  assert.deepEqual(readTemplateSelection(storage, library), { kind: "builtin", id: "coding" });
+});
+
+test("writeTemplateSelection / readTemplateSelection：用户模板存成 user:<id>", () => {
+  const storage = memoryStorage();
+  const library = libraryOf(["一", "二"]);
+  const id = library.templates[1].id;
+  assert.equal(writeTemplateSelection(storage, { kind: "user", id }), true);
+  assert.equal(storage.getItem(TEMPLATE_SELECTION_KEY), `user:${id}`);
+  assert.deepEqual(readTemplateSelection(storage, library), { kind: "user", id });
+});
+
+test("readTemplateSelection：向后兼容裸 id（#42 的旧格式），按 user:<id> 解释", () => {
+  const storage = memoryStorage();
+  const library = normalizeTemplateLibrary({
+    templates: [{ id: "tpl-1", name: "旧的", values: VALUES }],
+  });
+  storage.setItem(TEMPLATE_SELECTION_KEY, "tpl-1");
+  assert.deepEqual(readTemplateSelection(storage, library), { kind: "user", id: "tpl-1" });
+});
+
+test("readTemplateSelection：指向已删除模板 / 未知内置预设 / 非法值 / 损坏数据 → null", () => {
+  const storage = memoryStorage();
+  const library = libraryOf(["一"]);
+  const existing = library.templates[0].id;
+  const nullCases = [
+    `user:${existing}-deleted`, // 已删除的模板
+    "builtin:unknown", // 未知预设
+    "builtin:", // 空 id
+    "user:", // 空 id
+    ":tpl-1", // 没有前缀的空 kind
+    "user:a:b", // 拼接错的编码值
+    "tpl-1", // 旧格式但库里没有这份
+    "", // 空串
+    "{bad", // 损坏的数据
+    '{"kind":"user","id":"tpl-1"}', // 不是编码值
+    JSON.stringify(existing), // 被 JSON 引用过的裸 id
+  ];
+  for (const raw of nullCases) {
+    storage.setItem(TEMPLATE_SELECTION_KEY, raw);
+    assert.equal(readTemplateSelection(storage, library), null, `应回落：${raw}`);
+  }
+  // 指向存在的那份仍然读得出来，证明上面的 null 不是读不到一切。
+  storage.setItem(TEMPLATE_SELECTION_KEY, `user:${existing}`);
+  assert.deepEqual(readTemplateSelection(storage, library), { kind: "user", id: existing });
+});
+
+test("writeTemplateSelection：未知 kind / 空 id / 非字符串、对象 choice → false，不写 key", () => {
+  const storage = memoryStorage();
+  assert.equal(writeTemplateSelection(storage, { kind: "unknown", id: "x" }), false);
+  assert.equal(writeTemplateSelection(storage, { kind: "user", id: "" }), false);
+  assert.equal(writeTemplateSelection(storage, { kind: "user", id: "a:b" }), false);
+  assert.equal(writeTemplateSelection(storage, null), false);
+  assert.equal(writeTemplateSelection(storage, ""), false);
+  assert.equal(storage.getItem(TEMPLATE_SELECTION_KEY), null);
 });

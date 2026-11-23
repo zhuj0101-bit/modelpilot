@@ -77,9 +77,11 @@ for (const scheme of ["light", "dark"]) {
     const { edit } = await probe(scheme, "with", TEMPLATE_SEED);
     assert.equal(edit.initial.fill.disabled, false);
     assert.equal(edit.initial.fill.text, "填入");
+    // 编辑表单的初始值是模型的现有值（1000000 / 32768），与模板不同，
+    // 工单 #43 缺陷 5 要求摘要如实说明；点「填入」后两者一致，这句就消失。
     assert.equal(
       edit.initial.hint,
-      "模板：我的模板 · 上下文 131072（131K） · 输出 8192（8K） · text + image · off,low",
+      "模板：我的模板 · 上下文 131072（131K） · 输出 8192（8K） · text + image · off,low（表单已改动，与模板不同）",
     );
     assert.deepEqual(edit.initial.state, {
       name: "jxf/dsv4.1-flash",
@@ -155,7 +157,8 @@ for (const scheme of ["light", "dark"]) {
     const { edit, create } = await probe(scheme, "none", null);
     assert.equal(edit.initial.fill.disabled, false);
     assert.equal(edit.initial.fill.text, "填入");
-    assert.equal(edit.initial.hint, BUILTIN_HINT);
+    // 编辑表单先显示模型自己的值（1000000 / 32768），与内置预设不同。
+    assert.equal(edit.initial.hint, `${BUILTIN_HINT}（表单已改动，与模板不同）`);
     assert.equal(edit.initial.state.contextWindow, "1000000");
     assert.equal(edit.initial.state.maxTokens, "32768");
     // 点「填入」把编辑表单从模型现有值换成内置预设值。
@@ -178,7 +181,7 @@ for (const scheme of ["light", "dark"]) {
     const { edit, create } = await probe(scheme, "with", TEMPLATE_SEED);
     const expectedHint =
       "模板：我的模板 · 上下文 131072（131K） · 输出 8192（8K） · text + image · off,low";
-    assert.equal(edit.initial.hint, expectedHint);
+    assert.equal(edit.initial.hint, `${expectedHint}（表单已改动，与模板不同）`);
     assert.equal(create.hintLine, expectedHint);
     assert.ok(!edit.initial.hint.includes("内置模板"));
     assert.ok(!create.hintLine.includes("内置模板"));

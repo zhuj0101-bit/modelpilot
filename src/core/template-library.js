@@ -15,11 +15,18 @@
 // `tpl-<时间戳>-<计数器><随机后缀>`，只含 [a-z0-9-]，同一毫秒内连续新增也不冲突。
 
 import { DEFAULT_TEMPLATE_KEY, normalizeTemplate } from "./default-template.js";
+import { findModelPreset } from "./model-presets.js";
 
 /** 模板库的存储 key；结构变化时换版本号。 */
 export const TEMPLATE_LIBRARY_KEY = "modelpilot.templates.v1";
 
-/** 最近一次选用的模板 id；独立 key，删模板不影响它（读的时候再校验）。 */
+/**
+ * 最近一次选用的模板；独立 key，删模板不影响它（读的时候再校验）。
+ *
+ * 工单 #43 起存「编码值」（`user:<id>` / `builtin:<presetId>`，与模板下拉 option
+ * 的 value 同构）。#42 只写用户模板、存裸 id，因此读到裸 id 时按 `user:<id>`
+ * 解释，向后兼容旧数据。
+ */
 export const TEMPLATE_SELECTION_KEY = "modelpilot.templates.selected.v1";
 
 /** 模板库结构版本。 */
@@ -292,8 +299,46 @@ export function findLibraryTemplate(library, id) {
   return current.templates.find((template) => template.id === id) ?? null;
 }
 
+/** 选择项的两种来源；编码值的前缀与模板下拉 option 的 value 同构。 */
+const TEMPLATE_SELECTION_KINDS = Object.freeze(["user", "builtin"]);
+
 /**
- * 读「最近选用」。值不存在、不可读或指向已删除的模板都返回 null。
+ * 选择项 → 存储值：`user:<id>` 或 `builtin:<presetId>`（工单 #43 缺陷 2）。
+ *
+ * 未知 kind、空 id、含冒号的 id 都返回 null —— id 只允许 [a-z0-9-]，含冒号一定
+ * 是拼接错的编码值，写进去只会让下次读取悄悄回落。
+ * @param {unknown} choice
+ */
+export function templateSelectionValue(choice) {
+  if (!isRecord(choice)) return null;
+  const kind = choice.kind;
+  const id = choice.id;
+  if (typeof kind !== "string" || !TEMPLATE_SELECTION_KINDS.includes(kind)) return null;
+  if (typeof id !== "string" || id === "" || id.includes(":")) return null;
+  return `${kind}:${id}`;
+}
+
+/**
+ * 存储值 → `{ kind, id }`；只做语法解析，不校验目标是否还存在。
+ * 没有前缀的裸 id（#42 的旧格式）与未知前缀都返回 null，由调用方决定回落。
+ * @param {unknown} raw
+ */
+export function parseTemplateSelectionValue(raw) {
+  if (typeof raw !== "string" || raw === "") return null;
+  const separator = raw.indexOf(":");
+  if (separator <= 0) return null;
+  const kind = raw.slice(0, separator);
+  const id = raw.slice(separator + 1);
+  if (!TEMPLATE_SELECTION_KINDS.includes(kind)) return null;
+  if (id === "" || id.includes(":")) return null;
+  return { kind, id };
+}
+
+/**
+ * 读「最近选用」，返回 `{ kind, id }`（工单 #43 缺陷 2：内置预设也持久化）。
+ *
+ * 值不存在、不可读、语法非法或指向已删除的模板 / 未知预设都返回 null。
+ * 旧格式（裸模板 id）按 `user:<id>` 解释：读得到目标就返回 user，读不到则回落。
  * @param {Pick<Storage,"getItem">|undefined} storage
  * @param {unknown} library
  */
@@ -306,19 +351,35 @@ export function readTemplateSelection(storage, library) {
     return null;
   }
   if (typeof raw !== "string" || raw === "") return null;
-  return findLibraryTemplate(library, raw) === null ? null : raw;
+  const choice = parseTemplateSelectionValue(raw) ?? parseTemplateSelectionValue(`user:${raw}`);
+  if (choice === null) return null;
+  if (choice.kind === "user") {
+    return findLibraryTemplate(library, choice.id) === null ? null : choice;
+  }
+  return findModelPreset(choice.id) === null ? null : choice;
 }
 
 /**
- * 写「最近选用」；成功返回 true。空 id / 不可写返回 false。
+ * 写「最近选用」；成功返回 true。
+ *
+ * 接受 `{ kind, id }` 选择项，也接受裸模板 id（按 `user:<id>` 编码）—— 后者让
+ * 仍按 #42 签名调用的代码继续工作。空 id / 未知 kind / 不可写返回 false。
  * @param {Pick<Storage,"setItem">|undefined} storage
- * @param {unknown} id
+ * @param {unknown} choice
  */
-export function writeTemplateSelection(storage, id) {
-  if (typeof id !== "string" || id === "") return false;
+export function writeTemplateSelection(storage, choice) {
+  let encoded = null;
+  if (typeof choice === "string") {
+    // 已经编码好的值原样写；裸 id 按 user:<id> 编码；空串不写。
+    if (parseTemplateSelectionValue(choice) !== null) encoded = choice;
+    else if (choice !== "") encoded = templateSelectionValue({ kind: "user", id: choice });
+  } else {
+    encoded = templateSelectionValue(choice);
+  }
+  if (encoded === null) return false;
   if (!storage || typeof storage.setItem !== "function") return false;
   try {
-    storage.setItem(TEMPLATE_SELECTION_KEY, id);
+    storage.setItem(TEMPLATE_SELECTION_KEY, encoded);
     return true;
   } catch {
     return false;

@@ -47,6 +47,23 @@ export const SEEDED_LIBRARY = Object.freeze({
   ],
 });
 
+/** 满库场景：20 份「模板 N」（工单 #43 缺陷 4 的「存为新模板」禁用）。 */
+export const FULL_LIBRARY = Object.freeze({
+  version: 1,
+  templates: Array.from({ length: 20 }, (_, index) => ({
+    id: `tpl-full-${index + 1}`,
+    name: `模板 ${index + 1}`,
+    values: {
+      version: 1,
+      contextWindow: "128000",
+      maxTokens: "8192",
+      inputText: true,
+      inputImage: false,
+      reasoningLevels: ["off", "low", "medium", "high"],
+    },
+  })),
+});
+
 /** legacy 场景的旧单模板（工单 #29 的存储格式）。 */
 export const LEGACY_TEMPLATE = Object.freeze({
   version: 1,
@@ -227,6 +244,61 @@ ${MODEL_EDIT_ROUTE_SOURCE}
     libraryCount: libraryCount(),
     selectionStored: selectionStored(),
   };
+
+  if (seed.deleteOne) {
+    // 工单 #43 缺陷 4 / 5：满库禁用 → 删一份恢复；以及摘要的「表单已改动」提示。
+    const saveButton = () => buttonIn(createPicker(), "存为新模板");
+    const saveState = () => ({
+      disabled: saveButton()?.disabled === true,
+      title: saveButton()?.getAttribute("title") ?? "",
+      libraryCount: libraryCount(),
+    });
+    result.full = { initial: saveState() };
+    click(buttonIn(createPicker(), "管理模板"));
+    click(buttonIn(manage(), "删除模板 模板 20"));
+    click(buttonIn(manage(), "确认删除模板"));
+    click(buttonIn(manage(), "关闭模板管理"));
+    result.full.afterDeleteOne = saveState();
+    // 19 份时按钮恢复可点：点开对话框再取消，证明它真的能打开。
+    click(saveButton());
+    result.full.dialogOpens = dialog() !== null;
+    click(dialog().querySelector('[aria-label="取消保存模板"]'));
+
+    // 摘要：选中模板与表单一致时无附加句；改一个字段 → 有；改回 → 消失。
+    const summaryNow = () => summaryOf(createPicker());
+    result.summaryMatch = { initial: summaryNow() };
+    setValue(byAria("上下文窗口"), "96000");
+    result.summaryMatch.afterChange = summaryNow();
+    setValue(byAria("上下文窗口"), "128000");
+    result.summaryMatch.afterRestore = summaryNow();
+    document.getElementById("result").textContent = JSON.stringify(result);
+    return;
+  }
+
+  if (seed.escape) {
+    // 工单 #43 缺陷 6：有二次确认时 Esc 只收起确认，再按一次才关面板。
+    const panelOpen = () => manage() !== null;
+    const deleteConfirmShown = () => manage()?.textContent.includes("删除后这一份参数不可恢复") ?? false;
+    const overwriteConfirmShown = () => manage()?.textContent.includes("用当前表单值覆盖这一份参数？") ?? false;
+    const pressEscape = () => manage().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    click(buttonIn(createPicker(), "管理模板"));
+    click(buttonIn(manage(), "删除模板 我的 128K"));
+    result.escape = { deleteConfirmShown: deleteConfirmShown() };
+    pressEscape();
+    result.escape.afterDeleteEsc = { panelOpen: panelOpen(), confirmShown: deleteConfirmShown() };
+    pressEscape();
+    result.escape.afterSecondEsc = { panelOpen: panelOpen() };
+    // 覆盖确认同样分层。
+    click(buttonIn(createPicker(), "管理模板"));
+    click(buttonIn(manage(), "用当前值覆盖 我的 128K"));
+    result.escape.overwriteConfirmShown = overwriteConfirmShown();
+    pressEscape();
+    result.escape.afterOverwriteEsc = { panelOpen: panelOpen(), confirmShown: overwriteConfirmShown() };
+    pressEscape();
+    result.escape.afterOverwriteSecondEsc = { panelOpen: panelOpen() };
+    document.getElementById("result").textContent = JSON.stringify(result);
+    return;
+  }
 
   if (seed.library) {
     // seeded 场景：只需读初始状态（「重新打开插件时停在上次选用的那一份」）。
@@ -446,6 +518,8 @@ ${MODEL_EDIT_ROUTE_SOURCE}
   result.builtinSelect = {
     selectValue: selectValueOf(createPicker()),
     summary: summaryOf(createPicker()),
+    // 工单 #43 缺陷 2：选内置预设也要写「最近选用」。
+    selectionStored: selectionStored(),
   };
   click(buttonIn(createPicker(), "填入模板"));
   result.builtinFill = { state: createState(), mutations: mutations.length };

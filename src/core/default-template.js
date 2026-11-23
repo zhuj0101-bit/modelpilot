@@ -177,3 +177,38 @@ export function describeTemplate(template, humanize) {
   parts.push(template.reasoningLevels.length === 0 ? "不写档位" : template.reasoningLevels.join(","));
   return parts.join(" · ");
 }
+
+/** 档位集合：顺序无关（表单的顺序由 PI_AI_LEVELS 决定，不携带用户语义）。 */
+function levelSet(levels) {
+  return new Set(levels);
+}
+
+/**
+ * 表单值是否与一份模板逐字段一致（工单 #43 缺陷 5）。
+ *
+ * 与 detectPreset 同一思路，但只回答「相等 / 不相等」，不判断命中了哪个预设：
+ * - token 字段去掉首尾空白后按字符串比较（差一位就是不相等）；
+ * - text / image 两个模态按布尔比较；
+ * - 推理档位按集合比较：顺序不同但集合相同算一致。
+ *
+ * 任意一侧结构非法（两个模态都没勾、不是对象）都返回 false —— 表单此时也不
+ * 是「与模板不同」，而是根本不能当模板用，调用方据此决定要不要提示。
+ * @param {unknown} values  模板值（normalizeTemplate 同构）
+ * @param {unknown} form    表单值（templateToForm / formToTemplate 同构）
+ */
+export function templateMatchesForm(values, form) {
+  const template = normalizeTemplate(values);
+  const current = normalizeTemplate(form);
+  if (template === null || current === null) return false;
+  if (template.contextWindow.trim() !== current.contextWindow.trim()) return false;
+  if (template.maxTokens.trim() !== current.maxTokens.trim()) return false;
+  if (template.inputText !== current.inputText) return false;
+  if (template.inputImage !== current.inputImage) return false;
+  const left = levelSet(template.reasoningLevels);
+  const right = levelSet(current.reasoningLevels);
+  if (left.size !== right.size) return false;
+  for (const level of left) {
+    if (!right.has(level)) return false;
+  }
+  return true;
+}

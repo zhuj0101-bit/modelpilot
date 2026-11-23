@@ -44,6 +44,7 @@ import {
   describeTemplate,
   formToTemplate,
   normalizeTemplate,
+  templateMatchesForm,
   templateToForm,
 } from "../core/default-template.js";
 import {
@@ -51,10 +52,12 @@ import {
   TEMPLATE_NAME_MAX_LENGTH,
   addLibraryTemplate,
   findLibraryTemplate,
+  parseTemplateSelectionValue,
   readTemplateLibrary,
   readTemplateSelection,
   removeLibraryTemplate,
   renameLibraryTemplate,
+  templateSelectionValue,
   updateLibraryTemplate,
   writeTemplateLibrary,
   writeTemplateSelection,
@@ -177,20 +180,21 @@ const BUILTIN_TEMPLATE_VALUES = new Map(
   MODEL_PRESETS.map((preset) => [preset.id, normalizeTemplate(presetToTemplate(preset))]),
 );
 
-/** 选中项在 <select> 里的值：用户模板与内置预设分开编码，避免 id 撞车。 */
-function templateOptionValue(choice) {
-  return `${choice.kind}:${choice.id}`;
-}
-
-/** 解析 <select> 的值；非法值返回 null（不改变当前选择）。 */
-function parseTemplateOptionValue(value) {
-  if (typeof value !== "string") return null;
-  const separator = value.indexOf(":");
-  if (separator <= 0) return null;
-  const kind = value.slice(0, separator);
-  const id = value.slice(separator + 1);
-  if (id === "" || (kind !== "user" && kind !== "builtin")) return null;
-  return { kind, id };
+/**
+ * 初始选择：读「最近选用」→ 第一份用户模板 → 内置「基础对话」。
+ *
+ * `explicit` 表示这份选择来自用户（storage 里有值），而不是回落：批量写入的
+ * 摘要据此决定要不要写「内置」二字 —— 库为空且用户没选过时，「基础对话」是
+ * 隐式回落，不能让用户以为自己配置过它（工单 #43 缺陷 1）。
+ */
+function initialTemplateChoice(storage) {
+  const library = readTemplateLibrary(storage);
+  const stored = readTemplateSelection(storage, library);
+  if (stored !== null) return { choice: stored, explicit: true };
+  if (library.templates.length > 0) {
+    return { choice: { kind: "user", id: library.templates[0].id }, explicit: false };
+  }
+  return { choice: { kind: "builtin", id: MODEL_PRESETS[0].id }, explicit: false };
 }
 
 /**
@@ -217,12 +221,120 @@ function resolveTemplateChoice(library, choice) {
 /**
  * 模板条下面的摘要：内置预设带「内置模板：<名字>」，用户模板带「模板：<名字>」，
  * 冒号后的数值描述复用 describeTemplate，与工单 #29 的文案格式一致。
+ *
+ * 工单 #43 缺陷 5：摘要紧贴在表单正上方，光描述模板本身会被读成「现在要存的就是
+ * 这些值」；表单被改过就追加一句说明，改回原值后这句自动消失。
+ * `form` 为 null（表单未打开 / 不可用）时不比较，也不加这句。
  */
-function templateSummaryText(choice) {
+function templateSummaryText(choice, form) {
   const description = describeTemplate(choice.values, humanizeTokenCount);
-  return choice.kind === "builtin"
+  const base = choice.kind === "builtin"
     ? `内置模板：${choice.name} · ${description}`
     : `模板：${choice.name} · ${description}`;
+  if (form === null || templateMatchesForm(choice.values, form)) return base;
+  return `${base}（表单已改动，与模板不同）`;
+}
+
+/**
+ * 批量写入前的模板摘要（工单 #43 缺陷 1）。
+ *
+ * 批量写入用「当前选中的模板」生成每一行；这句话必须说清用的是哪一份、值分别是
+ * 多少，否则用户在新增表单里选了「长文档」，就会在不知情的情况下把 1M 上下文
+ * 写给整批模型。库为空时这一份是隐式回落：写「内置」并标「内置预设」，
+ * 不再说「未设置默认模板，将使用内置默认值」—— 那与真实写入值不符。
+ */
+function batchTemplateHint({ label, kind, values, fallback }) {
+  const description = describeTemplate(values, humanizeTokenCount);
+  const name = fallback ? `内置「${label}」` : `「${label}」`;
+  const marker = kind === "builtin" ? "（内置预设）" : "";
+  return `将以${name}的参数写入：${description}${marker}`;
+}
+
+/* 工单 #43 缺陷 3：对话框里可聚焦的元素；与 ModelPicker 的 Tab 循环同一套选择器。 */
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** 把焦点交给某个元素；没有 DOM、元素已脱离文档或不可聚焦时返回 false。 */
+function focusElement(element) {
+  if (typeof document === "undefined") return false;
+  if (element === null || element === undefined || typeof element.focus !== "function") return false;
+  if (!document.contains(element)) return false;
+  element.focus();
+  return true;
+}
+
+/**
+ * 打开对话框的那个按钮（工单 #43 缺陷 3：关闭后焦点还给它）。
+ *
+ * 记录的是「哪一份模板条上的哪个按钮」，而不是 DOM 引用：模板条在保存 / 删除 /
+ * 改名后会重渲染，旧节点可能已经脱离文档；关闭时按 aria-label 在最新 DOM 里
+ * 找回同一个按钮，两个表单各有一份按钮也不会串。
+ */
+function templateTriggerTargetOf(mode, action) {
+  return {
+    containerLabel: mode === "edit" ? "编辑模型模板" : "新增模型模板",
+    buttonLabel: action === "saveAsNew" ? "存为新模板" : "管理模板",
+  };
+}
+
+/** 按记录的选择器找回当前 DOM 里的触发按钮；找不到返回 null。 */
+function resolveTemplateTrigger(target) {
+  if (target === null || typeof document === "undefined") return null;
+  const container = document.querySelector(`[aria-label="${target.containerLabel}"]`);
+  if (container === null) return null;
+  return container.querySelector(`[aria-label="${target.buttonLabel}"]`);
+}
+
+/**
+ * 模态对话框的焦点管理（工单 #43 缺陷 3）。
+ *
+ * 两个弹窗共用这一份实现（弹窗本身保持无 hook，状态在 Workbench）：
+ * 1. 打开时把焦点移到对话框里第一个可聚焦元素；
+ * 2. 返回的函数接在 role="dialog" 的根上，做一个 Tab / Shift+Tab 焦点圈；
+ * 3. 关闭时把焦点还给打开它的那个按钮（triggerRef 里的选择器）。
+ */
+function useDialogFocus(isOpen, dialogRef, triggerRef) {
+  React.useEffect(() => {
+    if (!isOpen) return undefined;
+    const root = dialogRef.current;
+    if (root !== null) {
+      const focusables = [...root.querySelectorAll(FOCUSABLE_SELECTOR)];
+      focusElement(focusables[0] ?? null);
+    }
+    return () => {
+      focusElement(resolveTemplateTrigger(triggerRef.current));
+    };
+  }, [isOpen]);
+
+  /** Tab / Shift+Tab 圈定：返回 true 表示已处理（调用方不再做 Esc / Enter）。 */
+  return function trapTab(event) {
+    if (event.key !== "Tab") return false;
+    const root = dialogRef.current;
+    if (root === null) return false;
+    const focusables = [...root.querySelectorAll(FOCUSABLE_SELECTOR)];
+    if (focusables.length === 0) {
+      event.preventDefault();
+      return true;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = typeof document === "undefined" ? null : document.activeElement;
+    const inside = active !== null && active !== undefined && root.contains(active);
+    if (event.shiftKey) {
+      if (!inside || active === first || active === root) {
+        event.preventDefault();
+        focusElement(last);
+        return true;
+      }
+      return false;
+    }
+    if (!inside || active === last) {
+      event.preventDefault();
+      focusElement(first);
+      return true;
+    }
+    return false;
+  };
 }
 
 /**
@@ -1171,11 +1283,17 @@ function TokenCountField({ label, hint, value, candidates, error, note, placehol
  *
  * 勾选集合由父组件持有：改搜索词只影响 visible，不影响 selected ——
  * 因此过滤后勾选状态不丢；关窗时父组件重置集合。
+ *
+ * 工单 #43 缺陷 1：批量写入用哪一份模板、会写进哪些值，必须在勾选区上方说清楚。
+ * `templateFallback` 表示这一份是库为空时的隐式回落（不是用户为此配置过的模板）。
  */
 function ModelPicker({
   models,
   existing,
-  hasTemplate,
+  templateLabel,
+  templateKind,
+  templateValues,
+  templateFallback,
   overridesInUse,
   catalogWarning,
   busy,
@@ -1287,6 +1405,16 @@ function ModelPicker({
           aria-label="搜索模型"
         />
 
+        {/* 工单 #43 缺陷 1：勾选区上方说明批量写入用的是哪一份模板、具体写入值。 */}
+        <div style={s.pickerHint} role="note" data-modelpilot-batch-template>
+          {batchTemplateHint({
+            label: templateLabel,
+            kind: templateKind,
+            values: templateValues,
+            fallback: templateFallback,
+          })}
+        </div>
+
         <label style={{ ...s.pickerRow, cursor: selectable.length === 0 ? "not-allowed" : "pointer" }}>
           <input
             type="checkbox"
@@ -1324,8 +1452,6 @@ function ModelPicker({
             );
           })}
         </div>
-
-        {!hasTemplate ? <div style={s.pickerHint}>未设置默认模板，将使用内置默认值</div> : null}
 
         {catalogWarning ? (
           <label style={{ ...s.warn, display: "flex", gap: GAP.sm, alignItems: "flex-start", cursor: "pointer" }}>
@@ -1742,6 +1868,10 @@ function ReasoningApiValues({ levels, apiValues, ariaPrefix, onChange }) {
  * 能读到触发它的那个表单。
  */
 function TemplatePicker({ ariaLabel, value, library, summary, onSelect, onFill, onSaveAsNew, onManage }) {
+  // 工单 #43 缺陷 4：库满 20 份时「存为新模板」直接禁用，不再让用户点开一个
+  // 注定失败的对话框。Workbench 按 mode 记住是哪个按钮打开的对话框
+  // （缺陷 3），关闭后把焦点还给它。
+  const full = library.templates.length >= TEMPLATE_MAX_COUNT;
   return (
     <div style={s.templateBox} role="group" aria-label={ariaLabel}>
       <div style={s.templateBar}>
@@ -1754,20 +1884,31 @@ function TemplatePicker({ ariaLabel, value, library, summary, onSelect, onFill, 
           onChange={(event) => onSelect(event.target.value)}
         >
           {library.templates.map((template) => (
-            <option key={template.id} value={`user:${template.id}`} data-template-kind="user">
+            <option key={template.id} value={templateSelectionValue({ kind: "user", id: template.id })} data-template-kind="user">
               {template.name}
             </option>
           ))}
           {library.templates.length > 0 ? <option value="" disabled>────────</option> : null}
           {MODEL_PRESETS.map((preset) => (
-            <option key={preset.id} value={`builtin:${preset.id}`} data-template-kind="builtin">
+            <option key={preset.id} value={templateSelectionValue({ kind: "builtin", id: preset.id })} data-template-kind="builtin">
               {preset.label}（内置）
             </option>
           ))}
         </select>
         <button type="button" style={s.btnSmall} onClick={onFill} aria-label="填入模板">填入</button>
-        <button type="button" style={s.btnSmall} onClick={onSaveAsNew} aria-label="存为新模板">存为新模板</button>
-        <button type="button" style={s.btnSmall} onClick={onManage} aria-label="管理模板">管理</button>
+        <button
+          type="button"
+          style={full ? { ...s.btnSmall, ...s.btnDisabled } : s.btnSmall}
+          disabled={full}
+          onClick={onSaveAsNew}
+          aria-label="存为新模板"
+          {...(full ? { title: `已保存 ${TEMPLATE_MAX_COUNT} 份，先删除一份再新增` } : null)}
+        >
+          存为新模板
+        </button>
+        <button type="button" style={s.btnSmall} onClick={onManage} aria-label="管理模板">
+          管理
+        </button>
       </div>
       <span style={s.templateSummary}>{summary}</span>
     </div>
@@ -1777,8 +1918,11 @@ function TemplatePicker({ ariaLabel, value, library, summary, onSelect, onFill, 
 /**
  * 「存为新模板」的小对话框（工单 #42）：只有一个名称输入。
  * 名称为空 / 超长 / 重名时就地报错、不关窗；Enter 保存、Esc 取消。
+ *
+ * 工单 #43 缺陷 3：role="dialog" + aria-modal 就要真的管焦点 —— 打开时聚焦名称
+ * 输入（useDialogFocus 在 Workbench 里做），Tab 圈在对话框内，关闭时还焦点。
  */
-function TemplateNameDialog({ name, error, onChange, onCancel, onConfirm }) {
+function TemplateNameDialog({ name, error, dialogRef, onTrapTab, onChange, onCancel, onConfirm }) {
   return (
     <div
       style={s.overlay}
@@ -1787,11 +1931,13 @@ function TemplateNameDialog({ name, error, onChange, onCancel, onConfirm }) {
       }}
     >
       <div
+        ref={dialogRef}
         style={s.dialog}
         role="dialog"
         aria-modal="true"
         aria-label="存为新模板"
         onKeyDown={(event) => {
+          if (onTrapTab(event)) return;
           if (event.key === "Escape") onCancel();
           if (event.key === "Enter" && event.target.tagName === "INPUT") onConfirm();
         }}
@@ -1805,6 +1951,7 @@ function TemplateNameDialog({ name, error, onChange, onCancel, onConfirm }) {
           <input
             style={s.input}
             value={name}
+            maxLength={TEMPLATE_NAME_MAX_LENGTH}
             placeholder="如 我的 128K 对话"
             aria-label="模板名称"
             onChange={(event) => onChange(event.target.value)}
@@ -1828,10 +1975,16 @@ function TemplateNameDialog({ name, error, onChange, onCancel, onConfirm }) {
  *
  * 「用当前值覆盖」与「删除」都在原位二次确认：覆盖回答「会覆盖原有参数」，
  * 删除写明「删除后这一份参数不可恢复」。面板本身无 hook，状态在 Workbench。
+ *
+ * 工单 #43 缺陷 3 / 6：焦点由 Workbench 的 useDialogFocus 管（打开 / Tab / 关闭）；
+ * Esc 分层 —— 二次确认展开时先收起确认，再按一次才关面板。
  */
 function TemplateManagePanel({
   library,
   state,
+  dialogRef,
+  renameInputRef,
+  onTrapTab,
   currentSummary,
   onClose,
   onBeginRename,
@@ -1852,13 +2005,23 @@ function TemplateManagePanel({
       }}
     >
       <div
+        ref={dialogRef}
         // 工单 #42：模板管理比通用弹窗宽一点 —— 一行要放下名字 + 三个动作。
         style={{ ...s.dialog, width: "min(640px, calc(100vw - 32px))" }}
         role="dialog"
         aria-modal="true"
         aria-label="模板管理"
         onKeyDown={(event) => {
-          if (event.key === "Escape") onClose();
+          if (onTrapTab(event)) return;
+          if (event.key !== "Escape") return;
+          // 工单 #43 缺陷 6：有二次确认时 Esc 只收起确认，不整块关掉面板 ——
+          // 与行内改名输入的处理保持一致，用户展开的状态不丢。
+          if (state.confirmOverwriteId !== null || state.confirmDeleteId !== null) {
+            event.stopPropagation();
+            onCancelConfirm();
+            return;
+          }
+          onClose();
         }}
       >
         <div style={s.pickerHeader}>
@@ -1875,8 +2038,10 @@ function TemplateManagePanel({
                 <div style={s.templateManageLine}>
                   {renaming ? (
                     <input
+                      ref={renameInputRef}
                       style={{ ...s.input, minWidth: 120 }}
                       value={state.renameName}
+                      maxLength={TEMPLATE_NAME_MAX_LENGTH}
                       aria-label="重命名模板输入"
                       onChange={(event) => onRenameChange(event.target.value)}
                       onKeyDown={(event) => {
@@ -3300,18 +3465,24 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   // 不删选择 key（读的时候校验），选择指向已删除的模板时由界面回落到第一份
   // 用户模板、再回落到内置「基础对话」。
   const [templateLibrary, setTemplateLibrary] = React.useState(() => readTemplateLibrary(storage));
-  const [templateChoice, setTemplateChoice] = React.useState(() => {
-    const library = readTemplateLibrary(storage);
-    const stored = readTemplateSelection(storage, library);
-    if (stored !== null) return { kind: "user", id: stored };
-    if (library.templates.length > 0) return { kind: "user", id: library.templates[0].id };
-    return { kind: "builtin", id: MODEL_PRESETS[0].id };
-  });
+  // 工单 #43 缺陷 2：readTemplateSelection 返回 { kind, id }，内置预设也持久化；
+  // explicit 区分「用户选过」与回落，批量写入摘要的措辞据此决定（缺陷 1）。
+  const initialChoice = React.useMemo(() => initialTemplateChoice(storage), [storage]);
+  const [templateChoice, setTemplateChoice] = React.useState(initialChoice.choice);
+  const [templateChoiceExplicit, setTemplateChoiceExplicit] = React.useState(initialChoice.explicit);
   // 「存为新模板」对话框：{ mode: "create"|"edit", name, error }；null = 关闭。
   const [templateDialog, setTemplateDialog] = React.useState(null);
   // 模板管理面板：mode 决定「用当前值覆盖」读哪份表单；行内的改名 / 覆盖 /
   // 删除二次确认都是这个对象里的字段，null = 面板关闭。
   const [templateManage, setTemplateManage] = React.useState(null);
+  // 工单 #43 缺陷 3：两个弹窗共用一份焦点管理（useDialogFocus）—— 打开时聚焦
+  // 第一个可聚焦元素、Tab 圈定、关闭时把焦点还给模板条上打开它的那个按钮。
+  const templateDialogRef = React.useRef(null);
+  const templateManageRef = React.useRef(null);
+  const templateRenameInputRef = React.useRef(null);
+  const templateTriggerRef = React.useRef(null);
+  const trapTemplateDialogTab = useDialogFocus(templateDialog !== null, templateDialogRef, templateTriggerRef);
+  const trapTemplateManageTab = useDialogFocus(templateManage !== null, templateManageRef, templateTriggerRef);
 
   // 工单 #31：列表密度的全局前端偏好；读不到 / 非法值一律回落 compact。
   const [modelDensity, setModelDensity] = React.useState(() => readModelListDensity(storage));
@@ -3427,6 +3598,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   // resolveTemplateChoice 会回落到第一份用户模板 / 内置「基础对话」。
   const selectedTemplate = resolveTemplateChoice(templateLibrary, templateChoice);
 
+  // 工单 #43 缺陷 3：行内改名输入框出现时接住焦点，不要让它掉回 body。
+  const renamingTemplateId = templateManage === null ? null : templateManage.renameId;
+  React.useEffect(() => {
+    if (renamingTemplateId !== null) focusElement(templateRenameInputRef.current);
+  }, [renamingTemplateId]);
+
   // 首次挂载：有模板就填进表单。只跑一次，用户之后的手动编辑不被覆盖。
   const templateApplied = React.useRef(false);
   React.useEffect(() => {
@@ -3443,15 +3620,12 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
 
   const reasoningGuard = reasoningLevelsGuard(reasoningLevels);
 
+  // 新增表单的当前值（工单 #43：模板摘要的「表单已改动」比较也读这一份）。
+  const createFormValues = { contextWindow, maxTokens, inputText, inputImage, reasoningLevels };
+
   // 工单 #40：当前表单值命中哪个内置预设。任何字段被改动都会让它变成 null，
   // chip 的高亮必须跟着消失，不能残留「你还在基础对话上」的假状态。
-  const detectedPreset = detectPreset({
-    contextWindow,
-    maxTokens,
-    inputText,
-    inputImage,
-    reasoningLevels,
-  });
+  const detectedPreset = detectPreset(createFormValues);
 
   React.useEffect(() => {
     if (routeId === "" && routes.length > 0) setRouteId(routes[0]);
@@ -4272,27 +4446,38 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     return formToTemplate({ contextWindow, maxTokens, inputText, inputImage, reasoningLevels });
   }
 
-  /** 选中一份模板并记住「最近选用」；内置预设只影响本次界面，不写选择 key。 */
-  function chooseTemplate(choice) {
+  /**
+   * 选中一份模板并记住「最近选用」；用户模板与内置预设都写（工单 #43 缺陷 2）。
+   * 只写 user 时，改选内置预设后重开插件会被静默改写回旧模板。
+   *
+   * `explicit: false` 只给界面自己的回落用（删掉当前选用的模板后）：那不是
+   * 用户为这批模型选过的模板，批量摘要仍应按「内置回落」措辞说明。
+   */
+  function chooseTemplate(choice, { explicit = true } = {}) {
     setTemplateChoice(choice);
-    if (choice.kind === "user") writeTemplateSelection(storage, choice.id);
+    setTemplateChoiceExplicit(explicit);
+    writeTemplateSelection(storage, choice);
   }
 
   /** 下拉切换：只改选择与摘要，不把值填进表单。 */
   function changeTemplateChoice(value) {
-    const parsed = parseTemplateOptionValue(value);
+    const parsed = parseTemplateSelectionValue(value);
     if (parsed === null) return;
     if (parsed.kind === "user" && findLibraryTemplate(templateLibrary, parsed.id) === null) return;
     if (parsed.kind === "builtin" && findModelPreset(parsed.id) === null) return;
     chooseTemplate(parsed);
   }
 
-  /** 打开「存为新模板」对话框；库已满时直接说明（不打开注定失败的对话框）。 */
+  /**
+   * 打开「存为新模板」对话框；库已满时直接说明（不打开注定失败的对话框）。
+   * 记下打开它的按钮，关闭后焦点还给它（工单 #43 缺陷 3）。
+   */
   function openTemplateDialog(mode) {
     if (templateLibrary.templates.length >= TEMPLATE_MAX_COUNT) {
       setToast({ tone: "bad", text: `最多保存 ${TEMPLATE_MAX_COUNT} 份模板` });
       return;
     }
+    templateTriggerRef.current = templateTriggerTargetOf(mode, "saveAsNew");
     setTemplateDialog({ mode, name: "", error: "" });
   }
 
@@ -4331,6 +4516,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
 
   /** 打开管理面板；mode 决定「用当前值覆盖」读哪份表单。 */
   function openTemplateManage(mode) {
+    templateTriggerRef.current = templateTriggerTargetOf(mode, "manage");
     setTemplateManage({
       mode,
       renameId: null,
@@ -4442,7 +4628,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
     if (templateChoice.kind === "user" && templateChoice.id === id) {
       chooseTemplate(result.library.templates.length > 0
         ? { kind: "user", id: result.library.templates[0].id }
-        : { kind: "builtin", id: MODEL_PRESETS[0].id });
+        : { kind: "builtin", id: MODEL_PRESETS[0].id }, { explicit: false });
     }
     setToast({ tone: "good", text: `已删除模板「${target.name}」` });
   }
@@ -5673,15 +5859,23 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
 
   // 工单 #42：两处模板条共用同一个组件，只是「填入 / 存为新模板 / 管理」的
   // 目标表单不同 —— 编辑表单读编辑表单的当前值，新增表单读新增表单的当前值。
+  // 工单 #43 缺陷 5：摘要按各自表单值比较，改过的表单追加「（表单已改动…）」。
+  const editFormValues = editForm === null ? null : {
+    contextWindow: editForm.contextWindow,
+    maxTokens: editForm.maxTokens,
+    inputText: editForm.inputText,
+    inputImage: editForm.inputImage,
+    reasoningLevels: editForm.reasoningLevels,
+  };
   const templatePickerBase = {
-    value: templateOptionValue(selectedTemplate),
+    value: templateSelectionValue(selectedTemplate),
     library: templateLibrary,
-    summary: templateSummaryText(selectedTemplate),
     onSelect: changeTemplateChoice,
   };
   const createTemplatePicker = {
     ...templatePickerBase,
     ariaLabel: "新增模型模板",
+    summary: templateSummaryText(selectedTemplate, createFormValues),
     onFill: fillCreateTemplate,
     onSaveAsNew: () => openTemplateDialog("create"),
     onManage: () => openTemplateManage("create"),
@@ -5689,6 +5883,7 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
   const editTemplatePicker = {
     ...templatePickerBase,
     ariaLabel: "编辑模型模板",
+    summary: templateSummaryText(selectedTemplate, editFormValues),
     onFill: fillEditTemplate,
     onSaveAsNew: () => openTemplateDialog("edit"),
     onManage: () => openTemplateManage("edit"),
@@ -6618,7 +6813,10 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         <ModelPicker
           models={remoteModels}
           existing={existingModelIds}
-          hasTemplate={templateLibrary.templates.length > 0}
+          templateLabel={selectedTemplate.name}
+          templateKind={selectedTemplate.kind}
+          templateValues={selectedTemplate.values}
+          templateFallback={templateLibrary.templates.length === 0 && !templateChoiceExplicit}
           overridesInUse={overridesInUse}
           catalogWarning={catalogWarning}
           busy={busy}
@@ -6695,6 +6893,8 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         <TemplateNameDialog
           name={templateDialog.name}
           error={templateDialog.error}
+          dialogRef={templateDialogRef}
+          onTrapTab={trapTemplateDialogTab}
           onChange={changeTemplateDialogName}
           onCancel={closeTemplateDialog}
           onConfirm={saveTemplateDialog}
@@ -6705,6 +6905,9 @@ function Workbench({ configForms, discoverModels, credentialOps, listConfigurabl
         <TemplateManagePanel
           library={templateLibrary}
           state={templateManage}
+          dialogRef={templateManageRef}
+          renameInputRef={templateRenameInputRef}
+          onTrapTab={trapTemplateManageTab}
           currentSummary={templateFormSummary(templateManage.mode)}
           onClose={closeTemplateManage}
           onBeginRename={beginTemplateRename}
