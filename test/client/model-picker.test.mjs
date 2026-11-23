@@ -750,9 +750,16 @@ test("仅大小写不同的条目默认不勾；勾上后批量写入跳过并�
   assert.deepEqual(plain(harness.mutations[0].map((op) => op.value.name)), ["jxf/dsv4.1-flash", "jxf/dsv4.1-pro"]);
 });
 
-test("没有默认模板：提示使用内置默认值，勾 3 个仍能写入", async () => {
+test("没有默认模板：提示按内置「基础对话」的参数写入，勾 3 个仍能写入", async () => {
   const harness = await fetchedHarness({ providers: { "newapi-chat": ROUTE_WITH_EXISTING } });
-  assert.match(harness.dialogText(), /未设置默认模板，将使用内置默认值/);
+  // 工单 #43 缺陷 1：批量写入用的是「基础对话」预设（128000 / 8192），
+  // 旧文案「未设置默认模板，将使用内置默认值」与真实写入值不符。
+  const dialogText = harness.dialogText();
+  assert.match(
+    dialogText,
+    /将以内置「基础对话」的参数写入：上下文 128000（128K） · 输出 8192（8K） · text · off,low,medium,high（内置预设）/,
+  );
+  assert.ok(!dialogText.includes("内置默认值"), "旧文案必须消失");
   harness.selectAll();
   harness.click(harness.confirmButton());
   assert.match(harness.text(), /待写入 3 条模型/);
@@ -762,6 +769,9 @@ test("没有默认模板：提示使用内置默认值，勾 3 个仍能写入",
   assert.equal(harness.mutations.length, 1);
   assert.equal(harness.mutations[0].length, 3);
   assert.deepEqual(plain(harness.mutations[0][0].value.input), ["text"]);
+  // 提示里写的值就是真正写进去的值。
+  assert.equal(harness.mutations[0][0].value.contextWindow, 128000);
+  assert.equal(harness.mutations[0][0].value.maxTokens, 8192);
 });
 
 test("目录路由：批量写入先显示 catalog-replacement 告警，确认后才允许确定", async () => {

@@ -120,7 +120,11 @@ test("主操作独占一行右对齐，次要操作为文字链接", () => {
   for (const label of ["填入模板", "存为新模板", "管理模板"]) {
     assert.ok(new RegExp(`aria-label="${label}"`).test(source), `模板条动作：${label}`);
   }
-  assert.match(source, /style=\{s\.btnSmall\} onClick=\{onSaveAsNew\} aria-label="存为新模板"/);
+  // 工单 #43 缺陷 4：满额时同一个小按钮禁用（s.btnDisabled），尺寸不变。
+  assert.match(
+    source,
+    /style=\{full \? \{ \.\.\.s\.btnSmall, \.\.\.s\.btnDisabled \} : s\.btnSmall\}[\s\S]{0,80}?disabled=\{full\}[\s\S]{0,80}?aria-label="存为新模板"/,
+  );
 });
 
 test("既有 aria-label 全部保留", () => {

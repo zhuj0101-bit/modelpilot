@@ -139,5 +139,6 @@ test("迁移后的那一份可以被「最近选用」指向", () => {
   const id = library.templates[0].id;
   assert.equal(readTemplateSelection(storage, library), null);
   assert.equal(writeTemplateSelection(storage, id), true);
-  assert.equal(readTemplateSelection(storage, library), id);
+  // 工单 #43 缺陷 2：readTemplateSelection 返回 { kind, id }。
+  assert.deepEqual(readTemplateSelection(storage, library), { kind: "user", id });
 });

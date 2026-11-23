@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, runPageProbe } from "./layout-harness.mjs";
 import {
+  FULL_LIBRARY,
   LEGACY_TEMPLATE,
   SEEDED_LIBRARY,
   buildTemplatePickerHtml,
@@ -31,6 +32,12 @@ const SEEDS = {
   empty: null,
   seeded: { library: SEEDED_LIBRARY, selection: "tpl-seed-64k" },
   legacy: { legacy: LEGACY_TEMPLATE },
+  // 工单 #43：上次选的是内置「长文档」（库还在），等价于「重新打开插件」。
+  builtinSeeded: { library: SEEDED_LIBRARY, selection: "builtin:long" },
+  // 工单 #43 缺陷 4 / 5：满库禁用、删一份恢复、摘要的「表单已改动」。
+  full: { library: FULL_LIBRARY, deleteOne: true },
+  // 工单 #43 缺陷 6：覆盖 / 删除的二次确认按 Esc 只收合确认。
+  escape: { library: SEEDED_LIBRARY, selection: "tpl-seed-64k", escape: true },
 };
 
 function probe(scenario) {
@@ -90,7 +97,8 @@ test("存一份「我的 128K」：对话框关闭、下拉多一项、摘要与
     inputImage: false,
     reasoningLevels: ["off", "low", "medium", "high"],
   });
-  assert.equal(afterFirstSave.selectionStored, afterFirstSave.library.templates[0].id);
+  // 工单 #43 缺陷 2：选择改成与下拉 option 同构的编码值 user:<id>。
+  assert.equal(afterFirstSave.selectionStored, `user:${afterFirstSave.library.templates[0].id}`);
   assert.equal(afterFirstSave.toast, "已保存模板「我的 128K」");
 });
 
@@ -115,7 +123,10 @@ test("编辑模型表单与新增模型表单共用同一份库（下拉里立�
   assert.equal(edit.userOptions.length, 1);
   assert.equal(edit.userOptions[0].text, "我的 128K");
   assert.equal(edit.selectValue, afterFirstSave.selectValue);
-  assert.equal(edit.summary, afterFirstSave.summary);
+  // 工单 #43 缺陷 5：编辑表单的值来自被编辑的模型（1000000 / 32768 …），与
+  // 模板不同，摘要要如实说明；共同部分仍是同一份模板。
+  assert.match(edit.summary, /^模板：我的 128K · 上下文 128000（128K） · 输出 8192（8K） · text · off,low,medium,high/);
+  assert.match(edit.summary, /（表单已改动，与模板不同）$/);
 });
 
 test("存第二份「便宜的 64K」后，下拉两项且顺序与新增顺序一致", async (t) => {
@@ -160,7 +171,7 @@ test("选中第二份点「填入」：摘要跟随，表单三字段变 64000 /
     levels: ["off", "low", "medium", "high"],
   });
   assert.equal(fill.mutations, 0, "「填入」只改表单，不写配置");
-  assert.equal(fill.selectionStored, fill.selectedValue.slice("user:".length));
+  assert.equal(fill.selectionStored, fill.selectedValue, "存储值与下拉 option 的 value 同构");
 });
 
 test("改名：输入框预填原名，回车后下拉与摘要一起更新，id 不变", async (t) => {
@@ -202,7 +213,7 @@ test("删除当前选中的一份：二次确认后回落到第一份用户模�
   assert.match(afterDeleteSelected.summary, /^模板：128K 对话 · /);
   assert.ok(!afterDeleteSelected.summary.includes("便宜的 64K"), "摘要不能显示已删除模板的名字");
   assert.equal(afterDeleteSelected.libraryCount, 1);
-  assert.equal(afterDeleteSelected.selectionStored, beforeRename.selectValue.slice("user:".length));
+  assert.equal(afterDeleteSelected.selectionStored, beforeRename.selectValue, "存储值与下拉 option 的 value 同构");
 });
 
 test("删到空库：只剩三份内置预设，管理面板显示空库提示", async (t) => {
@@ -261,9 +272,11 @@ test("内置预设只读：管理面板不列出，下拉里可选可填", async
   assert.equal(builtinReadOnly.manageRows, 0, "内置预设不能改名 / 覆盖 / 删除");
   assert.equal(builtinReadOnly.manageEmptyText, true);
   assert.equal(builtinSelect.selectValue, "builtin:coding");
+  // 工单 #43 缺陷 5：此时表单还是之前的值（不是「代码」的 200000 / 16384），
+  // 摘要必须说明「表单已改动」，避免被读成「现在要存的就是 200000」。
   assert.equal(
     builtinSelect.summary,
-    "内置模板：代码 · 上下文 200000（200K） · 输出 16384（16K） · text · off,low,medium,high",
+    "内置模板：代码 · 上下文 200000（200K） · 输出 16384（16K） · text · off,low,medium,high（表单已改动，与模板不同）",
   );
   assert.deepEqual(builtinFill.state, {
     contextWindow: "200000",
@@ -273,4 +286,64 @@ test("内置预设只读：管理面板不列出，下拉里可选可填", async
     levels: ["off", "low", "medium", "high"],
   });
   assert.equal(builtinFill.mutations, 0);
+});
+
+// ── 工单 #43 ────────────────────────────────────────────────────────────────
+
+test("选内置预设也写「最近选用」：storage 里是 builtin:<presetId>", async (t) => {
+  if (chrome === null) return skip(t);
+  const { builtinSelect } = await probe("empty");
+  assert.equal(builtinSelect.selectionStored, "builtin:coding");
+});
+
+test("重新打开：上次选的是内置预设 → 下拉停在「长文档（内置）」，不跳回旧的 user 模板", async (t) => {
+  if (chrome === null) return skip(t);
+  const { initial } = await probe("builtinSeeded");
+  assert.equal(initial.selectValue, "builtin:long");
+  assert.equal(initial.selectionStored, "builtin:long");
+  assert.deepEqual(initial.userOptions.map((option) => option.text), ["我的 128K", "便宜的 64K"]);
+  assert.match(initial.summary, /^内置模板：长文档 · 上下文 1000000（1M） · 输出 8192（8K） · text · off,low,medium,high$/);
+  assert.ok(!initial.summary.includes("便宜的 64K"), "不能静默跳回之前选过的 user 模板");
+  // 首次预填也跟着内置「长文档」。
+  assert.deepEqual(initial.createState, {
+    contextWindow: "1000000",
+    maxTokens: "8192",
+    text: true,
+    image: false,
+    levels: ["off", "low", "medium", "high"],
+  });
+});
+
+test("库满 20 份：「存为新模板」禁用并写明原因；删一份后恢复可点", async (t) => {
+  if (chrome === null) return skip(t);
+  const { full } = await probe("full");
+  assert.equal(full.initial.libraryCount, 20);
+  assert.equal(full.initial.disabled, true);
+  assert.match(full.initial.title, /已保存 20 份/);
+  assert.equal(full.afterDeleteOne.libraryCount, 19);
+  assert.equal(full.afterDeleteOne.disabled, false, "删掉一份后不再满额");
+  assert.equal(full.afterDeleteOne.title, "", "不满额时没有满额提示");
+  assert.equal(full.dialogOpens, true, "恢复可点后能真正打开对话框");
+});
+
+test("摘要：表单与模板一致时不提示；改一个字段 →「表单已改动」；改回 → 提示消失", async (t) => {
+  if (chrome === null) return skip(t);
+  const { summaryMatch } = await probe("full");
+  assert.ok(!summaryMatch.initial.includes("表单已改动"), "一致时保持简洁");
+  assert.match(summaryMatch.initial, /^模板：模板 1 · 上下文 128000（128K）/);
+  assert.match(summaryMatch.afterChange, /（表单已改动，与模板不同）$/);
+  assert.ok(!summaryMatch.afterRestore.includes("表单已改动"), "改回原值后提示消失");
+});
+
+test("Esc 分层：覆盖 / 删除的二次确认先收合，面板再按一次才关", async (t) => {
+  if (chrome === null) return skip(t);
+  const { escape } = await probe("escape");
+  assert.equal(escape.deleteConfirmShown, true);
+  assert.equal(escape.afterDeleteEsc.panelOpen, true, "第一次 Esc 只收起删除确认");
+  assert.equal(escape.afterDeleteEsc.confirmShown, false);
+  assert.equal(escape.afterSecondEsc.panelOpen, false, "再按一次才关面板");
+  assert.equal(escape.overwriteConfirmShown, true);
+  assert.equal(escape.afterOverwriteEsc.panelOpen, true, "第一次 Esc 只收起覆盖确认");
+  assert.equal(escape.afterOverwriteEsc.confirmShown, false);
+  assert.equal(escape.afterOverwriteSecondEsc.panelOpen, false);
 });
